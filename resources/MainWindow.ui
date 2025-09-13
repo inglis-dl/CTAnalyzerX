@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>MainWindow</class>
  <widget class="QMainWindow" name="MainWindow">
@@ -6,90 +6,98 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1024</width>
-    <height>768</height>
+    <width>925</width>
+    <height>573</height>
    </rect>
   </property>
-  <property name="windowTitle">
-   <string>CTAnalyzerX</string>
-  </property>
-  <widget class="QWidget" name="centralwidget">
-   <layout class="QVBoxLayout" name="verticalLayout">
-    <item>
-     <widget class="QLabel" name="vtkPlaceholder">
-      <property name="text">
-       <string>VTK Render Window Placeholder</string>
-      </property>
-      <property name="alignment">
-       <set>Qt::AlignCenter</set>
-      </property>
-     </widget>
-    </item>
-   <item><widget class="QLabel" name="label_opacitySlider"><property name="text"><string>Opacity</string></property></widget></item><item><widget class="QSlider" name="opacitySlider"><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item><item><widget class="QLabel" name="label_colorSlider"><property name="text"><string>Color Mapping</string></property></widget></item><item><widget class="QSlider" name="colorSlider"><property name="orientation"><enum>Qt::Horizontal</enum></property></widget></item></layout>
-   </layout>
+  <widget class="QWidget" name="centralwidget"/>
+  <widget class="QDockWidget" name="dockFileBrowser">
+   <attribute name="dockWidgetArea">
+    <number>1</number>
+   </attribute>
+   <widget class="QWidget" name="dockFileBrowserContents">
+    <layout class="QVBoxLayout" name="dockFileBrowserLayout">
+     <item>
+      <widget class="QLabel" name="dockFileBrowserLabel">
+       <property name="text">
+        <string>File Browser</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnBrowseFiles">
+       <property name="text">
+        <string>Browse Files</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <widget class="QDockWidget" name="dockSliceControls">
+   <attribute name="dockWidgetArea">
+    <number>1</number>
+   </attribute>
+   <widget class="QWidget" name="dockSliceControlsContents">
+    <layout class="QVBoxLayout" name="dockSliceControlsLayout">
+     <item>
+      <widget class="QLabel" name="dockSliceControlsLabel">
+       <property name="text">
+        <string>Slice Controls</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="lblSlicePosition">
+       <property name="text">
+        <string>Slice Position</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QSlider" name="sliderSlicePosition"/>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <widget class="QDockWidget" name="dockAnalysisPanel">
+   <attribute name="dockWidgetArea">
+    <number>1</number>
+   </attribute>
+   <widget class="QWidget" name="dockAnalysisPanelContents">
+    <layout class="QVBoxLayout" name="dockAnalysisPanelLayout">
+     <item>
+      <widget class="QLabel" name="dockAnalysisPanelLabel">
+       <property name="text">
+        <string>Analysis Panel</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnRunAnalysis">
+       <property name="text">
+        <string>Run Analysis</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QTextEdit" name="txtAnalysisOutput"/>
+     </item>
+    </layout>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>1024</width>
-     <height>21</height>
+     <width>925</width>
+     <height>23</height>
     </rect>
    </property>
-   <addaction name="menuFile" />
-   <addaction name="menuView" />
-   <addaction name="menuTools" />
-   <addaction name="menuHelp" />
-   <widget class="QMenu" name="menuFile">
-    <property name="title">
-     <string>File</string>
-    </property>
-   <widget class="QMenu" name="menuRecentFiles"><property name="title"><string>Recent Files</string></property></widget></widget>
-   <widget class="QMenu" name="menuView">
-    <property name="title">
-     <string>View</string>
-    </property>
-   </widget>
-   <widget class="QMenu" name="menuTools">
-    <property name="title">
-     <string>Tools</string>
-    </property>
-   </widget>
-   <widget class="QMenu" name="menuHelp">
-    <property name="title">
-     <string>Help</string>
-    </property>
-   </widget>
   </widget>
-  <widget class="QToolBar" name="toolBar">
-   <property name="windowTitle">
-    <string>ToolBar</string>
-   </property>
-   <addaction name="actionOpen" />
-   <addaction name="actionSave" />
-   <addaction name="actionZoom" />
-  </widget>
-  <widget class="QStatusBar" name="statusbar" />
-  <widget class="QDockWidget" name="dockFileBrowser">
-   <property name="windowTitle">
-    <string>File Browser</string>
-   </property>
-   <widget class="QWidget" name="dockWidgetContents1" />
-  </widget>
-  <widget class="QDockWidget" name="dockSliceControls">
-   <property name="windowTitle">
-    <string>Slice Controls</string>
-   </property>
-   <widget class="QWidget" name="dockWidgetContents2" />
-  </widget>
-  <widget class="QDockWidget" name="dockAnalysisPanel">
-   <property name="windowTitle">
-    <string>Analysis Panel</string>
-   </property>
-   <widget class="QWidget" name="dockWidgetContents3" />
-  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
  </widget>
- <resources />
- <connections />
+ <resources/>
+ <connections/>
 </ui>

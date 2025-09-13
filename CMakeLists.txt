@@ -74,7 +74,14 @@ find_package(Qt${VTK_QT_VERSION}
 	REQUIRED COMPONENTS Core Gui Widgets)
 
 # Source files
-file(GLOB_RECURSE SOURCES src/*.cpp src/*.h resources/*.ui)
+file(GLOB_RECURSE SOURCES src/*.cpp src/*.h src/*.ui)
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC_SEARCH_PATHS
+	${CMAKE_CURRENT_SOURCE_DIR}/resources
+)
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 

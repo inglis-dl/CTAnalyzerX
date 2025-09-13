@@ -10,6 +10,7 @@ class vtkVolume;
 class vtkRenderer;
 class vtkSmartVolumeMapper;
 class vtkImagePlaneWidget;
+class vtkRenderWindow;
 
 class VolumeView : public QVTKOpenGLNativeWidget {
 	Q_OBJECT
@@ -21,12 +22,16 @@ public:
 						   int sagittalMin, int sagittalMax,
 						   int coronalMin, int coronalMax);
 	void toggleSlicePlanes(bool visible);
+	vtkRenderWindow* GetRenderWindow() const;
+
 
 private:
 	vtkSmartPointer<vtkRenderer> renderer;
+	vtkSmartPointer<vtkRenderWindow> renderWindow;
 	vtkSmartPointer<vtkVolume> volume;
 	vtkSmartPointer<vtkSmartVolumeMapper> mapper;
 	vtkSmartPointer<vtkImageData> imageData;
+
 
 	vtkSmartPointer<vtkImagePlaneWidget> axialPlane;
 	vtkSmartPointer<vtkImagePlaneWidget> sagittalPlane;

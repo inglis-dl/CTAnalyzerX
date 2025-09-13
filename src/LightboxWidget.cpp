@@ -257,7 +257,7 @@ void LightBoxWidget::setAxialSlice(int index)
 {
 	if (axialView) {
 		axialView->setSliceIndex(index);
-		axialView->setText(QString("Axial: %1").arg(index));
+		axialLabel->setText(QString("Axial: %1").arg(index));
 		volumeView->updateSlicePlanes(coronalView->getSliceIndex(), sagittalView->getSliceIndex(), index);
 	}
 }
@@ -280,3 +280,8 @@ void LightBoxWidget::setCoronalSlice(int index)
 		volumeView->updateSlicePlanes(axialView->getSliceIndex(), sagittalView->getSliceIndex(), index);
 	}
 }
+
+QPixmap LightBoxWidget::grabFramebuffer() {
+	return this->grab();
+}
+

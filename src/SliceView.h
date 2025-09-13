@@ -17,6 +17,7 @@ public:
 	void setImageData(vtkImageData* image);
 	void setSliceIndex(int index);
 	int getSliceIndex() const;
+	vtkRenderWindow* GetRenderWindow() const;
 
 signals:
 	void sliceChanged(int index);

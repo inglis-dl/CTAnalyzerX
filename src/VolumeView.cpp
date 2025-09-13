@@ -11,33 +11,17 @@
 #include <vtkRenderer.h>
 #include <vtkSmartVolumeMapper.h>
 #include <vtkImagePlaneWidget.h>
-
+#include <vtkRenderWindowInteractor.h>
 #include <vtkVolumeProperty.h>
+#include <vtkRenderWindow.h>
 
 VolumeView::VolumeView(QWidget* parent)
 	: QVTKOpenGLNativeWidget(parent) {
+
 	renderer = vtkSmartPointer<vtkRenderer>::New();
-	this->GetRenderWindow()->AddRenderer(renderer);
-}
-
-void VolumeView::setImageData(vtkImageData* image) {
-	imageData = image;
-
-	mapper = vtkSmartPointer<vtkSmartVolumeMapper>::New();
-	mapper->SetInputData(image);
-	mapper->SetCropping(false); // initially off
-
-	auto property = vtkSmartPointer<vtkVolumeProperty>::New();
-	property->ShadeOff();
-	property->SetInterpolationTypeToLinear();
-
-	volume = vtkSmartPointer<vtkVolume>::New();
-	volume->SetMapper(mapper);
-	volume->SetProperty(property);
-
-	renderer->AddVolume(volume);
-	renderer->ResetCamera();
-	this->GetRenderWindow()->Render();
+	renderWindow = vtkSmartPointer<vtkRenderWindow>::New();
+	renderWindow->AddRenderer(renderer);
+	setRenderWindow(renderWindow);
 }
 
 void VolumeView::updateSlicePlanes(int axial, int sagittal, int coronal) {
@@ -57,8 +41,6 @@ void VolumeView::setCroppingRegion(int axialMin, int axialMax,
 	);
 	this->GetRenderWindow()->Render();
 }
-
-#include <vtkRenderWindowInteractor.h>
 
 void VolumeView::setImageData(vtkImageData* image) {
 	imageData = image;
@@ -111,3 +93,8 @@ void VolumeView::toggleSlicePlanes(bool visible) {
 	if (coronalPlane) coronalPlane->SetEnabled(visible);
 	this->GetRenderWindow()->Render();
 }
+
+vtkRenderWindow* VolumeView::GetRenderWindow() const {
+	return QVTKOpenGLNativeWidget::renderWindow();
+}
+

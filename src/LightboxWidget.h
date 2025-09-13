@@ -16,6 +16,7 @@
 #include <QShortcut>
 #include <QMenuBar>
 #include <QAction>
+#include <QPixmap>
 
 class SliceView;
 class VolumeView;
@@ -29,6 +30,7 @@ public:
 	void setAxialSlice(int index);
 	void setSagittalSlice(int index);
 	void setCoronalSlice(int index);
+	QPixmap grabFramebuffer();
 
 public slots:
 	void updateCropping();
