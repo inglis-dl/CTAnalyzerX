@@ -13,13 +13,13 @@
 #include <vtkImagePlaneWidget.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkVolumeProperty.h>
-#include <vtkRenderWindow.h>
+#include <vtkGenericOpenGLRenderWindow.h>
 
 VolumeView::VolumeView(QWidget* parent)
 	: QVTKOpenGLNativeWidget(parent) {
 
 	renderer = vtkSmartPointer<vtkRenderer>::New();
-	renderWindow = vtkSmartPointer<vtkRenderWindow>::New();
+	renderWindow = vtkSmartPointer<vtkGenericOpenGLRenderWindow>::New();
 	renderWindow->AddRenderer(renderer);
 	setRenderWindow(renderWindow);
 }

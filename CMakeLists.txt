@@ -92,7 +92,7 @@ target_link_libraries(${PROJECT_NAME}
         Qt5::Widgets
         ${VTK_LIBRARIES}
         ${ITK_LIBRARIES}
-        vtkDICOM
+        VTK::DICOM
 )
 
 # Optional: Doxygen documentation

@@ -10,7 +10,7 @@ class vtkVolume;
 class vtkRenderer;
 class vtkSmartVolumeMapper;
 class vtkImagePlaneWidget;
-class vtkRenderWindow;
+class vtkGenericOpenGLRenderWindow;
 
 class VolumeView : public QVTKOpenGLNativeWidget {
 	Q_OBJECT
@@ -27,7 +27,7 @@ public:
 
 private:
 	vtkSmartPointer<vtkRenderer> renderer;
-	vtkSmartPointer<vtkRenderWindow> renderWindow;
+	vtkSmartPointer<vtkGenericOpenGLRenderWindow> renderWindow;
 	vtkSmartPointer<vtkVolume> volume;
 	vtkSmartPointer<vtkSmartVolumeMapper> mapper;
 	vtkSmartPointer<vtkImageData> imageData;

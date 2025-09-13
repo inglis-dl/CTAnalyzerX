@@ -1,14 +1,24 @@
 #include "SliceView.h"
-#include <vtkRenderWindow.h>
-#include <vtkRenderer.h>
 #include <QWheelEvent>
 
+#include <vtkRenderWindow.h>
+#include <vtkRenderer.h>
+#include <vtkImageViewer2.h>
+#include <vtkImageData.h>
+#include <vtkRenderWindowInteractor.h>
+#include <vtkGenericOpenGLRenderWindow.h>
 
 SliceView::SliceView(Orientation orientation, QWidget* parent)
 	: QVTKOpenGLNativeWidget(parent), orientation(orientation), currentSlice(0), maxSlice(0) {
 
+	renderer = vtkSmartPointer<vtkRenderer>::New();
+	renderWindow = vtkSmartPointer<vtkGenericOpenGLRenderWindow>::New();
+	renderWindow->AddRenderer(renderer);
+	setRenderWindow(renderWindow);
+
 	viewer = vtkSmartPointer<vtkImageViewer2>::New();
-	setRenderWindow(viewer->GetRenderWindow());
+	viewer->SetRenderWindow(renderWindow);
+	viewer->SetRenderer(renderer);
 }
 
 void SliceView::setImageData(vtkImageData* image) {

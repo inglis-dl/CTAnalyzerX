@@ -4,9 +4,12 @@
 
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkSmartPointer.h>
-#include <vtkImageViewer2.h>
-#include <vtkImageData.h>
-#include <vtkRenderWindowInteractor.h>
+
+class vtkRenderer;
+class vtkImageData;
+class vtkImageViewer2;
+class vtkGenericOpenGLRenderWindow;
+
 
 class SliceView : public QVTKOpenGLNativeWidget {
 	Q_OBJECT
@@ -27,6 +30,8 @@ protected:
 
 private:
 	Orientation orientation;
+	vtkSmartPointer<vtkRenderer> renderer;
+	vtkSmartPointer<vtkGenericOpenGLRenderWindow> renderWindow;
 	vtkSmartPointer<vtkImageViewer2> viewer;
 	int currentSlice;
 	int maxSlice;

@@ -41,6 +41,7 @@ private:
 	void updateRecentFilesMenu();
 	void loadRecentFiles();
 	void saveRecentFiles();
+	void openFile(const QString& filePath);
 	void setupDockConnections();
 
 

@@ -18,17 +18,7 @@ void LightBoxWidget::setImageData(vtkImageData* image) {
 }
 
 void LightBoxWidget::connectSliceSynchronization() {
-	/*
-	connect(axialView, &SliceView::sliceChanged, this, [=](int index) {
-		volumeView->updateSlicePlanes(index, sagittalView->getSliceIndex(), coronalView->getSliceIndex());
-	});
-	connect(sagittalView, &SliceView::sliceChanged, this, [=](int index) {
-		volumeView->updateSlicePlanes(axialView->getSliceIndex(), index, coronalView->getSliceIndex());
-	});
-	connect(coronalView, &SliceView::sliceChanged, this, [=](int index) {
-		volumeView->updateSlicePlanes(axialView->getSliceIndex(), sagittalView->getSliceIndex(), index);
-	});
-	*/
+
 	connect(axialView, &SliceView::sliceChanged, this, [=](int index) {
 		axialLabel->setText(QString("Axial: %1").arg(index));
 		volumeView->updateSlicePlanes(index, sagittalView->getSliceIndex(), coronalView->getSliceIndex());
@@ -46,6 +36,7 @@ void LightBoxWidget::connectSliceSynchronization() {
 }
 
 void LightBoxWidget::setupViews() {
+
 	vtkSmartPointer<vtkImageData> dummyImage = vtkSmartPointer<vtkImageData>::New();
 	axialView = ViewFactory::createSliceView(SliceView::Axial, this);
 	sagittalView = ViewFactory::createSliceView(SliceView::Sagittal, this);
@@ -69,23 +60,6 @@ void LightBoxWidget::setupViews() {
 	layout->addLayout(labelLayout, 3, 0, 1, 2);
 
 	connectSliceSynchronization();
-
-	/*
-	connect(axialView, &SliceView::sliceChanged, this, [=](int index) {
-		axialLabel->setText(QString("Axial: %1").arg(index));
-		volumeView->updateSlicePlanes(index, sagittalView->getSliceIndex(), coronalView->getSliceIndex());
-	});
-
-	connect(sagittalView, &SliceView::sliceChanged, this, [=](int index) {
-		sagittalLabel->setText(QString("Sagittal: %1").arg(index));
-		volumeView->updateSlicePlanes(axialView->getSliceIndex(), index, coronalView->getSliceIndex());
-	});
-
-	connect(coronalView, &SliceView::sliceChanged, this, [=](int index) {
-		coronalLabel->setText(QString("Coronal: %1").arg(index));
-		volumeView->updateSlicePlanes(axialView->getSliceIndex(), sagittalView->getSliceIndex(), index);
-	});
-	*/
 
 	shortcutFullVolume = new QShortcut(QKeySequence("Ctrl+1"), this);
 	shortcutCenterROI = new QShortcut(QKeySequence("Ctrl+2"), this);

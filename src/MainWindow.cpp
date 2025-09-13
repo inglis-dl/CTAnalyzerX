@@ -163,8 +163,10 @@ void MainWindow::updateRecentFilesMenu()
 	ui->menuRecentFiles->clear();
 	for (const QString& filePath : recentFiles) {
 		QAction* action = new QAction(filePath, this);
-		connect(action, &QAction::triggered, this, [=](/*filePath*/) {
-			onActionOpen(); // Replace with openFile(filePath) if implemented
+		connect(action, &QAction::triggered, this, [this, filePath]() {
+			// onActionOpen();
+			// Replace with openFile(filePath) if implemented
+			openFile(filePath);
 		});
 		ui->menuRecentFiles->addAction(action);
 	}
@@ -229,4 +231,40 @@ void MainWindow::setupDockConnections()
 			outputBox->append("Analysis complete.");
 		});
 	}
+}
+
+void MainWindow::setupScreenshotButton() {
+	// Create the button
+	QPushButton* screenshotButton = new QPushButton("Take Screenshot", this);
+
+	// Add it to your layout (assuming you have a central widget with a layout)
+	QWidget* central = this->centralWidget();
+	if (central) {
+		QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(central->layout());
+		if (layout) {
+			layout->addWidget(screenshotButton);
+		}
+		else {
+			// If no layout, create one
+			layout = new QVBoxLayout(central);
+			layout->addWidget(screenshotButton);
+			central->setLayout(layout);
+		}
+	}
+
+	// Connect the button to a slot
+	connect(screenshotButton, &QPushButton::clicked, this, &MainWindow::saveScreenshot);
+}
+
+void MainWindow::openFile(const QString& filePath)
+{
+	// Your file loading logic...
+
+	if (!recentFiles.contains(filePath)) {
+		recentFiles.prepend(filePath);
+		if (recentFiles.size() > 10)
+			recentFiles.removeLast();
+	}
+
+	updateRecentFilesMenu();
 }
