@@ -105,7 +105,7 @@ void MainWindow::onActionZoom()
 
 void MainWindow::saveScreenshot()
 {
-	QImage screenshot = lightBoxWidget->grabFramebuffer();
+	QImage screenshot = lightBoxWidget->grabFramebuffer().toImage();
 	QString filePath = QFileDialog::getSaveFileName(this, "Save Screenshot", "", "PNG Files (*.png);;JPEG Files (*.jpg)");
 	if (!filePath.isEmpty()) {
 		screenshot.save(filePath);
@@ -211,10 +211,10 @@ void MainWindow::setupDockConnections()
 	auto sliceLabel = ui->dockSliceControls->findChild<QLabel*>("lblSlicePosition");
 
 	if (sliceSlider && sliceLabel) {
-		connect(sliceSlider, &QSlider::valueChanged, this, = {
+		connect(sliceSlider, &QSlider::valueChanged, this, [=](int value) {
 			sliceLabel->setText(QString("Slice Position: %1").arg(value));
-		// Optional: sync with LightBoxWidget
-		lightBoxWidget->setAxialSlice(value);
+			// Optional: sync with LightBoxWidget
+			lightBoxWidget->setAxialSlice(value);
 		});
 	}
 
@@ -223,10 +223,10 @@ void MainWindow::setupDockConnections()
 	auto outputBox = ui->dockAnalysisPanel->findChild<QTextEdit*>("txtAnalysisOutput");
 
 	if (runButton && outputBox) {
-		connect(runButton, &QPushButton::clicked, this, = {
+		connect(runButton, &QPushButton::clicked, this, [=]() {
 			outputBox->append("Running analysis...");
-		// Insert actual analysis logic here
-		outputBox->append("Analysis complete.");
+			// Insert actual analysis logic here
+			outputBox->append("Analysis complete.");
 		});
 	}
 }
