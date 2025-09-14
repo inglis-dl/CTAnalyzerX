@@ -3,6 +3,9 @@
 #include <QVTKOpenGLNativeWidget.h>
 #include <QStyleFactory>
 
+#include <vtkAutoInit.h>
+VTK_MODULE_INIT(vtkRenderingVolumeOpenGL2);
+
 int main(int argc, char* argv[]) {
 
 	// needed to ensure appropriate OpenGL context is created for VTK rendering.

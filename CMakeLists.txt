@@ -56,6 +56,8 @@ find_package(VTK 9.3 REQUIRED COMPONENTS
   RenderingOpenGL2 
   InteractionStyle 
   RenderingContextOpenGL2 
+  RenderingVolume
+  RenderingVolumeOpenGL2
   GUISupportQt
 )
 if(NOT DEFINED VTK_QT_VERSION)
@@ -74,7 +76,27 @@ find_package(Qt${VTK_QT_VERSION}
 	REQUIRED COMPONENTS Core Gui Widgets)
 
 # Source files
-file(GLOB_RECURSE SOURCES src/*.cpp src/*.h src/*.ui)
+set(SOURCES
+     src/main.cpp
+     src/MainWindow.cpp
+     src/MainWindow.h
+     src/LightboxWidget.cpp
+     src/LightboxWidget.h
+     src/ImageLoader.cpp
+     src/ImageLoader.h
+     src/SliceView.cpp
+     src/SliceView.h
+     src/ViewFactory.cpp 
+     src/ViewFactory.h
+     src/VolumeView.cpp 
+     src/VolumeView.h
+     src/VolumeControlsWidget.cpp 
+     src/VolumeControlsWidget.h
+     src/RangeSlider.cpp
+     src/RangeSlider.h
+#     src/vtkVolumeImageViewer.cpp
+#     src/vtkVolumeImageViewer.h
+)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
@@ -87,9 +109,9 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
-        Qt5::Core
-        Qt5::Gui
-        Qt5::Widgets
+        Qt${VTK_QT_VERSION}::Core
+        Qt${VTK_QT_VERSION}::Gui
+        Qt${VTK_QT_VERSION}::Widgets
         ${VTK_LIBRARIES}
         ${ITK_LIBRARIES}
         VTK::DICOM
@@ -122,7 +144,6 @@ set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
 set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "CTAnalyzerX")
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE.txt")
 set(CPACK_PACKAGE_EXECUTABLES "${PROJECT_NAME}" "CTAnalyzerX")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_GENERATOR "NSIS")

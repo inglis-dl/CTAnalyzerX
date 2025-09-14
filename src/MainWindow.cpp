@@ -6,8 +6,14 @@
 #include <QSettings>
 #include <QKeyEvent>
 #include <QImage>
-#include <vtkSmartPointer.h>
-#include <vtkImageData.h>
+#include <QSlider>
+#include <QLabel>
+#include <QPushButton>
+#include <QTextEdit>
+
+#include "LightBoxWidget.h"
+#include "ImageLoader.h"
+
 #include <itkImage.h>
 #include <itkImageSeriesReader.h>
 #include <itkGDCMImageIO.h>
@@ -21,20 +27,25 @@ MainWindow::MainWindow(QWidget* parent)
 	: QMainWindow(parent), ui(new Ui::MainWindow)
 {
 	ui->setupUi(this);
+
+	// Create and set LightBoxWidget as the central widget
+	//lightBoxWidget = new LightBoxWidget(this);
+	//setCentralWidget(lightBoxWidget);
+
+	// Connect menu actions to slots
+	connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::onActionOpen);
+	connect(ui->actionSave, &QAction::triggered, this, &MainWindow::onActionSave);
+	connect(ui->actionExit, &QAction::triggered, this, &MainWindow::onActionExit);
+	connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::onActionAbout);
+	connect(ui->actionScreenshot, &QAction::triggered, this, &MainWindow::saveScreenshot);
+
+	imageLoader = vtkSmartPointer<ImageLoader>::New();
+
+	setupPanelConnections();
+
+	//ui->lightBoxWidget->connectVolumeControlsWidget(ui->volumeControlsWidget);
+
 	loadRecentFiles();
-
-	lightBoxWidget = new LightBoxWidget(this);
-	setCentralWidget(lightBoxWidget);
-
-	setupVolumeRenderingToggle();
-	setupViewModeToggle();
-	setupScreenshotButton();
-
-	addDockWidget(Qt::LeftDockWidgetArea, ui->dockFileBrowser);
-	addDockWidget(Qt::RightDockWidgetArea, ui->dockSliceControls);
-	addDockWidget(Qt::BottomDockWidgetArea, ui->dockAnalysisPanel);
-
-	setupDockConnections();
 }
 
 MainWindow::~MainWindow()
@@ -46,7 +57,15 @@ MainWindow::~MainWindow()
 void MainWindow::loadVolume(vtkSmartPointer<vtkImageData> imageData)
 {
 	currentImageData = imageData;
-	lightBoxWidget->setImageData(imageData);
+	if (!imageData || imageData->GetDimensions()[0] <= 1 ||
+		imageData->GetDimensions()[1] <= 1 ||
+		imageData->GetDimensions()[2] <= 1) {
+		// If image is invalid, set default image in LightBoxWidget
+		ui->lightBoxWidget->setDefaultImage();
+	}
+	else {
+		ui->lightBoxWidget->setImageData(imageData);
+	}
 }
 
 void MainWindow::onActionOpen()
@@ -57,34 +76,15 @@ void MainWindow::onActionOpen()
 	vtkSmartPointer<vtkImageData> vtkImage;
 
 	try {
-		if (fileName.endsWith(".isq")) {
-			auto reader = itk::ImageFileReader<ImageType>::New();
-			reader->SetFileName(fileName.toStdString());
-			reader->Update();
-
-			auto connector = itk::ImageToVTKImageFilter<ImageType>::New();
-			connector->SetInput(reader->GetOutput());
-			connector->Update();
-
-			vtkImage = connector->GetOutput();
-		}
-		else {
-			auto namesGenerator = itk::GDCMSeriesFileNames::New();
-			namesGenerator->SetDirectory(fileName.toStdString());
-
-			auto reader = itk::ImageSeriesReader<ImageType>::New();
-			reader->SetImageIO(itk::GDCMImageIO::New());
-			reader->SetFileNames(namesGenerator->GetInputFileNames());
-			reader->Update();
-
-			auto connector = itk::ImageToVTKImageFilter<ImageType>::New();
-			connector->SetInput(reader->GetOutput());
-			connector->Update();
-
-			vtkImage = connector->GetOutput();
+		imageLoader->SetInputPath(fileName);
+		imageLoader->Update();
+		vtkImage = imageLoader->GetOutput();
+		if (!vtkImage) {
+			QMessageBox::critical(this, "Error", "Failed to load volume: Unsupported or invalid file.");
+			return;
 		}
 	}
-	catch (itk::ExceptionObject& ex) {
+	catch (const std::exception& ex) {
 		QMessageBox::critical(this, "Error", QString("Failed to load volume: %1").arg(ex.what()));
 		return;
 	}
@@ -98,55 +98,41 @@ void MainWindow::onActionSave()
 	QMessageBox::information(this, tr("Save"), tr("Save action triggered."));
 }
 
-void MainWindow::onActionZoom()
+void MainWindow::onActionExit()
 {
-	QMessageBox::information(this, tr("Zoom"), tr("Zoom action triggered."));
+	close();
 }
 
-void MainWindow::saveScreenshot()
+void MainWindow::onActionAbout()
 {
-	QImage screenshot = lightBoxWidget->grabFramebuffer().toImage();
-	QString filePath = QFileDialog::getSaveFileName(this, "Save Screenshot", "", "PNG Files (*.png);;JPEG Files (*.jpg)");
-	if (!filePath.isEmpty()) {
-		screenshot.save(filePath);
-		QMessageBox::information(this, "Screenshot Saved", "Saved to:\n" + filePath);
+	QMessageBox::about(this, tr("About CTAnalyzerX"), tr("3D volume image visualization tool for DICOM and Scanco .isq files."));
+}
+
+void MainWindow::setupPanelConnections()
+{
+	// Analysis Panel: Run Analysis button and output box
+	auto runButton = ui->btnRunAnalysis;
+	auto outputBox = ui->txtAnalysisOutput;
+
+	if (runButton && outputBox) {
+		connect(runButton, &QPushButton::clicked, this, [=]() {
+			outputBox->append("Running analysis...");
+			// Insert actual analysis logic here
+			outputBox->append("Analysis complete.");
+		});
 	}
-}
 
-void MainWindow::updateOpacity(int value)
-{
-	// Optional: delegate to LightBoxWidget if needed
-}
+	// control the volume cropping planes in the volumeview
+	connect(ui->volumeControlsWidget, &VolumeControlsWidget::croppingRegionChanged,
+		ui->lightBoxWidget->getVolumeView(), &VolumeView::setCroppingRegion);
 
-void MainWindow::updateColor(int value)
-{
-	// Optional: delegate to LightBoxWidget if needed
-}
+	// update the range sliders when the image extents change
+	connect(ui->lightBoxWidget->getVolumeView(), &VolumeView::imageExtentsChanged,
+		ui->volumeControlsWidget, &VolumeControlsWidget::setRangeSliders);
 
-void MainWindow::setupVolumeRenderingToggle()
-{
-	QPushButton* toggleButton = new QPushButton("Toggle Volume Rendering");
-	connect(toggleButton, &QPushButton::clicked, this, &MainWindow::onActionZoom); // Replace with actual toggle if needed
-	QWidget* dockWidget = ui->dockAnalysisPanel->widget();
-	QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(dockWidget->layout());
-	if (!layout) {
-		layout = new QVBoxLayout(dockWidget);
-		dockWidget->setLayout(layout);
-	}
-	layout->addWidget(toggleButton);
-}
-
-void MainWindow::setupViewModeToggle()
-{
-	QPushButton* toggleButton = new QPushButton("Toggle View Mode");
-	connect(toggleButton, &QPushButton::clicked, this, &MainWindow::onActionSave); // Replace with actual toggle if needed
-	QWidget* dockWidget = ui->dockAnalysisPanel->widget();
-	QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(dockWidget->layout());
-	if (!layout) {
-		layout = new QVBoxLayout(dockWidget);
-		dockWidget->setLayout(layout);
-	}
-	layout->addWidget(toggleButton);
+	// toggle volume slice planes
+	connect(ui->volumeControlsWidget, &VolumeControlsWidget::slicePlaneToggle,
+		ui->lightBoxWidget->getVolumeView(), &VolumeView::setSlicePlanesVisible);
 }
 
 void MainWindow::addToRecentFiles(const QString& filePath)
@@ -160,20 +146,52 @@ void MainWindow::addToRecentFiles(const QString& filePath)
 
 void MainWindow::updateRecentFilesMenu()
 {
-	ui->menuRecentFiles->clear();
+	// Remove old recent file actions (tagged with a property)
+	QList<QAction*> actions = ui->menuFile->actions();
+	for (QAction* action : actions) {
+		if (action->property("isRecentFile").toBool() || action->objectName() == "actionClearRecentFiles") {
+			ui->menuFile->removeAction(action);
+			delete action;
+		}
+	}
+
+	// Find the separator after which to insert recent files (assume it's after actionScreenshot)
+	QAction* insertAfter = ui->actionScreenshot;
+	int insertIndex = ui->menuFile->actions().indexOf(insertAfter) + 1;
+
+	// Insert a separator if not present
+	QAction* sep = nullptr;
+	if (insertIndex < ui->menuFile->actions().size() && !ui->menuFile->actions()[insertIndex]->isSeparator()) {
+		sep = new QAction(this);
+		sep->setSeparator(true);
+		ui->menuFile->insertAction(ui->menuFile->actions().value(insertIndex), sep);
+		++insertIndex;
+	}
+	else if (insertIndex < ui->menuFile->actions().size()) {
+		sep = ui->menuFile->actions()[insertIndex];
+		++insertIndex;
+	}
+
+	// Add up to 10 recent file actions
+	int count = 0;
 	for (const QString& filePath : recentFiles) {
+		if (count++ >= 10) break;
 		QAction* action = new QAction(filePath, this);
+		action->setProperty("isRecentFile", true);
 		connect(action, &QAction::triggered, this, [this, filePath]() {
-			// onActionOpen();
-			// Replace with openFile(filePath) if implemented
 			openFile(filePath);
 		});
-		ui->menuRecentFiles->addAction(action);
+		ui->menuFile->insertAction(ui->menuFile->actions().value(insertIndex), action);
+		++insertIndex;
 	}
-	ui->menuRecentFiles->addSeparator();
-	QAction* clearAction = new QAction("Clear Recent Files", this);
-	connect(clearAction, &QAction::triggered, this, &MainWindow::clearRecentFiles);
-	ui->menuRecentFiles->addAction(clearAction);
+
+	// Add "Clear Recent Files" action if there are any recent files
+	if (!recentFiles.isEmpty()) {
+		QAction* clearAction = new QAction("Clear Recent Files", this);
+		clearAction->setObjectName("actionClearRecentFiles");
+		connect(clearAction, &QAction::triggered, this, &MainWindow::clearRecentFiles);
+		ui->menuFile->insertAction(ui->menuFile->actions().value(insertIndex), clearAction);
+	}
 }
 
 void MainWindow::loadRecentFiles()
@@ -201,61 +219,6 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
 	QMainWindow::keyPressEvent(event);
 }
 
-void MainWindow::setupDockConnections()
-{
-	// File Browser: Browse Files button
-	if (auto browseButton = ui->dockFileBrowser->findChild<QPushButton*>("btnBrowseFiles")) {
-		connect(browseButton, &QPushButton::clicked, this, &MainWindow::onActionOpen);
-	}
-
-	// Slice Controls: Slider and Label
-	auto sliceSlider = ui->dockSliceControls->findChild<QSlider*>("sliderSlicePosition");
-	auto sliceLabel = ui->dockSliceControls->findChild<QLabel*>("lblSlicePosition");
-
-	if (sliceSlider && sliceLabel) {
-		connect(sliceSlider, &QSlider::valueChanged, this, [=](int value) {
-			sliceLabel->setText(QString("Slice Position: %1").arg(value));
-			// Optional: sync with LightBoxWidget
-			lightBoxWidget->setAxialSlice(value);
-		});
-	}
-
-	// Analysis Panel: Run Analysis button and output box
-	auto runButton = ui->dockAnalysisPanel->findChild<QPushButton*>("btnRunAnalysis");
-	auto outputBox = ui->dockAnalysisPanel->findChild<QTextEdit*>("txtAnalysisOutput");
-
-	if (runButton && outputBox) {
-		connect(runButton, &QPushButton::clicked, this, [=]() {
-			outputBox->append("Running analysis...");
-			// Insert actual analysis logic here
-			outputBox->append("Analysis complete.");
-		});
-	}
-}
-
-void MainWindow::setupScreenshotButton() {
-	// Create the button
-	QPushButton* screenshotButton = new QPushButton("Take Screenshot", this);
-
-	// Add it to your layout (assuming you have a central widget with a layout)
-	QWidget* central = this->centralWidget();
-	if (central) {
-		QVBoxLayout* layout = qobject_cast<QVBoxLayout*>(central->layout());
-		if (layout) {
-			layout->addWidget(screenshotButton);
-		}
-		else {
-			// If no layout, create one
-			layout = new QVBoxLayout(central);
-			layout->addWidget(screenshotButton);
-			central->setLayout(layout);
-		}
-	}
-
-	// Connect the button to a slot
-	connect(screenshotButton, &QPushButton::clicked, this, &MainWindow::saveScreenshot);
-}
-
 void MainWindow::openFile(const QString& filePath)
 {
 	// Your file loading logic...
@@ -267,4 +230,14 @@ void MainWindow::openFile(const QString& filePath)
 	}
 
 	updateRecentFilesMenu();
+}
+
+void MainWindow::saveScreenshot()
+{
+	QImage screenshot = this->grab().toImage();
+	QString filePath = QFileDialog::getSaveFileName(this, "Save Screenshot", "", "PNG Files (*.png);;JPEG Files (*.jpg)");
+	if (!filePath.isEmpty()) {
+		screenshot.save(filePath);
+		QMessageBox::information(this, "Screenshot Saved", "Saved to:\n" + filePath);
+	}
 }

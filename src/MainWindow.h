@@ -4,51 +4,47 @@
 #include <QMainWindow>
 #include <QStringList>
 #include <vtkSmartPointer.h>
-#include <vtkImageData.h>
 
-#include "LightBoxWidget.h"
+namespace Ui {
+	class MainWindow;
+}
 
-QT_BEGIN_NAMESPACE
-namespace Ui { class MainWindow; }
-QT_END_NAMESPACE
+class vtkImageData;
+class ImageLoader;
 
-class MainWindow : public QMainWindow {
+class MainWindow : public QMainWindow
+{
 	Q_OBJECT
 
 public:
 	explicit MainWindow(QWidget* parent = nullptr);
 	~MainWindow();
 
+protected:
+	void keyPressEvent(QKeyEvent* event) override;
+
 private slots:
 	void onActionOpen();
 	void onActionSave();
-	void onActionZoom();
+	void onActionExit();
+	void onActionAbout();
 	void saveScreenshot();
-	void updateOpacity(int value);
-	void updateColor(int value);
 	void clearRecentFiles();
 
 private:
-	Ui::MainWindow* ui;
-	LightBoxWidget* lightBoxWidget;
-	vtkSmartPointer<vtkImageData> currentImageData;
-
+	void setupPanelConnections();
 	void loadVolume(vtkSmartPointer<vtkImageData> imageData);
-	void setupVolumeRenderingToggle();
-	void setupViewModeToggle();
-	void setupScreenshotButton();
 	void addToRecentFiles(const QString& filePath);
 	void updateRecentFilesMenu();
 	void loadRecentFiles();
 	void saveRecentFiles();
 	void openFile(const QString& filePath);
-	void setupDockConnections();
 
-
-protected:
-	void keyPressEvent(QKeyEvent* event) override;
-
+	Ui::MainWindow* ui;
 	QStringList recentFiles;
+	vtkSmartPointer<vtkImageData> currentImageData;
+	vtkSmartPointer<ImageLoader> imageLoader = nullptr;
+	//LightBoxWidget* lightBoxWidget; // Assuming you have this elsewhere
 };
 
 #endif // MAINWINDOW_H
