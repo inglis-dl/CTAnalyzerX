@@ -75,6 +75,11 @@ find_package(Qt${VTK_QT_VERSION}
     CONFIG 
 	REQUIRED COMPONENTS Core Gui Widgets)
 
+# Add the Qt resource file
+set(CTANALYZERX_RESOURCES
+    resources/resources.qrc
+)
+
 # Source files
 set(SOURCES
      src/main.cpp
@@ -96,6 +101,7 @@ set(SOURCES
      src/RangeSlider.h
 #     src/vtkVolumeImageViewer.cpp
 #     src/vtkVolumeImageViewer.h
+    ${CTANALYZERX_RESOURCES}
 )
 
 set(CMAKE_AUTOMOC ON)

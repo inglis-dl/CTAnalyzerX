@@ -25,7 +25,6 @@ VolumeView::VolumeView(QWidget* parent)
 	shiftScale->ClampOverflowOn();
 
 	mapper = vtkSmartPointer<vtkGPUVolumeRayCastMapper>::New();
-	//mapper->SetCropping(false);
 
 	property = vtkSmartPointer<vtkVolumeProperty>::New();
 	property->ShadeOff();
@@ -165,7 +164,8 @@ void VolumeView::setImageData(vtkImageData* image) {
 	coronalPlane->SetSliceIndex(image->GetExtent()[3] / 2);
 	coronalPlane->SetEnabled(slicePlanesVisible);
 
-	int* extent = image->GetExtent();
+	int extent[6];
+	image->GetExtent(extent);
 	emit imageExtentsChanged(
 		extent[4], extent[5],
 		extent[0], extent[1],

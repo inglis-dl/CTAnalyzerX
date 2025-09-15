@@ -1,4 +1,5 @@
 #include "VolumeControlsWidget.h"
+#include <QDebug>
 
 VolumeControlsWidget::VolumeControlsWidget(QWidget* parent)
 	: QFrame(parent)
@@ -14,11 +15,31 @@ VolumeControlsWidget::VolumeControlsWidget(QWidget* parent)
 		);
 		};
 
-	connect(ui.axialRangeSlider, &RangeSlider::valuesChanged, this, [emitCropping](int, int) { emitCropping(); });
-	connect(ui.saggitalRangeSlider, &RangeSlider::valuesChanged, this, [emitCropping](int, int) { emitCropping(); });
-	connect(ui.coronalRangeSlider, &RangeSlider::valuesChanged, this, [emitCropping](int, int) { emitCropping(); });
+	connect(ui.axialRangeSlider, &RangeSlider::valuesChanged, this, [this, emitCropping](int min, int max) {
+		updateAxialLabel(min, max);
+		emitCropping();
+	});
+	connect(ui.saggitalRangeSlider, &RangeSlider::valuesChanged, this, [this, emitCropping](int min, int max) {
+		updateSaggitalLabel(min, max);
+		emitCropping();
+	});
+	connect(ui.coronalRangeSlider, &RangeSlider::valuesChanged, this, [this, emitCropping](int min, int max) {
+		updateCoronalLabel(min, max);
+		emitCropping();
+	});
 
-	// Preset buttons
+	// Also update labels when the range changes (e.g., after setRangeSliders)
+	connect(ui.axialRangeSlider, &RangeSlider::rangeChanged, this, [this](int min, int max) {
+		updateAxialLabel(min, max);
+	});
+	connect(ui.saggitalRangeSlider, &RangeSlider::rangeChanged, this, [this](int min, int max) {
+		updateSaggitalLabel(min, max);
+	});
+	connect(ui.coronalRangeSlider, &RangeSlider::rangeChanged, this, [this](int min, int max) {
+		updateCoronalLabel(min, max);
+	});
+
+	// Preset buttons (unchanged)
 	connect(ui.presetFullVolume, &QPushButton::clicked, this, [this, emitCropping]() {
 		ui.axialRangeSlider->setValues(ui.axialRangeSlider->minimum(), ui.axialRangeSlider->maximum());
 		ui.saggitalRangeSlider->setValues(ui.saggitalRangeSlider->minimum(), ui.saggitalRangeSlider->maximum());
@@ -51,7 +72,6 @@ VolumeControlsWidget::VolumeControlsWidget(QWidget* parent)
 		emitCropping();
 	});
 
-	// Example: connect slice plane toggle
 	connect(ui.slicePlaneCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
 		emit slicePlaneToggle(checked);
 	});
@@ -62,12 +82,33 @@ void VolumeControlsWidget::setRangeSliders(int axialMin, int axialMax, int sagit
 	ui.axialRangeSlider->setMinimum(axialMin);
 	ui.axialRangeSlider->setMaximum(axialMax);
 	ui.axialRangeSlider->setValues(axialMin, axialMax);
+	updateAxialLabel(axialMin, axialMax);
 
 	ui.saggitalRangeSlider->setMinimum(sagittalMin);
 	ui.saggitalRangeSlider->setMaximum(sagittalMax);
 	ui.saggitalRangeSlider->setValues(sagittalMin, sagittalMax);
+	updateSaggitalLabel(sagittalMin, sagittalMax);
 
 	ui.coronalRangeSlider->setMinimum(coronalMin);
 	ui.coronalRangeSlider->setMaximum(coronalMax);
 	ui.coronalRangeSlider->setValues(coronalMin, coronalMax);
+	updateCoronalLabel(coronalMin, coronalMax);
+}
+
+void VolumeControlsWidget::updateAxialLabel(int min, int max)
+{
+	ui.axialMinLabel->setText(QString("%1").arg(min));
+	ui.axialMaxLabel->setText(QString("%1").arg(max));
+}
+
+void VolumeControlsWidget::updateSaggitalLabel(int min, int max)
+{
+	ui.saggitalMinLabel->setText(QString("%1").arg(min));
+	ui.saggitalMaxLabel->setText(QString("%1").arg(max));
+}
+
+void VolumeControlsWidget::updateCoronalLabel(int min, int max)
+{
+	ui.coronalMinLabel->setText(QString("%1").arg(min));
+	ui.coronalMaxLabel->setText(QString("%1").arg(max));
 }

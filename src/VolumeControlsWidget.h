@@ -39,6 +39,11 @@ signals:
 							  int coronalMin, int coronalMax);
 	void slicePlaneToggle(bool visible);
 
+private slots:
+	void updateAxialLabel(int min, int max);
+	void updateSaggitalLabel(int min, int max);
+	void updateCoronalLabel(int min, int max);
+
 private:
 	Ui::VolumeControlsWidget ui;
 };

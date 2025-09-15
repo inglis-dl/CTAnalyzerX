@@ -11,7 +11,6 @@
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkInteractorStyleImage.h>
 #include <vtkCamera.h>
-
 #include <algorithm> // for std::clamp
 
 SliceView::SliceView(QWidget* parent, Orientation orientation)
