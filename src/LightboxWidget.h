@@ -15,14 +15,14 @@ public:
 	void setImageData(vtkImageData* image);
 	void setDefaultImage();
 
-	void setAxialSlice(int index);
-	void setSagittalSlice(int index);
-	void setCoronalSlice(int index);
+	void setYZSlice(int index);
+	void setXZSlice(int index);
+	void setXYSlice(int index);
 	QPixmap grabFramebuffer();
 
-	SliceView* getAxialView() const;
-	SliceView* getSagittalView() const;
-	SliceView* getCoronalView() const;
+	SliceView* getYZView() const;
+	SliceView* getXZView() const;
+	SliceView* getXYView() const;
 	VolumeView* getVolumeView() const;
 
 private:

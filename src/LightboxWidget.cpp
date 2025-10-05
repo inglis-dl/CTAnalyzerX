@@ -10,6 +10,10 @@ LightBoxWidget::LightBoxWidget(QWidget* parent)
 {
 	ui.setupUi(this);
 
+	ui.YZView->setOrientationToYZ();
+	ui.XZView->setOrientationToXZ();
+	ui.XYView->setOrientationToXY();
+
 	setDefaultImage();
 	connectSliceSynchronization();
 }
@@ -19,60 +23,51 @@ void LightBoxWidget::setDefaultImage() {
 	sinusoid->SetPeriod(32);
 	sinusoid->SetPhase(0);
 	sinusoid->SetAmplitude(255);
-	sinusoid->SetWholeExtent(0, 127, 0, 127, 0, 31);
+	sinusoid->SetWholeExtent(0, 63, 0, 127, 0, 31);
 	sinusoid->SetDirection(0.5, -0.5, 1.0 / std::sqrt(2.0));
 	sinusoid->Update();
 
 	vtkImageData* defaultImage = sinusoid->GetOutput();
-	ui.axialView->setImageData(defaultImage);
-	ui.axialView->setAxialOrientation();
-
-	ui.sagittalView->setImageData(defaultImage);
-	ui.sagittalView->setSagittalOrientation();
-
-	ui.coronalView->setImageData(defaultImage);
-	ui.coronalView->setCoronalOrientation();
-
-	ui.volumeView->setImageData(defaultImage);
+	setImageData(defaultImage);
 }
 
 void LightBoxWidget::setImageData(vtkImageData* image) {
-	ui.axialView->setImageData(image);
-	ui.sagittalView->setImageData(image);
-	ui.coronalView->setImageData(image);
+	ui.YZView->setImageData(image);
+	ui.XZView->setImageData(image);
+	ui.XYView->setImageData(image);
 	ui.volumeView->setImageData(image);
 }
 
-void LightBoxWidget::setAxialSlice(int index) {
-	ui.axialView->setSliceIndex(index);
+void LightBoxWidget::setYZSlice(int index) {
+	ui.YZView->setSliceIndex(index);
 }
 
-void LightBoxWidget::setSagittalSlice(int index) {
-	ui.sagittalView->setSliceIndex(index);
+void LightBoxWidget::setXZSlice(int index) {
+	ui.XZView->setSliceIndex(index);
 }
 
-void LightBoxWidget::setCoronalSlice(int index) {
-	ui.coronalView->setSliceIndex(index);
+void LightBoxWidget::setXYSlice(int index) {
+	ui.XYView->setSliceIndex(index);
 }
 
 QPixmap LightBoxWidget::grabFramebuffer() {
 	return this->grab();
 }
 
-SliceView* LightBoxWidget::getAxialView() const { return ui.axialView; }
-SliceView* LightBoxWidget::getSagittalView() const { return ui.sagittalView; }
-SliceView* LightBoxWidget::getCoronalView() const { return ui.coronalView; }
+SliceView* LightBoxWidget::getYZView() const { return ui.YZView; }
+SliceView* LightBoxWidget::getXZView() const { return ui.XZView; }
+SliceView* LightBoxWidget::getXYView() const { return ui.XYView; }
 VolumeView* LightBoxWidget::getVolumeView() const { return ui.volumeView; }
 
 void LightBoxWidget::connectSliceSynchronization() {
-	connect(ui.axialView, &SliceView::sliceChanged, this, [this](int index) {
-		ui.volumeView->updateSlicePlanes(index, ui.sagittalView->getSliceIndex(), ui.coronalView->getSliceIndex());
+	connect(ui.YZView, &SliceView::sliceChanged, this, [this](int index) {
+		ui.volumeView->updateSlicePlanes(index, ui.XZView->getSliceIndex(), ui.XYView->getSliceIndex());
 	});
-	connect(ui.sagittalView, &SliceView::sliceChanged, this, [this](int index) {
-		ui.volumeView->updateSlicePlanes(ui.axialView->getSliceIndex(), index, ui.coronalView->getSliceIndex());
+	connect(ui.XZView, &SliceView::sliceChanged, this, [this](int index) {
+		ui.volumeView->updateSlicePlanes(ui.YZView->getSliceIndex(), index, ui.XYView->getSliceIndex());
 	});
-	connect(ui.coronalView, &SliceView::sliceChanged, this, [this](int index) {
-		ui.volumeView->updateSlicePlanes(ui.axialView->getSliceIndex(), ui.sagittalView->getSliceIndex(), index);
+	connect(ui.XYView, &SliceView::sliceChanged, this, [this](int index) {
+		ui.volumeView->updateSlicePlanes(ui.YZView->getSliceIndex(), ui.XZView->getSliceIndex(), index);
 	});
 }
 

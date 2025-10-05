@@ -15,13 +15,13 @@
     <widget class="VolumeView" name="volumeView" native="true"/>
    </item>
    <item row="0" column="0">
-    <widget class="SliceView" name="axialView" native="true"/>
+    <widget class="SliceView" name="YZView" native="true"/>
    </item>
    <item row="1" column="0">
-    <widget class="SliceView" name="coronalView" native="true"/>
+    <widget class="SliceView" name="XYView" native="true"/>
    </item>
    <item row="0" column="1">
-    <widget class="SliceView" name="sagittalView" native="true"/>
+    <widget class="SliceView" name="XZView" native="true"/>
    </item>
   </layout>
  </widget>

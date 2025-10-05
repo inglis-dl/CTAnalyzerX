@@ -20,6 +20,12 @@ VolumeView::VolumeView(QWidget* parent)
 	renderWindow->AddRenderer(renderer);
 	ui.renderArea->setRenderWindow(renderWindow);
 
+	renderer->GradientBackgroundOn();
+	double color[3] = { 0., 0., 0. };
+	renderer->SetBackground(color);  // black (lower part of gradient)
+	color[2] = 1.;
+	renderer->SetBackground2(color);  // blue (upper part of gradient)
+
 	shiftScale = vtkSmartPointer<vtkImageShiftScale>::New();
 	shiftScale->SetOutputScalarTypeToUnsignedShort();
 	shiftScale->ClampOverflowOn();

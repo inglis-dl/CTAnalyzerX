@@ -1,58 +1,94 @@
 #ifndef SLICEVIEW_H
 #define SLICEVIEW_H
 
-#include <QWidget>
-#include "ui_SliceView.h"
-
+#include <QFrame>
 #include <vtkSmartPointer.h>
+#include <vtkImageData.h>
+#include <vtkRenderer.h>
+#include <vtkRenderWindow.h>
+#include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkInteractorStyleImage.h>
+#include <vtkImageMapToWindowLevelColors.h>
+#include <vtkImageActor.h>
+#include <vtkImageSliceMapper.h>
+#include <vtkImageShiftScale.h>
 
-class vtkRenderer;
-class vtkImageData;
-class vtkImageViewer2;
-class vtkGenericOpenGLRenderWindow;
-class QVTKOpenGLNativeWidget;
+class vtkEventQtSlotConnect;
 
-class SliceView : public QFrame {
+
+namespace Ui { class SliceView; }
+
+class SliceView : public QFrame
+{
 	Q_OBJECT;
 	Q_PROPERTY(Orientation orientation READ getOrientation WRITE setOrientation)
+		Q_PROPERTY(Interpolation interpolation READ getInterpolation WRITE setInterpolation)
 
 public:
-	enum Orientation { Axial, Sagittal, Coronal };
+	enum Orientation { Udefined = -1, YZ, XZ, XY };
 	Q_ENUM(Orientation);
 
-	explicit SliceView(QWidget* parent = nullptr, Orientation orientation = Axial);
+	enum Interpolation { Nearest, Linear, Cubic };
+	Q_ENUM(Interpolation);
+
+	explicit SliceView(QWidget* parent = nullptr, Orientation orientation = XY);
+	~SliceView();
+
 	void setImageData(vtkImageData* image);
 	void setSliceIndex(int index);
 	int getSliceIndex() const;
+
+	void setOrientation(Orientation newOrientation);
+	Orientation getOrientation() const;
+	void setOrientationToYZ();
+	void setOrientationToXZ();
+	void setOrientationToXY();
+
+	void setInterpolation(Interpolation newInterpolation);
+	Interpolation getInterpolation() const;
+	void setInterpolationToNearest();
+	void setInterpolationToLinear();
+	void setInterpolationToCubic();
+
 	vtkRenderWindow* GetRenderWindow() const;
 
-	// Property accessors
-	Orientation getOrientation() const;
-	void setOrientation(Orientation orientation);
-	void resetCameraForOrientation();
+	int getMinSliceIndex() const;
+	int getMaxSliceIndex() const;
 
-	void setAxialOrientation();
-	void setSagittalOrientation();
-	void setCoronalOrientation();
+public slots:
+	void trapSpin(vtkObject*);
 
 signals:
-	void sliceChanged(int index);
+	void sliceChanged(int);
+	void orientationChanged(Orientation);
+	void interpolationChanged(Interpolation);
 
-protected:
-	void wheelEvent(QWheelEvent* event) override;
 
 private:
+	void updateCamera();
+	void updateSlice();
+	void updateSliceRange();
+
+	Ui::SliceView* ui = nullptr;
 	Orientation orientation;
-	QVTKOpenGLNativeWidget* openGLNativeWidget;
+	Interpolation interpolation = Linear;
+	int currentSlice = 0;
+	int minSlice = 0;
+	int maxSlice = 0;
+	bool imageInitialized = false;
+
+	vtkSmartPointer<vtkImageData> imageData;
 	vtkSmartPointer<vtkRenderer> renderer;
 	vtkSmartPointer<vtkGenericOpenGLRenderWindow> renderWindow;
-	vtkSmartPointer<vtkImageViewer2> viewer;
+	vtkSmartPointer<vtkInteractorStyleImage> interactorStyle;
 
-	int currentSlice;
-	int maxSlice;
-	void updateSlice();
+	vtkSmartPointer<vtkImageMapToWindowLevelColors> windowLevelFilter;
+	vtkSmartPointer<vtkImageShiftScale> shiftScaleFilter;
+	vtkSmartPointer<vtkImageSliceMapper> sliceMapper;
+	vtkSmartPointer<vtkImageSlice> imageSlice;
+	vtkSmartPointer<vtkImageProperty> imageProperty;
 
-	Ui::SliceView ui;
+	vtkSmartPointer<vtkEventQtSlotConnect> qvtkConnection;
 };
 
 #endif // SLICEVIEW_H
