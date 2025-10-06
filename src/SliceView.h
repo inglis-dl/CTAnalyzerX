@@ -52,6 +52,8 @@ public:
 
 	vtkRenderWindow* GetRenderWindow() const;
 
+	vtkImageSlice* getImageSlice() { return imageSlice; }
+
 	int getMinSliceIndex() const;
 	int getMaxSliceIndex() const;
 

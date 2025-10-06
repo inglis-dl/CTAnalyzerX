@@ -39,6 +39,19 @@ VolumeView::VolumeView(QWidget* parent)
 	volume = vtkSmartPointer<vtkVolume>::New();
 	volume->SetMapper(mapper);
 	volume->SetProperty(property);
+
+	auto interactor = renderWindow->GetInteractor();
+
+	yzPlane = vtkSmartPointer<vtkImagePlaneWidget>::New();
+	yzPlane->SetInteractor(interactor);
+
+	xzPlane = vtkSmartPointer<vtkImagePlaneWidget>::New();
+	xzPlane->SetInteractor(interactor);
+
+	xyPlane = vtkSmartPointer<vtkImagePlaneWidget>::New();
+	xyPlane->SetInteractor(interactor);
+
+	imageInitialized = false;
 }
 
 bool VolumeView::getSlicePlanesVisible() const {
@@ -46,8 +59,8 @@ bool VolumeView::getSlicePlanesVisible() const {
 }
 
 void VolumeView::setSlicePlanesVisible(bool visible) {
-	if (slicePlanesVisible == visible)
-		return;
+
+	bool modified = (slicePlanesVisible != visible);
 	slicePlanesVisible = visible;
 
 	// Mutually exclusive: show either volume or planes, not both
@@ -57,21 +70,26 @@ void VolumeView::setSlicePlanesVisible(bool visible) {
 			renderer->RemoveVolume(volume);
 		}
 		// Show planes
-		if (axialPlane) axialPlane->SetEnabled(true);
-		if (sagittalPlane) sagittalPlane->SetEnabled(true);
-		if (coronalPlane) coronalPlane->SetEnabled(true);
+		if (yzPlane) yzPlane->SetEnabled(true);
+		if (xzPlane) xzPlane->SetEnabled(true);
+		if (xyPlane) xyPlane->SetEnabled(true);
+
+		yzPlane->InteractionOff();
+		xzPlane->InteractionOff();
+		xyPlane->InteractionOff();
 	}
 	else {
 		// Hide planes
-		if (axialPlane) axialPlane->SetEnabled(false);
-		if (sagittalPlane) sagittalPlane->SetEnabled(false);
-		if (coronalPlane) coronalPlane->SetEnabled(false);
+		if (yzPlane) yzPlane->SetEnabled(false);
+		if (xzPlane) xzPlane->SetEnabled(false);
+		if (xyPlane) xyPlane->SetEnabled(false);
 		// Show volume rendering
 		if (volume && !renderer->HasViewProp(volume)) {
 			renderer->AddVolume(volume);
 		}
 	}
-	emit slicePlanesVisibleChanged(slicePlanesVisible);
+	if (modified)
+		emit slicePlanesVisibleChanged(slicePlanesVisible);
 
 	renderWindow->Render();
 }
@@ -81,13 +99,13 @@ void VolumeView::setImageData(vtkImageData* image) {
 	imageData = image;
 
 	double range[2];
-	image->GetScalarRange(range);
+	imageData->GetScalarRange(range);
 
 	// Insert vtkImageShiftScale to ensure unsigned short input for the mapper
-	shiftScale->SetInputData(image);
+	shiftScale->SetInputData(imageData);
 
 	// Configure shift/scale based on input scalar type
-	int scalarType = image->GetScalarType();
+	int scalarType = imageData->GetScalarType();
 	double shift = 0.0;
 	double scale = 1.0;
 
@@ -131,73 +149,71 @@ void VolumeView::setImageData(vtkImageData* image) {
 			scale = (diff != 0.0) ? (65535.0 / diff) : 1.0;
 			break;
 		}
-		default:
-		shift = 0.0;
-		scale = 1.0;
-		break;
 	}
 	shiftScale->SetShift(shift);
 	shiftScale->SetScale(scale);
 	shiftScale->Update();
 
-	if (shiftScale->GetOutputPort() && mapper) {
+	yzPlane->SetInputData(shiftScale->GetOutput());
+	xzPlane->SetInputData(shiftScale->GetOutput());
+	xyPlane->SetInputData(shiftScale->GetOutput());
+
+	if (!imageInitialized) {
 		mapper->SetInputConnection(shiftScale->GetOutputPort());
+
+		yzPlane->SetPlaneOrientationToXAxes();
+		xzPlane->SetPlaneOrientationToYAxes();
+		xyPlane->SetPlaneOrientationToZAxes();
+
+		imageInitialized = true;
 	}
 
-	renderer->AddVolume(volume);
 	renderer->ResetCamera();
 
-	auto interactor = this->GetRenderWindow()->GetInteractor();
+	yzPlane->SetSliceIndex(imageData->GetExtent()[1] / 2);
+	yzPlane->SetEnabled(slicePlanesVisible);
 
-	axialPlane = vtkSmartPointer<vtkImagePlaneWidget>::New();
-	axialPlane->SetInteractor(interactor);
-	axialPlane->SetInputData(image);
-	axialPlane->SetPlaneOrientationToZAxes();
-	axialPlane->SetSliceIndex(image->GetExtent()[5] / 2);
-	axialPlane->SetEnabled(slicePlanesVisible);
+	xzPlane->SetSliceIndex(imageData->GetExtent()[3] / 2);
+	xzPlane->SetEnabled(slicePlanesVisible);
 
-	sagittalPlane = vtkSmartPointer<vtkImagePlaneWidget>::New();
-	sagittalPlane->SetInteractor(interactor);
-	sagittalPlane->SetInputData(image);
-	sagittalPlane->SetPlaneOrientationToXAxes();
-	sagittalPlane->SetSliceIndex(image->GetExtent()[1] / 2);
-	sagittalPlane->SetEnabled(slicePlanesVisible);
+	xyPlane->SetSliceIndex(imageData->GetExtent()[5] / 2);
+	xyPlane->SetEnabled(slicePlanesVisible);
 
-	coronalPlane = vtkSmartPointer<vtkImagePlaneWidget>::New();
-	coronalPlane->SetInteractor(interactor);
-	coronalPlane->SetInputData(image);
-	coronalPlane->SetPlaneOrientationToYAxes();
-	coronalPlane->SetSliceIndex(image->GetExtent()[3] / 2);
-	coronalPlane->SetEnabled(slicePlanesVisible);
 
 	int extent[6];
-	image->GetExtent(extent);
+	imageData->GetExtent(extent);
 	emit imageExtentsChanged(
-		extent[4], extent[5],
 		extent[0], extent[1],
-		extent[2], extent[3]
+		extent[2], extent[3],
+		extent[4], extent[5]
 	);
+
+	setSlicePlanesVisible(slicePlanesVisible);
 
 	renderWindow->Render();
 }
 
-void VolumeView::setCroppingRegion(int axialMin, int axialMax,
-								   int sagittalMin, int sagittalMax,
-								   int coronalMin, int coronalMax) {
+void VolumeView::setCroppingRegion(int xMin, int xMax,
+								   int yMin, int yMax,
+								   int zMin, int zMax) {
 	if (!mapper || !imageData) return;
 
 	mapper->SetCropping(true);
 	mapper->SetCroppingRegionPlanes(
-		sagittalMin, sagittalMax,  // X (sagittal)
-		coronalMin, coronalMax,    // Y (coronal)
-		axialMin, axialMax         // Z (axial)
+		xMin, xMax,
+		yMin, yMax,
+		zMin, zMax
 	);
 
 	renderWindow->Render();
 }
 
-void VolumeView::updateSlicePlanes(int axial, int sagittal, int coronal) {
-	// Optional: show slice planes or crosshairs
+void VolumeView::updateSlicePlanes(int x, int y, int z) {
+	yzPlane->SetSliceIndex(x);
+	xzPlane->SetSliceIndex(y);
+	xyPlane->SetSliceIndex(z);
+
+	renderWindow->Render();
 }
 
 vtkRenderWindow* VolumeView::GetRenderWindow() const {

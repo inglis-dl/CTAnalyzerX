@@ -24,7 +24,7 @@ public:
 	explicit VolumeView(QWidget* parent = nullptr);
 
 	void setImageData(vtkImageData* image);
-	void updateSlicePlanes(int axial, int sagittal, int coronal);
+	void updateSlicePlanes(int x, int y, int z);
 
 	vtkRenderWindow* GetRenderWindow() const;
 
@@ -34,12 +34,12 @@ public:
 
 signals:
 	// Signal emitted when a new image is set, with extents for each axis
-	void imageExtentsChanged(int axialMin, int axialMax, int sagittalMin, int sagittalMax, int coronalMin, int coronalMax);
+	void imageExtentsChanged(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 	void slicePlanesVisibleChanged(bool visible);
 
 public slots:
 	// Set cropping region for volume rendering
-	void setCroppingRegion(int axialMin, int axialMax, int sagittalMin, int sagittalMax, int coronalMin, int coronalMax);
+	void setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 
 private:
 	Ui::VolumeView ui;
@@ -54,10 +54,11 @@ private:
 
 	vtkSmartPointer<vtkImageData> imageData;
 
-	vtkSmartPointer<vtkImagePlaneWidget> axialPlane;
-	vtkSmartPointer<vtkImagePlaneWidget> sagittalPlane;
-	vtkSmartPointer<vtkImagePlaneWidget> coronalPlane;
+	vtkSmartPointer<vtkImagePlaneWidget> yzPlane;
+	vtkSmartPointer<vtkImagePlaneWidget> xzPlane;
+	vtkSmartPointer<vtkImagePlaneWidget> xyPlane;
 
+	bool imageInitialized = false;
 	bool slicePlanesVisible = false;
 };
 
