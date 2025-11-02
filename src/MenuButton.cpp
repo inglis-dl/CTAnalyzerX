@@ -54,15 +54,18 @@ namespace {
 class MenuButtonPrivate
 {
 public:
-	explicit MenuButtonPrivate(MenuButton& q) : q_ptr(&q), m_showMenu(false), m_indicatorOnly(true) {}
+	explicit MenuButtonPrivate(MenuButton& q)
+		: q_ptr(&q), m_showMenu(false), m_indicatorOnly(true)
+		, m_cachedIndicatorW(-1), m_cachedTotalW(-1) {
+	}
 
 	QRect indicatorRect() const
 	{
 		QStyleOptionButton option;
 		q_ptr->initStyleOption(&option);
 
-		// Right-aligned indicator rect with style-accurate width
-		const int indW = indicatorPixelWidth(q_ptr);
+		// Right-aligned indicator rect with cached width
+		const int indW = this->indicatorPixelWidthCached();
 		QRect full = q_ptr->style()->visualRect(option.direction, option.rect, option.rect);
 		QRect ind(full.right() - indW + 1, full.top(), indW, full.height());
 		ind = q_ptr->style()->visualRect(option.direction, option.rect, ind);
@@ -72,19 +75,25 @@ public:
 	void enforceIndicatorOnlyWidth()
 	{
 		if (!m_indicatorOnly) return;
-		const int w = indicatorOnlyTotalWidth(q_ptr);
-		// Hard lock so layout/style can't expand it
+		const int w = this->indicatorOnlyTotalWidthCached();
 		q_ptr->setSizePolicy(QSizePolicy::Fixed, q_ptr->sizePolicy().verticalPolicy());
-		q_ptr->setMinimumWidth(w);
-		q_ptr->setMaximumWidth(w);
-		q_ptr->resize(w, q_ptr->height());
+		q_ptr->setFixedWidth(w);
 	}
 
 	void releaseWidthLock()
 	{
 		q_ptr->setMinimumWidth(0);
 		q_ptr->setMaximumWidth(QWIDGETSIZE_MAX);
-		// Caller should updateGeometry() after toggling
+	}
+
+	void invalidateMetrics() { m_cachedIndicatorW = m_cachedTotalW = -1; }
+	int indicatorPixelWidthCached() const {
+		if (m_cachedIndicatorW < 0) m_cachedIndicatorW = indicatorPixelWidth(q_ptr);
+		return m_cachedIndicatorW;
+	}
+	int indicatorOnlyTotalWidthCached() const {
+		if (m_cachedTotalW < 0) m_cachedTotalW = indicatorOnlyTotalWidth(q_ptr);
+		return m_cachedTotalW;
 	}
 
 	MenuButton* const q_ptr;
@@ -93,6 +102,10 @@ public:
 
 	// Store items to support Q_PROPERTY READ accessor
 	QStringList m_items;
+
+private:
+	mutable int m_cachedIndicatorW;
+	mutable int m_cachedTotalW;
 };
 
 // Constructors / dtor
@@ -129,22 +142,21 @@ MenuButton::~MenuButton()
 QSize MenuButton::minimumSizeHint() const
 {
 	if (d_ptr->m_indicatorOnly) {
-		// Tight minimal width matching style metrics; height from style
 		QSize min = QPushButton::minimumSizeHint();
-		return QSize(indicatorOnlyTotalWidth(this), min.height());
+		return QSize(d_ptr->indicatorOnlyTotalWidthCached(), min.height());
 	}
 	QSize min = QPushButton::minimumSizeHint();
-	return QSize(min.width() + indicatorPixelWidth(this), min.height());
+	return QSize(min.width() + d_ptr->indicatorPixelWidthCached(), min.height());
 }
 
 QSize MenuButton::sizeHint() const
 {
 	if (d_ptr->m_indicatorOnly) {
 		QSize sh = QPushButton::sizeHint();
-		return QSize(indicatorOnlyTotalWidth(this), sh.height());
+		return QSize(d_ptr->indicatorOnlyTotalWidthCached(), sh.height());
 	}
 	QSize sh = QPushButton::sizeHint();
-	return QSize(sh.width() + indicatorPixelWidth(this), sh.height());
+	return QSize(sh.width() + d_ptr->indicatorPixelWidthCached(), sh.height());
 }
 
 // Paint the button with the indicator area
@@ -234,8 +246,8 @@ bool MenuButton::hitButton(const QPoint& _pos) const
 {
 	if (d_ptr->m_indicatorOnly)
 	{
-		// Only the indicator area is clickable in indicator-only mode
-		return d_ptr->indicatorRect().contains(_pos);
+		// Whole (narrow) control is clickable in indicator-only mode
+		return rect().contains(_pos);
 	}
 	MenuButtonPrivate* d = d_ptr;
 	return !d->indicatorRect().contains(_pos) && this->QPushButton::hitButton(_pos);
@@ -252,21 +264,14 @@ void MenuButton::mousePressEvent(QMouseEvent* e)
 
 	if (d->m_indicatorOnly)
 	{
-		// Only clicks in the indicator open the menu; otherwise let parent handle selection
-		if (d->indicatorRect().contains(e->pos()))
-		{
-			d->m_showMenu = true;
-			this->showMenu();
-			d->m_showMenu = false;
-			e->accept();
-			return;
-		}
-		e->ignore();
+		d->m_showMenu = true;
+		this->showMenu();
+		d->m_showMenu = false;
+		e->accept();
 		return;
 	}
 
-	// Split mode (unchanged)
-	this->disconnect(this, SIGNAL(pressed()), this, SLOT(_q_popupPressed()));
+	// Split mode
 	this->QPushButton::mousePressEvent(e);
 	if (e->isAccepted())
 	{
@@ -296,6 +301,10 @@ void MenuButton::setMenuItems(const QStringList& items)
 
 	QActionGroup* group = new QActionGroup(m);
 	group->setExclusive(true);
+	// One connection handles all actions
+	connect(group, &QActionGroup::triggered, this, [this](QAction* act) {
+		if (act) emit itemSelected(act->text());
+	});
 
 	bool lastWasSeparator = true;
 	int selectableCount = 0;
@@ -317,10 +326,6 @@ void MenuButton::setMenuItems(const QStringList& items)
 		QAction* act = m->addAction(it);
 		act->setCheckable(true);
 		act->setActionGroup(group);
-
-		connect(act, &QAction::triggered, this, [this, act]() {
-			emit itemSelected(act->text());
-		});
 
 		++selectableCount;
 	}
@@ -376,6 +381,7 @@ bool eventIsStyleRelayout(QEvent::Type t)
 bool MenuButton::event(QEvent* ev)
 {
 	if (d_ptr->m_indicatorOnly && eventIsStyleRelayout(ev->type())) {
+		d_ptr->invalidateMetrics();      // metrics may change on style/font/DPI
 		d_ptr->enforceIndicatorOnlyWidth();
 	}
 	return QPushButton::event(ev);
