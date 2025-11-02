@@ -1,7 +1,10 @@
 #ifndef SLICEVIEW_H
 #define SLICEVIEW_H
 
+#include "SceneFrameWidget.h"
+
 #include <QFrame>
+
 #include <vtkSmartPointer.h>
 #include <vtkImageData.h>
 #include <vtkRenderer.h>
@@ -13,10 +16,10 @@
 #include <vtkImageSliceMapper.h>
 #include <vtkImageShiftScale.h>
 
-#include "SceneFrameWidget.h"
-
 class vtkEventQtSlotConnect;
 class vtkObject; // forward declare for slot
+class QLineEdit;
+class QLabel;    // added
 
 namespace Ui { class SliceView; }
 
@@ -89,6 +92,13 @@ private:
 	vtkSmartPointer<vtkImageProperty> imageProperty;
 
 	vtkSmartPointer<vtkEventQtSlotConnect> qvtkConnection;
+
+	QLineEdit* m_editSliceIndex = nullptr;
+	QLabel* m_labelMinSlice = nullptr; // added
+	QLabel* m_labelMaxSlice = nullptr; // added
+
+	// Build a bottom bar: [minLabel] [slider] [maxLabel] [lineEdit]
+	void buildSliderBar(QWidget* rootContent);
 
 private slots:
 	// Must be a Qt slot for vtkEventQtSlotConnect

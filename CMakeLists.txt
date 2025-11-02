@@ -109,6 +109,8 @@ set(SOURCES
 	 src/SelectionFrameWidget.h
      src/SceneFrameWidget.cpp
      src/SceneFrameWidget.h
+     src/SunkenSliderStyle.cpp
+     src/SunkenSliderStyle.h
     ${CTANALYZERX_RESOURCES}
 )
 
