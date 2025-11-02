@@ -4,7 +4,6 @@
 #include <QFrame>
 #include <QCheckBox>
 #include <QPushButton>
-
 #include "ui_VolumeControlsWidget.h"
 
 class RangeSlider;
@@ -15,34 +14,36 @@ class VolumeControlsWidget : public QFrame
 public:
 	explicit VolumeControlsWidget(QWidget* parent = nullptr);
 
-	// Add public methods/signals as needed for interaction
-	// e.g. getters for sliders, signals for preset buttons, etc.
-
 	// Accessors for the range sliders
-	RangeSlider* axialRangeSlider() const { return ui.axialRangeSlider; }
-	RangeSlider* sagitalRangeSlider() const { return ui.saggitalRangeSlider; }
-	RangeSlider* coronalRangeSlider() const { return ui.coronalRangeSlider; }
+	RangeSlider* YZViewRangeSlider() const { return ui.YZViewRangeSlider; }
+	RangeSlider* XZViewRangeSlider() const { return ui.XZViewRangeSlider; }
+	RangeSlider* XYViewRangeSlider() const { return ui.XYViewRangeSlider; }
 
-	// Accessors for other controls if needed
-	QCheckBox* slicePlaneCheclBox() const { return ui.slicePlaneCheckBox; }
-	QPushButton* presetFullVolume() const { return ui.presetFullVolume; }
-	QPushButton* presetCenterROI() const { return ui.presetCenterROI; }
+	// Accessors for min/max labels
+	QLabel* YZViewMinLabel() const { return ui.YZViewMinLabel; }
+	QLabel* YZViewMaxLabel() const { return ui.YZViewMaxLabel; }
+	QLabel* XZViewMinLabel() const { return ui.XZViewMinLabel; }
+	QLabel* XZViewMaxLabel() const { return ui.XZViewMaxLabel; }
+	QLabel* XYViewMinLabel() const { return ui.XYViewMinLabel; }
+	QLabel* XYViewMaxLabel() const { return ui.XYViewMaxLabel; }
+
+	// Accessors for other controls
+	QCheckBox* slicePlaneCheckBox() const { return ui.slicePlaneCheckBox; }
 	QPushButton* presetReset() const { return ui.presetReset; }
 
-	// Set up the range sliders for a new image
 public slots:
-	void setRangeSliders(int axialMin, int axialMax, int sagittalMin, int sagittalMax, int coronalMin, int coronalMax);
+	void setRangeSliders(int yzMin, int yzMax, int xzMin, int xzMax, int xyMin, int xyMax);
 
 signals:
-	void croppingRegionChanged(int axialMin, int axialMax,
-							  int sagittalMin, int sagittalMax,
-							  int coronalMin, int coronalMax);
+	void croppingRegionChanged(int yzMin, int yzMax,
+							  int xzMin, int xzMax,
+							  int xyMin, int xyMax);
 	void slicePlaneToggle(bool visible);
 
 private slots:
-	void updateAxialLabel(int min, int max);
-	void updateSaggitalLabel(int min, int max);
-	void updateCoronalLabel(int min, int max);
+	void updateYZLabel(int min, int max);
+	void updateXZLabel(int min, int max);
+	void updateXYLabel(int min, int max);
 
 private:
 	Ui::VolumeControlsWidget ui;

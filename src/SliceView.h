@@ -13,36 +13,30 @@
 #include <vtkImageSliceMapper.h>
 #include <vtkImageShiftScale.h>
 
-class vtkEventQtSlotConnect;
+#include "SceneFrameWidget.h"
 
+class vtkEventQtSlotConnect;
+class vtkObject; // forward declare for slot
 
 namespace Ui { class SliceView; }
 
-class SliceView : public QFrame
+class SliceView : public SceneFrameWidget
 {
-	Q_OBJECT;
-	Q_PROPERTY(Orientation orientation READ getOrientation WRITE setOrientation)
+	Q_OBJECT
 		Q_PROPERTY(Interpolation interpolation READ getInterpolation WRITE setInterpolation)
 
 public:
-	enum Orientation { Udefined = -1, YZ, XZ, XY };
-	Q_ENUM(Orientation);
-
 	enum Interpolation { Nearest, Linear, Cubic };
-	Q_ENUM(Interpolation);
+	Q_ENUM(Interpolation)
 
-	explicit SliceView(QWidget* parent = nullptr, Orientation orientation = XY);
+		explicit SliceView(QWidget* parent = nullptr, ViewOrientation orientation = VIEW_ORIENTATION_XY);
 	~SliceView();
 
 	void setImageData(vtkImageData* image);
 	void setSliceIndex(int index);
 	int getSliceIndex() const;
 
-	void setOrientation(Orientation newOrientation);
-	Orientation getOrientation() const;
-	void setOrientationToYZ();
-	void setOrientationToXZ();
-	void setOrientationToXY();
+	void setViewOrientation(ViewOrientation orient) override;
 
 	void setInterpolation(Interpolation newInterpolation);
 	Interpolation getInterpolation() const;
@@ -50,21 +44,26 @@ public:
 	void setInterpolationToLinear();
 	void setInterpolationToCubic();
 
-	vtkRenderWindow* GetRenderWindow() const;
-
-	vtkImageSlice* getImageSlice() { return imageSlice; }
-
-	int getMinSliceIndex() const;
 	int getMaxSliceIndex() const;
-
-public slots:
-	void trapSpin(vtkObject*);
+	int getMinSliceIndex() const;
 
 signals:
 	void sliceChanged(int);
-	void orientationChanged(Orientation);
 	void interpolationChanged(Interpolation);
 
+protected:
+	// SceneFrameWidget overrides
+	vtkRenderWindow* getRenderWindow() const override;
+	void resetCamera() override;
+	void orthogonalizeView() override;
+	void flipHorizontal() override;
+	void flipVertical() override;
+	void rotateCamera(double degrees) override;
+
+	// Optional capability hints (used by action enabling)
+	bool canFlipHorizontal() const override { return true; }
+	bool canFlipVertical() const override { return true; }
+	bool canRotate() const override { return true; }
 
 private:
 	void updateCamera();
@@ -72,12 +71,11 @@ private:
 	void updateSliceRange();
 
 	Ui::SliceView* ui = nullptr;
-	Orientation orientation;
-	Interpolation interpolation = Linear;
-	int currentSlice = 0;
-	int minSlice = 0;
-	int maxSlice = 0;
-	bool imageInitialized = false;
+	Interpolation m_interpolation = Linear;
+	int m_currentSlice = 0;
+	int m_minSlice = 0;
+	int m_maxSlice = 0;
+	bool m_imageInitialized = false;
 
 	vtkSmartPointer<vtkImageData> imageData;
 	vtkSmartPointer<vtkRenderer> renderer;
@@ -91,6 +89,10 @@ private:
 	vtkSmartPointer<vtkImageProperty> imageProperty;
 
 	vtkSmartPointer<vtkEventQtSlotConnect> qvtkConnection;
+
+private slots:
+	// Must be a Qt slot for vtkEventQtSlotConnect
+	void trapSpin(vtkObject* obj);
 };
 
 #endif // SLICEVIEW_H

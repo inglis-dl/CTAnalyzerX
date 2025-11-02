@@ -6,116 +6,173 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>277</width>
-    <height>189</height>
+    <width>280</width>
+    <height>600</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <widget class="QGroupBox" name="groupCropping">
+    <widget class="QGroupBox" name="groupBoxVolumeRendering">
      <property name="title">
-      <string>Volume Cropping</string>
+      <string>Volume Rendering</string>
      </property>
-     <layout class="QVBoxLayout" name="croppingVBox">
+     <property name="checkable">
+      <bool>true</bool>
+     </property>
+     <layout class="QVBoxLayout" name="volumeRenderingLayout">
       <item>
-       <layout class="QHBoxLayout" name="axialRangeLayout">
+       <layout class="QHBoxLayout" name="layoutYZViewRange">
         <item>
-         <widget class="QLabel" name="axialMinLabel">
-          <property name="text">
-           <string>0</string>
+         <widget class="QLabel" name="YZViewMinLabel">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Preferred" vsizetype="Preferred"/>
+          </property>
+          <property name="minimumSize">
+           <size>
+            <width>24</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>100</width>
+            <height>16777215</height>
+           </size>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="RangeSlider" name="axialRangeSlider">
-          <property name="orientation">
-           <enum>Qt::Horizontal</enum>
+         <widget class="RangeSlider" name="YZViewRangeSlider" native="true">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Preferred"/>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QLabel" name="axialMaxLabel">
-          <property name="text">
-           <string>100</string>
+         <widget class="QLabel" name="YZViewMaxLabel">
+          <property name="minimumSize">
+           <size>
+            <width>24</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>40</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Minimum" vsizetype="Preferred"/>
           </property>
          </widget>
         </item>
        </layout>
       </item>
       <item>
-       <layout class="QHBoxLayout" name="saggitalRangeLayout">
+       <layout class="QHBoxLayout" name="layoutXZViewRange">
         <item>
-         <widget class="QLabel" name="saggitalMinLabel">
-          <property name="text">
-           <string>0</string>
+         <widget class="QLabel" name="XZViewMinLabel">
+          <property name="minimumSize">
+           <size>
+            <width>24</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>40</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Minimum" vsizetype="Preferred"/>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="RangeSlider" name="saggitalRangeSlider">
-          <property name="orientation">
-           <enum>Qt::Horizontal</enum>
+         <widget class="RangeSlider" name="XZViewRangeSlider" native="true">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Preferred"/>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QLabel" name="saggitalMaxLabel">
-          <property name="text">
-           <string>100</string>
+         <widget class="QLabel" name="XZViewMaxLabel">
+          <property name="minimumSize">
+           <size>
+            <width>24</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>40</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Minimum" vsizetype="Preferred"/>
           </property>
          </widget>
         </item>
        </layout>
       </item>
       <item>
-       <layout class="QHBoxLayout" name="coronalRangeLayout">
+       <layout class="QHBoxLayout" name="layoutXYViewRange">
         <item>
-         <widget class="QLabel" name="coronalMinLabel">
-          <property name="text">
-           <string>0</string>
+         <widget class="QLabel" name="XYViewMinLabel">
+          <property name="minimumSize">
+           <size>
+            <width>24</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>40</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Minimum" vsizetype="Preferred"/>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="RangeSlider" name="coronalRangeSlider">
-          <property name="orientation">
-           <enum>Qt::Horizontal</enum>
+         <widget class="RangeSlider" name="XYViewRangeSlider" native="true">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Preferred"/>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QLabel" name="coronalMaxLabel">
-          <property name="text">
-           <string>100</string>
+         <widget class="QLabel" name="XYViewMaxLabel">
+          <property name="minimumSize">
+           <size>
+            <width>24</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>40</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Minimum" vsizetype="Preferred"/>
           </property>
          </widget>
         </item>
        </layout>
       </item>
       <item>
-       <layout class="QHBoxLayout" name="buttonGroupLayout">
-        <item>
-         <widget class="QPushButton" name="presetFullVolume">
-          <property name="text">
-           <string>Full Volume</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QPushButton" name="presetCenterROI">
-          <property name="text">
-           <string>Center ROI</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QPushButton" name="presetReset">
-          <property name="text">
-           <string>Reset</string>
-          </property>
-         </widget>
-        </item>
-       </layout>
+       <widget class="QPushButton" name="presetReset">
+        <property name="text">
+         <string>Reset</string>
+        </property>
+       </widget>
       </item>
       <item>
        <widget class="QCheckBox" name="slicePlaneCheckBox">
@@ -123,6 +180,67 @@
          <string>Show Slice Planes</string>
         </property>
        </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="croppingCheckBox">
+        <property name="text">
+         <string>Enable Cropping</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="btnCrop">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Apply Cropping</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBoxHistogram">
+     <property name="title">
+      <string>Histogram Threshold</string>
+     </property>
+     <property name="checkable">
+      <bool>true</bool>
+     </property>
+     <layout class="QVBoxLayout" name="histogramLayout">
+      <item>
+       <widget class="QPushButton" name="btnComputeThreshold">
+        <property name="text">
+         <string>Compute Threshold</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="labelThresholdInfo"/>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBoxFiducials">
+     <property name="title">
+      <string>Fiducial Markers</string>
+     </property>
+     <property name="checkable">
+      <bool>true</bool>
+     </property>
+     <layout class="QVBoxLayout" name="fiducialsLayout">
+      <item>
+       <widget class="QPushButton" name="btnPlaceFiducials">
+        <property name="text">
+         <string>Place Fiducials</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="labelFiducialInfo"/>
       </item>
      </layout>
     </widget>
@@ -132,9 +250,8 @@
  <customwidgets>
   <customwidget>
    <class>RangeSlider</class>
-   <extends>QSlider</extends>
+   <extends>QWidget</extends>
    <header>RangeSlider.h</header>
-   <container>1</container>
   </customwidget>
  </customwidgets>
  <resources/>

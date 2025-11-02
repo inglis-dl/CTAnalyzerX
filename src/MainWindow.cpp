@@ -15,7 +15,7 @@
 #include <QMimeData>
 #include <QUrl>
 
-#include "LightBoxWidget.h"
+#include "LightboxWidget.h"
 #include "ImageLoader.h"
 
 #include <vtkEventQtSlotConnect.h>
@@ -82,11 +82,11 @@ void MainWindow::loadVolume(vtkSmartPointer<vtkImageData> imageData)
 	if (!imageData || imageData->GetDimensions()[0] <= 1 ||
 		imageData->GetDimensions()[1] <= 1 ||
 		imageData->GetDimensions()[2] <= 1) {
-		// If image is invalid, set default image in LightBoxWidget
-		ui->lightBoxWidget->setDefaultImage();
+		// If image is invalid, set default image in LightboxWidget
+		ui->lightboxWidget->setDefaultImage();
 	}
 	else {
-		ui->lightBoxWidget->setImageData(imageData);
+		ui->lightboxWidget->setImageData(imageData);
 	}
 }
 
@@ -129,15 +129,15 @@ void MainWindow::setupPanelConnections()
 
 	// control the volume cropping planes in the volumeview
 	connect(ui->volumeControlsWidget, &VolumeControlsWidget::croppingRegionChanged,
-		ui->lightBoxWidget->getVolumeView(), &VolumeView::setCroppingRegion);
+		ui->lightboxWidget->getVolumeView(), &VolumeView::setCroppingRegion);
 
 	// update the range sliders when the image extents change
-	connect(ui->lightBoxWidget->getVolumeView(), &VolumeView::imageExtentsChanged,
+	connect(ui->lightboxWidget->getVolumeView(), &VolumeView::imageExtentsChanged,
 		ui->volumeControlsWidget, &VolumeControlsWidget::setRangeSliders);
 
 	// toggle volume slice planes
 	connect(ui->volumeControlsWidget, &VolumeControlsWidget::slicePlaneToggle,
-		ui->lightBoxWidget->getVolumeView(), &VolumeView::setSlicePlanesVisible);
+		ui->lightboxWidget->getVolumeView(), &VolumeView::setSlicePlanesVisible);
 }
 
 void MainWindow::addToRecentFiles(const QString& filePath)
@@ -306,8 +306,8 @@ void MainWindow::showEvent(QShowEvent* event)
 	QMainWindow::showEvent(event);
 
 	if (!defaultImageLoaded) {
-		if (ui->lightBoxWidget) {
-			ui->lightBoxWidget->setDefaultImage();
+		if (ui->lightboxWidget) {
+			ui->lightboxWidget->setDefaultImage();
 		}
 		defaultImageLoaded = true;
 	}

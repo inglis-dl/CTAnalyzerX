@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>LightboxWidget</class>
+ <widget class="QWidget" name="LightboxWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>800</height>
+   </rect>
+  </property>
+  <layout class="QGridLayout" name="gridLayout">
+   <item row="0" column="0">
+    <widget class="SliceView" name="YZView">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding"/>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="1">
+    <widget class="SliceView" name="XZView">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding"/>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="0">
+    <widget class="SliceView" name="XYView">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding"/>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="1">
+    <widget class="VolumeView" name="volumeView">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding"/>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+  <customwidgets>
+  <customwidget>
+   <class>SliceView</class>
+   <extends>QWidget</extends>
+   <header>SliceView.h</header>
+  </customwidget>
+  <customwidget>
+   <class>VolumeView</class>
+   <extends>QWidget</extends>
+   <header>VolumeView.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

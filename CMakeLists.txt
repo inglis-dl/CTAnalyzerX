@@ -99,8 +99,16 @@ set(SOURCES
      src/VolumeControlsWidget.h
      src/RangeSlider.cpp
      src/RangeSlider.h
-#     src/vtkVolumeImageViewer.cpp
-#     src/vtkVolumeImageViewer.h
+     src/CollapsibleGroupBox.cpp
+     src/CollapsibleGroupBox.h
+     src/ProxyStyle.cpp
+     src/ProxyStyle.h
+	 src/MenuButton.cpp
+	 src/MenuButton.h
+	 src/SelectionFrameWidget.cpp
+	 src/SelectionFrameWidget.h
+     src/SceneFrameWidget.cpp
+     src/SceneFrameWidget.h
     ${CTANALYZERX_RESOURCES}
 )
 
@@ -122,6 +130,9 @@ target_link_libraries(${PROJECT_NAME}
         ${ITK_LIBRARIES}
         VTK::DICOM
 )
+
+# Globally silence MSVC deprecation warnings for non-standard stdext iterators
+add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
 
 # Optional: Doxygen documentation
 option(BUILD_DOC "Build documentation" OFF)

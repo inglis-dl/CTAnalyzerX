@@ -1,24 +1,30 @@
-#include "LightBoxWidget.h"
+#include "LightboxWidget.h"
 #include "SliceView.h"
 #include "VolumeView.h"
+#include "SelectionFrameWidget.h"
 #include <vtkImageSinusoidSource.h>
 #include <vtkSmartPointer.h>
+#include <array>
 #include <cmath>
 
-LightBoxWidget::LightBoxWidget(QWidget* parent)
+LightboxWidget::LightboxWidget(QWidget* parent)
 	: QWidget(parent)
 {
 	ui.setupUi(this);
 
-	ui.YZView->setOrientationToYZ();
-	ui.XZView->setOrientationToXZ();
-	ui.XYView->setOrientationToXY();
+	ui.YZView->setViewOrientation(SceneFrameWidget::VIEW_ORIENTATION_YZ);
+	ui.XZView->setViewOrientation(SceneFrameWidget::VIEW_ORIENTATION_XZ);
+	ui.XYView->setViewOrientation(SceneFrameWidget::VIEW_ORIENTATION_XY);
 
 	setDefaultImage();
 	connectSliceSynchronization();
+	connectSelectionCoordination();
+
+	// Optional: choose a default selected/highlighted view
+	if (ui.XYView) ui.XYView->setSelected(true);
 }
 
-void LightBoxWidget::setDefaultImage() {
+void LightboxWidget::setDefaultImage() {
 	auto sinusoid = vtkSmartPointer<vtkImageSinusoidSource>::New();
 	sinusoid->SetPeriod(32);
 	sinusoid->SetPhase(0);
@@ -31,35 +37,35 @@ void LightBoxWidget::setDefaultImage() {
 	setImageData(defaultImage);
 }
 
-void LightBoxWidget::setImageData(vtkImageData* image) {
+void LightboxWidget::setImageData(vtkImageData* image) {
 	ui.YZView->setImageData(image);
 	ui.XZView->setImageData(image);
 	ui.XYView->setImageData(image);
 	ui.volumeView->setImageData(image);
 }
 
-void LightBoxWidget::setYZSlice(int index) {
+void LightboxWidget::setYZSlice(int index) {
 	ui.YZView->setSliceIndex(index);
 }
 
-void LightBoxWidget::setXZSlice(int index) {
+void LightboxWidget::setXZSlice(int index) {
 	ui.XZView->setSliceIndex(index);
 }
 
-void LightBoxWidget::setXYSlice(int index) {
+void LightboxWidget::setXYSlice(int index) {
 	ui.XYView->setSliceIndex(index);
 }
 
-QPixmap LightBoxWidget::grabFramebuffer() {
+QPixmap LightboxWidget::grabFramebuffer() {
 	return this->grab();
 }
 
-SliceView* LightBoxWidget::getYZView() const { return ui.YZView; }
-SliceView* LightBoxWidget::getXZView() const { return ui.XZView; }
-SliceView* LightBoxWidget::getXYView() const { return ui.XYView; }
-VolumeView* LightBoxWidget::getVolumeView() const { return ui.volumeView; }
+SliceView* LightboxWidget::getYZView() const { return ui.YZView; }
+SliceView* LightboxWidget::getXZView() const { return ui.XZView; }
+SliceView* LightboxWidget::getXYView() const { return ui.XYView; }
+VolumeView* LightboxWidget::getVolumeView() const { return ui.volumeView; }
 
-void LightBoxWidget::connectSliceSynchronization() {
+void LightboxWidget::connectSliceSynchronization() {
 	connect(ui.YZView, &SliceView::sliceChanged, this, [this](int index) {
 		ui.volumeView->updateSlicePlanes(index, ui.XZView->getSliceIndex(), ui.XYView->getSliceIndex());
 	});
@@ -69,5 +75,28 @@ void LightBoxWidget::connectSliceSynchronization() {
 	connect(ui.XYView, &SliceView::sliceChanged, this, [this](int index) {
 		ui.volumeView->updateSlicePlanes(ui.YZView->getSliceIndex(), ui.XZView->getSliceIndex(), index);
 	});
+}
+
+void LightboxWidget::connectSelectionCoordination() {
+	using SF = SelectionFrameWidget;
+	std::array<SF*, 3> views{ { ui.YZView, ui.XZView, ui.XYView } };
+
+	for (SF* v : views) {
+		connect(v, &SF::selectedChanged, this, [this, v](bool on) {
+			if (!on) return;
+
+			// Unselect all other views so only one title bar is highlighted
+			std::array<SF*, 3> others{ { ui.YZView, ui.XZView, ui.XYView } };
+			for (SF* o : others) {
+				if (o && o != v) {
+					o->setSelected(false);
+				}
+			}
+			// Ensure focus follows selection regardless of source (title bar or menu button)
+			if (v) {
+				v->setFocus(Qt::OtherFocusReason);
+			}
+		});
+	}
 }
 

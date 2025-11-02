@@ -2,15 +2,15 @@
 #define LIGHTBOXWIDGET_H
 
 #include <QWidget>
-#include "ui_LightBoxWidget.h"
+#include "ui_LightboxWidget.h"
 
 class SliceView;
 class VolumeView;
 
-class LightBoxWidget : public QWidget {
+class LightboxWidget : public QWidget {
 	Q_OBJECT
 public:
-	explicit LightBoxWidget(QWidget* parent = nullptr);
+	explicit LightboxWidget(QWidget* parent = nullptr);
 
 	void setImageData(vtkImageData* image);
 	void setDefaultImage();
@@ -26,9 +26,9 @@ public:
 	VolumeView* getVolumeView() const;
 
 private:
-	Ui::LightBoxWidget ui;
+	Ui::LightboxWidget ui;
 	void connectSliceSynchronization();
-
+	void connectSelectionCoordination();
 };
 
 #endif // LIGHTBOXWIDGET_H

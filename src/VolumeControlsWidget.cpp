@@ -6,69 +6,47 @@ VolumeControlsWidget::VolumeControlsWidget(QWidget* parent)
 {
 	ui.setupUi(this);
 
+	ui.YZViewRangeSlider->setOrientation(Qt::Horizontal);
+	ui.XZViewRangeSlider->setOrientation(Qt::Horizontal);
+	ui.XYViewRangeSlider->setOrientation(Qt::Horizontal);
+
 	// Connect range sliders to emit croppingRegionChanged
 	auto emitCropping = [this]() {
 		emit croppingRegionChanged(
-			ui.axialRangeSlider->minimumValue(), ui.axialRangeSlider->maximumValue(),
-			ui.saggitalRangeSlider->minimumValue(), ui.saggitalRangeSlider->maximumValue(),
-			ui.coronalRangeSlider->minimumValue(), ui.coronalRangeSlider->maximumValue()
+			ui.YZViewRangeSlider->minimumValue(), ui.YZViewRangeSlider->maximumValue(),
+			ui.XZViewRangeSlider->minimumValue(), ui.XZViewRangeSlider->maximumValue(),
+			ui.XYViewRangeSlider->minimumValue(), ui.XYViewRangeSlider->maximumValue()
 		);
 		};
 
-	connect(ui.axialRangeSlider, &RangeSlider::valuesChanged, this, [this, emitCropping](int min, int max) {
-		updateAxialLabel(min, max);
+	connect(ui.YZViewRangeSlider, &RangeSlider::valuesChanged, this, [this, emitCropping](int min, int max) {
+		updateYZLabel(min, max);
 		emitCropping();
 	});
-	connect(ui.saggitalRangeSlider, &RangeSlider::valuesChanged, this, [this, emitCropping](int min, int max) {
-		updateSaggitalLabel(min, max);
+	connect(ui.XZViewRangeSlider, &RangeSlider::valuesChanged, this, [this, emitCropping](int min, int max) {
+		updateXZLabel(min, max);
 		emitCropping();
 	});
-	connect(ui.coronalRangeSlider, &RangeSlider::valuesChanged, this, [this, emitCropping](int min, int max) {
-		updateCoronalLabel(min, max);
+	connect(ui.XYViewRangeSlider, &RangeSlider::valuesChanged, this, [this, emitCropping](int min, int max) {
+		updateXYLabel(min, max);
 		emitCropping();
 	});
 
 	// Also update labels when the range changes (e.g., after setRangeSliders)
-	connect(ui.axialRangeSlider, &RangeSlider::rangeChanged, this, [this](int min, int max) {
-		updateAxialLabel(min, max);
+	connect(ui.YZViewRangeSlider, &RangeSlider::rangeChanged, this, [this](int min, int max) {
+		updateYZLabel(min, max);
 	});
-	connect(ui.saggitalRangeSlider, &RangeSlider::rangeChanged, this, [this](int min, int max) {
-		updateSaggitalLabel(min, max);
+	connect(ui.XZViewRangeSlider, &RangeSlider::rangeChanged, this, [this](int min, int max) {
+		updateXZLabel(min, max);
 	});
-	connect(ui.coronalRangeSlider, &RangeSlider::rangeChanged, this, [this](int min, int max) {
-		updateCoronalLabel(min, max);
+	connect(ui.XYViewRangeSlider, &RangeSlider::rangeChanged, this, [this](int min, int max) {
+		updateXYLabel(min, max);
 	});
 
-	// Preset buttons (unchanged)
-	connect(ui.presetFullVolume, &QPushButton::clicked, this, [this, emitCropping]() {
-		ui.axialRangeSlider->setValues(ui.axialRangeSlider->minimum(), ui.axialRangeSlider->maximum());
-		ui.saggitalRangeSlider->setValues(ui.saggitalRangeSlider->minimum(), ui.saggitalRangeSlider->maximum());
-		ui.coronalRangeSlider->setValues(ui.coronalRangeSlider->minimum(), ui.coronalRangeSlider->maximum());
-		emitCropping();
-	});
-	connect(ui.presetCenterROI, &QPushButton::clicked, this, [this, emitCropping]() {
-		// Example: center 40% ROI
-		int aMin = ui.axialRangeSlider->minimum();
-		int aMax = ui.axialRangeSlider->maximum();
-		int sMin = ui.saggitalRangeSlider->minimum();
-		int sMax = ui.saggitalRangeSlider->maximum();
-		int cMin = ui.coronalRangeSlider->minimum();
-		int cMax = ui.coronalRangeSlider->maximum();
-		int aMid = (aMin + aMax) / 2;
-		int sMid = (sMin + sMax) / 2;
-		int cMid = (cMin + cMax) / 2;
-		int aRange = (aMax - aMin) / 5;
-		int sRange = (sMax - sMin) / 5;
-		int cRange = (cMax - cMin) / 5;
-		ui.axialRangeSlider->setValues(aMid - aRange, aMid + aRange);
-		ui.saggitalRangeSlider->setValues(sMid - sRange, sMid + sRange);
-		ui.coronalRangeSlider->setValues(cMid - cRange, cMid + cRange);
-		emitCropping();
-	});
 	connect(ui.presetReset, &QPushButton::clicked, this, [this, emitCropping]() {
-		ui.axialRangeSlider->setValues(ui.axialRangeSlider->minimum(), ui.axialRangeSlider->maximum());
-		ui.saggitalRangeSlider->setValues(ui.saggitalRangeSlider->minimum(), ui.saggitalRangeSlider->maximum());
-		ui.coronalRangeSlider->setValues(ui.coronalRangeSlider->minimum(), ui.coronalRangeSlider->maximum());
+		ui.YZViewRangeSlider->setValues(ui.YZViewRangeSlider->minimum(), ui.YZViewRangeSlider->maximum());
+		ui.XZViewRangeSlider->setValues(ui.XZViewRangeSlider->minimum(), ui.XZViewRangeSlider->maximum());
+		ui.XYViewRangeSlider->setValues(ui.XYViewRangeSlider->minimum(), ui.XYViewRangeSlider->maximum());
 		emitCropping();
 	});
 
@@ -77,38 +55,38 @@ VolumeControlsWidget::VolumeControlsWidget(QWidget* parent)
 	});
 }
 
-void VolumeControlsWidget::setRangeSliders(int axialMin, int axialMax, int sagittalMin, int sagittalMax, int coronalMin, int coronalMax)
+void VolumeControlsWidget::setRangeSliders(int yzMin, int yzMax, int xzMin, int xzMax, int xyMin, int xyMax)
 {
-	ui.axialRangeSlider->setMinimum(axialMin);
-	ui.axialRangeSlider->setMaximum(axialMax);
-	ui.axialRangeSlider->setValues(axialMin, axialMax);
-	updateAxialLabel(axialMin, axialMax);
+	ui.YZViewRangeSlider->setMinimum(yzMin);
+	ui.YZViewRangeSlider->setMaximum(yzMax);
+	ui.YZViewRangeSlider->setValues(yzMin, yzMax);
+	updateYZLabel(yzMin, yzMax);
 
-	ui.saggitalRangeSlider->setMinimum(sagittalMin);
-	ui.saggitalRangeSlider->setMaximum(sagittalMax);
-	ui.saggitalRangeSlider->setValues(sagittalMin, sagittalMax);
-	updateSaggitalLabel(sagittalMin, sagittalMax);
+	ui.XZViewRangeSlider->setMinimum(xzMin);
+	ui.XZViewRangeSlider->setMaximum(xzMax);
+	ui.XZViewRangeSlider->setValues(xzMin, xzMax);
+	updateXZLabel(xzMin, xzMax);
 
-	ui.coronalRangeSlider->setMinimum(coronalMin);
-	ui.coronalRangeSlider->setMaximum(coronalMax);
-	ui.coronalRangeSlider->setValues(coronalMin, coronalMax);
-	updateCoronalLabel(coronalMin, coronalMax);
+	ui.XYViewRangeSlider->setMinimum(xyMin);
+	ui.XYViewRangeSlider->setMaximum(xyMax);
+	ui.XYViewRangeSlider->setValues(xyMin, xyMax);
+	updateXYLabel(xyMin, xyMax);
 }
 
-void VolumeControlsWidget::updateAxialLabel(int min, int max)
+void VolumeControlsWidget::updateYZLabel(int min, int max)
 {
-	ui.axialMinLabel->setText(QString("%1").arg(min));
-	ui.axialMaxLabel->setText(QString("%1").arg(max));
+	ui.YZViewMinLabel->setText(QString("%1").arg(min));
+	ui.YZViewMaxLabel->setText(QString("%1").arg(max));
 }
 
-void VolumeControlsWidget::updateSaggitalLabel(int min, int max)
+void VolumeControlsWidget::updateXZLabel(int min, int max)
 {
-	ui.saggitalMinLabel->setText(QString("%1").arg(min));
-	ui.saggitalMaxLabel->setText(QString("%1").arg(max));
+	ui.XZViewMinLabel->setText(QString("%1").arg(min));
+	ui.XZViewMaxLabel->setText(QString("%1").arg(max));
 }
 
-void VolumeControlsWidget::updateCoronalLabel(int min, int max)
+void VolumeControlsWidget::updateXYLabel(int min, int max)
 {
-	ui.coronalMinLabel->setText(QString("%1").arg(min));
-	ui.coronalMaxLabel->setText(QString("%1").arg(max));
+	ui.XYViewMinLabel->setText(QString("%1").arg(min));
+	ui.XYViewMaxLabel->setText(QString("%1").arg(max));
 }

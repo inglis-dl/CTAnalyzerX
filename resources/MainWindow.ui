@@ -6,54 +6,56 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>800</width>
-    <height>663</height>
+    <width>1200</width>
+    <height>800</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>CTAnalyzerX</string>
   </property>
   <widget class="QWidget" name="centralWidget">
-   <layout class="QHBoxLayout" name="centralLayout">
+   <layout class="QHBoxLayout" name="horizontalLayout">
     <item>
-     <layout class="QVBoxLayout" name="panelControlsLayout">
-      <item>	  
-       <widget class="VolumeControlsWidget" name="volumeControlsWidget"/>	   
-      </item>
-      <item>
-       <widget class="QGroupBox" name="groupAnalysis">
-        <property name="title">
-         <string>Analysis</string>
-        </property>
-        <layout class="QVBoxLayout">
-         <item>
-          <widget class="QPushButton" name="btnRunAnalysis">
-           <property name="text">
-            <string>Run Analysis</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QTextEdit" name="txtAnalysisOutput"/>
-         </item>
-        </layout>
-       </widget>
-      </item>
-     </layout>
+     <widget class="QFrame" name="controlPanel">
+      <property name="minimumWidth">
+       <number>280</number>
+      </property>
+      <property name="maximumWidth">
+       <number>280</number>
+      </property>
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Fixed" vsizetype="Expanding"/>
+      </property>
+      <layout class="QVBoxLayout" name="controlPanelLayout">
+       <item>
+        <widget class="VolumeControlsWidget" name="volumeControlsWidget"/>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="groupAnalysis">
+         <property name="title">
+          <string>Analysis</string>
+         </property>
+         <layout class="QVBoxLayout">
+          <item>
+           <widget class="QPushButton" name="btnRunAnalysis">
+            <property name="text">
+             <string>Run Analysis</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QTextEdit" name="txtAnalysisOutput"/>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+     </widget>
     </item>
     <item>
-     <widget class="LightBoxWidget" name="lightBoxWidget">
+     <widget class="LightboxWidget" name="lightboxWidget">
       <property name="sizePolicy">
-       <sizepolicy hsizetype="MinimumExpanding" vsizetype="MinimumExpanding">
-        <horstretch>0</horstretch>
-        <verstretch>0</verstretch>
-       </sizepolicy>
-      </property>
-      <property name="minimumSize">
-       <size>
-        <width>640</width>
-        <height>600</height>
-       </size>
+       <sizepolicy hsizetype="Expanding" vsizetype="Expanding"/>
       </property>
      </widget>
     </item>
@@ -64,7 +66,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>800</width>
+     <width>1200</width>
      <height>23</height>
     </rect>
    </property>
@@ -120,9 +122,9 @@
 		<header>VolumeControlsWidget.h</header>
 </customwidget>
   <customwidget>
-   <class>LightBoxWidget</class>
+   <class>LightboxWidget</class>
    <extends>QLabel</extends>
-   <header>LightBoxWidget.h</header>
+   <header>LightboxWidget.h</header>
    <container>1</container>
   </customwidget>
  </customwidgets>
