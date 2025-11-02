@@ -131,6 +131,5 @@ private:
 	QAction* m_actFlipV = nullptr;
 	QAction* m_actRotCw = nullptr;
 	QAction* m_actRotCcw = nullptr;
-	QAction* m_actOrtho = nullptr;
 	QAction* m_actReset = nullptr;
 };

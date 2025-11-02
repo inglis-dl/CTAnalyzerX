@@ -10,6 +10,7 @@
 #include <QGridLayout>
 #include <QIntValidator>
 #include <QSignalBlocker>
+#include <QKeyEvent>
 
 #include <vtkRenderWindow.h>
 #include <vtkGenericOpenGLRenderWindow.h>
@@ -17,7 +18,6 @@
 #include <vtkInteractorStyleImage.h>
 #include <vtkImageData.h>
 #include <vtkCamera.h>
-#include <vtkImageMapToWindowLevelColors.h>
 #include <vtkImageSliceMapper.h>
 #include <vtkImageSlice.h>
 #include <vtkStreamingDemandDrivenPipeline.h>
@@ -76,6 +76,9 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 
 	ui->renderArea->setRenderWindow(renderWindow); // mount VTK window into Qt widget
 	setFocusProxy(ui->renderArea);                 // keyboard/mouse go to the view
+	// Make render widget focusable and able to veto app shortcuts
+	ui->renderArea->setFocusPolicy(Qt::StrongFocus);
+	ui->renderArea->installEventFilter(this);
 
 	// Set interactor style after the widget created one for the renderWindow
 	if (auto* iren = renderWindow->GetInteractor()) {
@@ -87,7 +90,6 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	}
 
 	shiftScaleFilter = vtkSmartPointer<vtkImageShiftScale>::New();
-	windowLevelFilter = vtkSmartPointer<vtkImageMapToWindowLevelColors>::New();
 
 	// Initialize slice mapper and image slice
 	sliceMapper = vtkSmartPointer<vtkImageSliceMapper>::New();
@@ -111,6 +113,11 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	this->qvtkConnection->Connect(interactorStyle, vtkCommand::LeftButtonPressEvent,
 		this, SLOT(trapSpin(vtkObject*)));
 
+	// Also make sure the style operates on your renderer
+	interactorStyle->SetDefaultRenderer(renderer);
+	interactorStyle->SetCurrentRenderer(renderer);
+
+	//editor
 	connect(ui->sliderSlicePosition, &QSlider::valueChanged, this, &SliceView::setSliceIndex);
 
 	// Keep only the editor in sync when slice changes (remove "Slice:" label usage)
@@ -257,15 +264,34 @@ void SliceView::buildSliderBar(QWidget* rootContent)
 
 void SliceView::resetCamera()
 {
-	if (renderer) {
+	if (!renderer) return;
+
+	// If no image yet, fall back to VTK default reset
+	if (!imageData) {
 		renderer->ResetCamera();
 		render();
+		return;
 	}
-}
 
-void SliceView::orthogonalizeView()
-{
+	// Remember current slice so we don't jump after re-orthogonalizing
+	const int keepSlice = m_currentSlice;
+
+	// Clear any transforms that could emulate flips/rotations
+	if (imageSlice) {
+		imageSlice->SetOrientation(0.0, 0.0, 0.0);
+		imageSlice->SetScale(1.0, 1.0, 1.0);
+		imageSlice->SetUserTransform(nullptr);
+		imageSlice->SetUserMatrix(nullptr);
+	}
+
+	// Rebuild an orthogonal camera aligned with current orientation
 	updateCamera();
+
+	// Restore the previously selected slice (clamped to valid range)
+	setSliceIndex(std::clamp(keepSlice, m_minSlice, m_maxSlice));
+
+	// Ensure clipping is sane and render
+	renderer->ResetCameraClippingRange();
 	render();
 }
 
@@ -293,27 +319,34 @@ void SliceView::setImageData(vtkImageData* image) {
 	if (!image) return;
 	imageData = image;
 
-	// Set the input image to the window/level filter
+	// Set the input image to the shift/scale filter
 	shiftScaleFilter->SetInputData(imageData);
-	shiftScaleFilter->SetOutputScalarTypeToUnsignedChar();
+
+	// Preserve 16-bit precision for display (use unsigned short instead of unsigned char)
+	shiftScaleFilter->SetOutputScalarTypeToUnsignedShort();
 
 	double range[2];
 	imageData->GetScalarRange(range);
+	const double diff = range[1] - range[0];
+	const double USHORT_MAX_D = 65535.0;
 
 	shiftScaleFilter->SetShift(-range[0]);
-	if (VTK_UNSIGNED_CHAR_MAX > (range[1] - range[0]))
-	{
-		shiftScaleFilter->SetScale(1);
+	if (diff > 0.0) {
+		// POC: scale to either native dynamic range or full 16-bit span
+		if (diff <= USHORT_MAX_D) {
+			shiftScaleFilter->SetScale(1.0);
+		}
+		else {
+			shiftScaleFilter->SetScale(USHORT_MAX_D / diff);
+		}
 	}
-	else
-	{
-		shiftScaleFilter->SetScale(VTK_UNSIGNED_CHAR_MAX / (range[1] - range[0]));
+	else {
+		shiftScaleFilter->SetScale(1.0);
 	}
 
-	windowLevelFilter->SetInputConnection(shiftScaleFilter->GetOutputPort());
 
-	// Set the output of the window/level filter to the slice mapper
-	sliceMapper->SetInputConnection(windowLevelFilter->GetOutputPort());
+	// feed the slice mapper directly from the 16-bit shift/scale output
+	sliceMapper->SetInputConnection(shiftScaleFilter->GetOutputPort());
 
 	// Ensure mapper orientation matches current view as soon as input exists
 	switch (m_viewOrientation) {
@@ -323,39 +356,38 @@ void SliceView::setImageData(vtkImageData* image) {
 		default:                  sliceMapper->SetOrientationToZ(); break; // x-y plane z normal
 	}
 
-	const int components = image->GetNumberOfScalarComponents();
-	switch (components)
-	{
-		case 1:
-		windowLevelFilter->SetActiveComponent(0);
-		windowLevelFilter->PassAlphaToOutputOff();
-		windowLevelFilter->SetOutputFormatToLuminance();
-		break;
-		case 2:
-		case 3:
-		windowLevelFilter->SetOutputFormatToRGB();
-		windowLevelFilter->PassAlphaToOutputOff();
-		break;
-		case 4:
-		windowLevelFilter->SetOutputFormatToRGBA();
-		windowLevelFilter->PassAlphaToOutputOn();
-		break;
-	}
-
 	// Add imageActor to renderer only the first time a valid image is set
 	if (!m_imageInitialized) {
 		renderer->AddViewProp(imageSlice);
+		imageSlice->PickableOn();      // ensure VTK can pick it for WL
 		m_imageInitialized = true;
 	}
 
-	windowLevelFilter->Modified();
-	windowLevelFilter->Update();
+	// Initialize image property window/level to the shifted/scaled range so that
+	// vtkInteractorStyleImage interactions affect the display.
+	// After shift/scale: data is in [0, min(diff, 65535)]
+	const double baseWindow = diff > 0.0 ? std::min(diff, USHORT_MAX_D) : 1.0;
+	const double baseLevel = baseWindow * 0.5;
+	imageProperty->SetColorWindow(baseWindow);
+	imageProperty->SetColorLevel(baseLevel);
 
 	updateSliceRange();
 
 	// Set camera and show a valid slice immediately (center)
 	updateCamera();
 	setSliceIndex((m_minSlice + m_maxSlice) / 2);
+
+	// Prime the interactor style so 'r' resets to this baseline WL.
+	if (auto* iren = renderWindow->GetInteractor()) {
+		if (auto* style = vtkInteractorStyleImage::SafeDownCast(iren->GetInteractorStyle())) {
+			// Ensure the style can find the image and property
+			style->SetDefaultRenderer(renderer);
+			style->SetCurrentRenderer(renderer);
+			// This captures imageProperty->GetColorWindow/Level() into WindowLevelInitial
+			style->StartWindowLevel();
+			style->EndWindowLevel();
+		}
+	}
 }
 
 void SliceView::updateCamera() {
@@ -595,4 +627,29 @@ void SliceView::trapSpin(vtkObject* obj)
 		return;
 
 	style->OnLeftButtonDown();
+}
+
+// Allow the render widget to prevent QShortcut from stealing VTK keys
+bool SliceView::eventFilter(QObject* watched, QEvent* event)
+{
+	if (watched == ui->renderArea && event->type() == QEvent::ShortcutOverride) {
+		auto* ke = reinterpret_cast<QKeyEvent*>(event);
+
+		// Accept when no modifiers or Shift only; let Ctrl/Alt/Meta fall through to app shortcuts
+		const Qt::KeyboardModifiers mods = ke->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+		if (mods == Qt::NoModifier || mods == Qt::ShiftModifier) {
+			switch (ke->key()) {
+				case Qt::Key_R: // Reset window/level in vtkInteractorStyleImage::OnChar
+				case Qt::Key_F: // Fly-to
+				case Qt::Key_X: // Set orientation
+				case Qt::Key_Y:
+				case Qt::Key_Z:
+				ke->accept();
+				return true; // stop shortcut processing; deliver to KeyPress/VTK
+				default:
+				break;
+			}
+		}
+	}
+	return SceneFrameWidget::eventFilter(watched, event);
 }

@@ -97,16 +97,14 @@ void SceneFrameWidget::createDefaultMenuAndActions()
 		menu->addSeparator();
 		m_actFlipH = menu->addAction(tr("Flip Horizontal"));
 		m_actFlipV = menu->addAction(tr("Flip Vertical"));
-		m_actRotCw = menu->addAction(tr("Rotate +90°"));
-		m_actRotCcw = menu->addAction(tr("Rotate -90°"));
-		m_actOrtho = menu->addAction(tr("Orthogonalize View"));
+		m_actRotCw = menu->addAction(QStringLiteral("Rotate +90\u00B0"));
+		m_actRotCcw = menu->addAction(QStringLiteral("Rotate -90\u00B0"));
 		m_actReset = menu->addAction(tr("Reset Camera"));
 
 		connect(m_actFlipH, &QAction::triggered, this, [this]() { flipHorizontal(); });
 		connect(m_actFlipV, &QAction::triggered, this, [this]() { flipVertical(); });
 		connect(m_actRotCw, &QAction::triggered, this, [this]() { rotateCamera(+90.0); });
 		connect(m_actRotCcw, &QAction::triggered, this, [this]() { rotateCamera(-90.0); });
-		connect(m_actOrtho, &QAction::triggered, this, [this]() { orthogonalizeView(); });
 		connect(m_actReset, &QAction::triggered, this, [this]() { resetCamera(); });
 	}
 }
@@ -121,7 +119,6 @@ void SceneFrameWidget::wireShortcuts()
 	new QShortcut(QKeySequence(Qt::Key_V), this, [this]() { flipVertical(); });
 
 	new QShortcut(QKeySequence(Qt::Key_R), this, [this]() { resetCamera(); });
-	new QShortcut(QKeySequence(Qt::Key_O), this, [this]() { orthogonalizeView(); });
 
 	new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Right), this, [this]() { rotateCamera(+90.0); });
 	new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Left), this, [this]() { rotateCamera(-90.0); });
@@ -143,7 +140,6 @@ void SceneFrameWidget::updateActionEnableStates()
 	if (m_actFlipV)  m_actFlipV->setEnabled(flipV);
 	if (m_actRotCw)  m_actRotCw->setEnabled(rotCW);
 	if (m_actRotCcw) m_actRotCcw->setEnabled(rotCCW);
-	if (m_actOrtho)  m_actOrtho->setEnabled(haveRW);
 	if (m_actReset)  m_actReset->setEnabled(haveRW);
 
 	Q_UNUSED(reorient2D);

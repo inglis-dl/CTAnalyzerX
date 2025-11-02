@@ -11,7 +11,6 @@
 #include <vtkRenderWindow.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkInteractorStyleImage.h>
-#include <vtkImageMapToWindowLevelColors.h>
 #include <vtkImageActor.h>
 #include <vtkImageSliceMapper.h>
 #include <vtkImageShiftScale.h>
@@ -53,12 +52,12 @@ public:
 signals:
 	void sliceChanged(int);
 	void interpolationChanged(Interpolation);
+	void windowLevelChanged(double window, double level);
 
 protected:
 	// SceneFrameWidget overrides
 	vtkRenderWindow* getRenderWindow() const override;
 	void resetCamera() override;
-	void orthogonalizeView() override;
 	void flipHorizontal() override;
 	void flipVertical() override;
 	void rotateCamera(double degrees) override;
@@ -67,6 +66,9 @@ protected:
 	bool canFlipHorizontal() const override { return true; }
 	bool canFlipVertical() const override { return true; }
 	bool canRotate() const override { return true; }
+
+	// Ensure Qt shortcuts don't steal keys intended for VTK
+	bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
 	void updateCamera();
@@ -84,18 +86,15 @@ private:
 	vtkSmartPointer<vtkRenderer> renderer;
 	vtkSmartPointer<vtkGenericOpenGLRenderWindow> renderWindow;
 	vtkSmartPointer<vtkInteractorStyleImage> interactorStyle;
-
-	vtkSmartPointer<vtkImageMapToWindowLevelColors> windowLevelFilter;
 	vtkSmartPointer<vtkImageShiftScale> shiftScaleFilter;
 	vtkSmartPointer<vtkImageSliceMapper> sliceMapper;
 	vtkSmartPointer<vtkImageSlice> imageSlice;
 	vtkSmartPointer<vtkImageProperty> imageProperty;
-
 	vtkSmartPointer<vtkEventQtSlotConnect> qvtkConnection;
 
 	QLineEdit* m_editSliceIndex = nullptr;
-	QLabel* m_labelMinSlice = nullptr; // added
-	QLabel* m_labelMaxSlice = nullptr; // added
+	QLabel* m_labelMinSlice = nullptr;
+	QLabel* m_labelMaxSlice = nullptr;
 
 	// Build a bottom bar: [minLabel] [slider] [maxLabel] [lineEdit]
 	void buildSliderBar(QWidget* rootContent);
