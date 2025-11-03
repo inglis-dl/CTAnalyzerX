@@ -111,6 +111,8 @@ set(SOURCES
      src/SunkenSliderStyle.h
      src/ImageFrameWidget.cpp
      src/ImageFrameWidget.h
+     #src/WindowLevelBus.cpp
+     #src/WindowLevelBus.h
     ${CTANALYZERX_RESOURCES}
 )
 

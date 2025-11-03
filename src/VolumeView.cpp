@@ -112,22 +112,25 @@ void VolumeView::createMenuAndActions()
 			if (item == QLatin1String("XY") || item == QLatin1String("YZ") || item == QLatin1String("XZ")) {
 				const ViewOrientation orient = labelToOrientation(item);
 				setViewOrientation(orient);
+				setTitle(m_slicePlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
 				return;
 			}
 
 			if (item == QLatin1String("Volume")) {
 				// Toggle to 3D volume rendering
 				setSlicePlanesVisible(false);
-				setTitle("Volume");
+				//setTitle("Volume");
 			}
 			else if (item == QLatin1String("Slice Planes")) {
 				// Toggle to slice planes view
 				setSlicePlanesVisible(true);
-				setTitle("Slice Planes");
+				//setTitle("Slice Planes");
 			}
 			else if (item == QLatin1String("Reset Camera")) {
 				resetCamera();
 			}
+			// Always restore the title to the current mode after any command
+			setTitle(m_slicePlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
 		});
 	}
 }
@@ -182,8 +185,8 @@ void VolumeView::setImageData(vtkImageData* image)
 		m_imageInitialized = true;
 	}
 
-	// 1) Rebuild the ACTUAL color TF to span the native image range (not 0..65535)
-//    This makes grayscale brightness/contrast match your data.
+	// Rebuild the ACTUAL color TF to span the native image range (not 0..65535)
+	// This makes grayscale brightness/contrast match your data.
 	{
 		// Optional: trim 1% like vtkVolumeScene
 		const double diff = m_scalarRangeMax - m_scalarRangeMin;
@@ -196,15 +199,15 @@ void VolumeView::setImageData(vtkImageData* image)
 		m_actualColorTF->Build();
 	}
 
-	// 2) Remap ACTUAL -> MAPPED using current shift/scale, then attach to property
+	// Remap ACTUAL -> MAPPED using current shift/scale, then attach to property
 	updateMappedColorsFromActual();
 	updateMappedOpacityFromActual();
 
-	// 3) Attach mapped TFs to the property (refresh on every change)
+	// Attach mapped TFs to the property (refresh on every change)
 	m_volumeProperty->SetColor(m_colorTF);
 	m_volumeProperty->SetScalarOpacity(m_scalarOpacity);
 
-	// 4) Initialize WL in native domain (mirrors vtkVolumeScene)
+	// Initialize WL in native domain
 	{
 		const double diff = m_scalarRangeMax - m_scalarRangeMin;
 		const double lb = diff > 0.0 ? (m_scalarRangeMin + 0.01 * diff) : m_scalarRangeMin;
@@ -217,7 +220,7 @@ void VolumeView::setImageData(vtkImageData* image)
 		m_volumeProperty->SetColor(m_colorTF);
 	}
 
-	// 4) Optional: set scalar opacity unit distance to match data spacing
+	// Optional: set scalar opacity unit distance to match data spacing
 	{
 		double sp[3] = { 1,1,1 };
 		m_imageData->GetSpacing(sp);
@@ -272,6 +275,7 @@ void VolumeView::setColorWindowLevel(double window, double level)
 	m_volumeProperty->SetColor(m_colorTF);
 
 	render();
+
 	emit windowLevelChanged(window, level);
 }
 
@@ -513,4 +517,70 @@ void VolumeView::updateMappedColorsFromActual()
 		}
 	}
 	m_colorTF->Build();
+}
+
+void VolumeView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation)
+{
+	// Allow re-applying the same orientation to realign after mouse interaction
+	const bool changed = (m_viewOrientation != orientation);
+	m_viewOrientation = orientation;
+
+	m_viewOrientation = orientation;
+
+	vtkCamera* cam = m_renderer ? m_renderer->GetActiveCamera() : nullptr;
+
+	// If no image yet or no camera/renderer, just notify listeners
+	if (!m_imageData || !m_renderer || !cam) {
+		if (changed) emit viewOrientationChanged(m_viewOrientation);
+		return;
+	}
+
+	// Compute volume bounds and center
+	double bounds[6] = { 0,0,0,0,0,0 };
+	m_imageData->GetBounds(bounds);
+	const double center[3] = {
+		0.5 * (bounds[0] + bounds[1]),
+		0.5 * (bounds[2] + bounds[3]),
+		0.5 * (bounds[4] + bounds[5])
+	};
+
+	// Map orientation to axes:
+	// w = view normal axis; u/v = in-plane axes, v will be "up"
+	int w = static_cast<int>(m_viewOrientation);
+	int u = 0, v = 1; // defaults for XY
+	switch (w) {
+		case VIEW_ORIENTATION_YZ: u = 1; v = 2; break; // look along +X, up +Z
+		case VIEW_ORIENTATION_XZ: u = 0; v = 2; break; // look along +Y, up +Z
+		case VIEW_ORIENTATION_XY:
+		default:                  u = 0; v = 1; break; // look along +Z, up +Y
+	}
+
+	// Desired view-up and view-normal
+	double viewUp[3] = { 0.0, 0.0, 0.0 };
+	double vpn[3] = { 0.0, 0.0, 0.0 };
+	viewUp[v] = 1.0;
+	vpn[w] = 1.0;
+
+	// Keep a non-zero distance; ResetCamera will recompute distance/scale, but
+	// the direction (DOP) and view-up will be preserved.
+	const double defaultDistance = std::max(1.0, cam->GetDistance());
+	double pos[3] = {
+		center[0] - vpn[0] * defaultDistance,
+		center[1] - vpn[1] * defaultDistance,
+		center[2] - vpn[2] * defaultDistance
+	};
+
+	// Use parallel projection for orthographic axis-aligned views
+	cam->ParallelProjectionOn();
+	cam->SetFocalPoint(center);
+	cam->SetPosition(pos);
+	cam->SetViewUp(viewUp);
+	cam->OrthogonalizeViewUp();
+
+	// Fit the volume while preserving the new DOP and up
+	m_renderer->ResetCamera(bounds);
+	m_renderer->ResetCameraClippingRange(bounds);
+
+	render();
+	if (changed) emit viewOrientationChanged(m_viewOrientation);
 }

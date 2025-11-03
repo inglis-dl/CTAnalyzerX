@@ -29,6 +29,8 @@ public:
 	void setImageData(vtkImageData* image) override;
 	void setInterpolation(Interpolation newInterpolation) override;
 
+	void setViewOrientation(ViewOrientation orientation) override;
+
 	// Window/level for volume rendering (updates opacity/color TFs)
 	Q_INVOKABLE void setColorWindowLevel(double window, double level) override;
 

@@ -1,8 +1,11 @@
 #include "ImageFrameWidget.h"
 
+#include <algorithm>
+
 #include <vtkCamera.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
+
 
 ImageFrameWidget::ImageFrameWidget(QWidget* parent)
 	: SelectionFrameWidget(parent)

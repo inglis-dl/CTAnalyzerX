@@ -11,9 +11,10 @@
 class ImageFrameWidget : public SelectionFrameWidget
 {
 	Q_OBJECT
-		Q_PROPERTY(ImageFrameWidget::ViewOrientation viewOrientation READ viewOrientation WRITE setViewOrientation NOTIFY viewOrientationChanged)
+		// Properties
+		Q_PROPERTY(ViewOrientation viewOrientation READ viewOrientation WRITE setViewOrientation NOTIFY viewOrientationChanged)
 		Q_PROPERTY(Interpolation interpolation READ interpolation WRITE setInterpolation NOTIFY viewOrientationChanged)
-
+		Q_PROPERTY(LinkPropagationMode linkPropagationMode READ linkPropagationMode WRITE setLinkPropagationMode NOTIFY linkPropagationModeChanged)
 
 public:
 	enum Interpolation { Nearest, Linear, Cubic };
@@ -21,6 +22,10 @@ public:
 
 		enum ViewOrientation { VIEW_ORIENTATION_YZ = 0, VIEW_ORIENTATION_XZ = 1, VIEW_ORIENTATION_XY = 2 };
 	Q_ENUM(ViewOrientation)
+
+		// Propagation mode for linked WL
+		enum LinkPropagationMode { Disabled, EndOnly, Live };
+	Q_ENUM(LinkPropagationMode)
 
 		explicit ImageFrameWidget(QWidget* parent = nullptr);
 	~ImageFrameWidget() override;
@@ -35,7 +40,7 @@ public:
 	Q_INVOKABLE void setViewOrientationToYZ() { setViewOrientation(VIEW_ORIENTATION_YZ); }
 	Q_INVOKABLE void setViewOrientationToXZ() { setViewOrientation(VIEW_ORIENTATION_XZ); }
 
-
+	// Interpolation
 	virtual void setInterpolation(Interpolation newInterpolation) {};
 	Interpolation interpolation() const { return m_interpolation; }
 	Q_INVOKABLE void setInterpolationToNearest() { setInterpolation(Nearest); };
@@ -46,10 +51,23 @@ public:
 	virtual void setImageData(vtkImageData* image) {};
 	vtkImageData* imageData() const { return m_imageData; }
 
+	// Abstract hook: views implement with their own pipeline logic
+	// The bus uses native domain (original image scalar domain).
+	virtual void setColorWindowLevel(double window, double level) {};
+
+	// WL propagation mode
+	void setLinkPropagationMode(LinkPropagationMode mode) {
+		if (m_linkPropagationMode == mode) return;
+		m_linkPropagationMode = mode;
+		emit linkPropagationModeChanged(m_linkPropagationMode);
+	}
+	LinkPropagationMode linkPropagationMode() const { return m_linkPropagationMode; }
+
 signals:
-	void viewOrientationChanged(ImageFrameWidget::ViewOrientation);
+	void viewOrientationChanged(ViewOrientation);
 	void interpolationChanged(Interpolation);
 	void windowLevelChanged(double window, double level);
+	void linkPropagationModeChanged(LinkPropagationMode mode);
 
 protected:
 	// SceneFrameWidget override: used by render() and tooling.
@@ -65,11 +83,6 @@ protected:
 	// Hook from SelectionFrameWidget to gate VTK interactivity on selection
 	void onSelectionChanged(bool selected) override;
 
-	// Abstract hooks for derived classes to implement their pipelines/behavior
-	// - setColorWindowLevel(): slice maps to colors; volume updates TFs.
-
-	virtual void setColorWindowLevel(double window, double level) {};
-
 	// Access to the shared renderer and render window for derived classes.
 	vtkRenderer* renderer() const { return m_renderer; }
 	vtkGenericOpenGLRenderWindow* genericRenderWindow() const { return m_renderWindow; }
@@ -82,12 +95,13 @@ protected:
 	ViewOrientation labelToOrientation(const QString& label) const;
 
 	ViewOrientation  m_viewOrientation = VIEW_ORIENTATION_XY;
-	Interpolation   m_interpolation = Linear;
+	Interpolation    m_interpolation = Linear;
+	LinkPropagationMode m_linkPropagationMode = Disabled;
 
 	vtkSmartPointer<vtkImageData>                   m_imageData;
 	vtkSmartPointer<vtkRenderer>                    m_renderer;
 	vtkSmartPointer<vtkGenericOpenGLRenderWindow>   m_renderWindow;
-	vtkSmartPointer<vtkImageShiftScale> shiftScaleFilter;
+	vtkSmartPointer<vtkImageShiftScale>             shiftScaleFilter;
 
 	// Mapping info derived from input
 	int    m_nativeScalarType = -1;

@@ -14,6 +14,10 @@
 #include <QIntValidator>
 #include <QSignalBlocker>
 #include <QKeyEvent>
+#include <QtGlobal>
+#include <QApplication>
+#include <QMouseEvent>
+#include <QTimer>
 
 #include <vtkRenderWindow.h>
 #include <vtkGenericOpenGLRenderWindow.h>
@@ -27,6 +31,7 @@
 #include <vtkInformation.h>
 #include <vtkImageProperty.h>
 #include <vtkEventQtSlotConnect.h>
+#include <vtkRenderWindowInteractor.h>
 
 SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	: ImageFrameWidget(parent)
@@ -74,12 +79,20 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	ui->renderArea->setFocusPolicy(Qt::StrongFocus);
 	ui->renderArea->installEventFilter(this);
 
+	// Ensure the slice slider keeps/gets focus when clicked even if the frame gets selected (header turns blue)
+	if (ui->sliderSlicePosition) {
+		ui->sliderSlicePosition->setFocusPolicy(Qt::StrongFocus);
+		ui->sliderSlicePosition->installEventFilter(this);
+	}
+
 	// Set interactor style after the widget created one for the renderWindow
 	if (auto* iren = m_renderWindow->GetInteractor()) {
 		interactorStyle = vtkSmartPointer<vtkInteractorStyleImage>::New();
 		interactorStyle->SetInteractionModeToImage2D();
 		interactorStyle->SetDefaultRenderer(m_renderer);
 		interactorStyle->AutoAdjustCameraClippingRangeOn();
+		// important: allow default WL behavior even when we observe
+		interactorStyle->SetHandleObservers(false);
 		iren->SetInteractorStyle(interactorStyle);
 	}
 
@@ -99,11 +112,6 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	this->qvtkConnection->Connect(interactorStyle, vtkCommand::LeftButtonPressEvent,
 		this, SLOT(trapSpin(vtkObject*)));
 
-	// Also make sure the style operates on your renderer
-	interactorStyle->SetDefaultRenderer(m_renderer);
-	interactorStyle->SetCurrentRenderer(m_renderer);
-
-	//editor
 	connect(ui->sliderSlicePosition, &QSlider::valueChanged, this, &SliceView::setSliceIndex);
 
 	// Keep only the editor in sync when slice changes (remove "Slice:" label usage)
@@ -113,16 +121,6 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 			m_editSliceIndex->setText(QString::number(value));
 		}
 	});
-
-	updateCamera();
-
-	// Apply initial orientation via base API (keeps menu/actions synced)
-	switch (initialOrientation) {
-		case VIEW_ORIENTATION_YZ: setViewOrientationToYZ(); break;
-		case VIEW_ORIENTATION_XZ: setViewOrientationToXZ(); break;
-		case VIEW_ORIENTATION_XY:
-		default: setViewOrientationToXY(); break;
-	}
 }
 
 void SliceView::createMenuAndActions()
@@ -363,8 +361,6 @@ void SliceView::setImageData(vtkImageData* image) {
 
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput(image);
-
-	// Set the input image to the shift/scale filter
 	shiftScaleFilter->SetInputData(m_imageData);
 	shiftScaleFilter->Update();
 
@@ -373,32 +369,29 @@ void SliceView::setImageData(vtkImageData* image) {
 
 	// Ensure mapper orientation matches current view as soon as input exists
 	switch (m_viewOrientation) {
-		case VIEW_ORIENTATION_YZ: sliceMapper->SetOrientationToX(); break; // z-y plane x normal
-		case VIEW_ORIENTATION_XZ: sliceMapper->SetOrientationToY(); break; // x-z plane y normal
+		case VIEW_ORIENTATION_YZ: sliceMapper->SetOrientationToX(); break;
+		case VIEW_ORIENTATION_XZ: sliceMapper->SetOrientationToY(); break;
 		case VIEW_ORIENTATION_XY:
-		default:                  sliceMapper->SetOrientationToZ(); break; // x-y plane z normal
+		default:                  sliceMapper->SetOrientationToZ(); break;
 	}
 
-	// Add imageActor to renderer only the first time a valid image is set
 	if (!m_imageInitialized) {
 		m_renderer->AddViewProp(imageSlice);
-		imageSlice->PickableOn();      // ensure VTK can pick it for WL
+		imageSlice->PickableOn();
 		m_imageInitialized = true;
 	}
 
-	const double diff = (m_scalarRangeMax + m_scalarShift) * m_scalarScale
-		- (m_scalarRangeMin + m_scalarShift) * m_scalarScale;
+	// Establish baseline ONCE in native domain
+	//m_initialWindowNative = std::max(m_scalarRangeMax - m_scalarRangeMin, 1.0);
+	//m_initialLevelNative = 0.5 * (m_scalarRangeMax + m_scalarRangeMin);
 
-	const double baseWindow = diff > 0.0 ? diff : 1.0;
-	const double baseLevel = baseWindow * 0.5;
+	// Apply mapped WL corresponding to that baseline
+	const double minMapped = (m_scalarRangeMin + m_scalarShift) * m_scalarScale;
+	const double maxMapped = (m_scalarRangeMax + m_scalarShift) * m_scalarScale;
+	const double baseWindow = std::max(maxMapped - minMapped, 1.0);
+	const double baseLevel = 0.5 * (maxMapped + minMapped);
 	imageProperty->SetColorWindow(baseWindow);
 	imageProperty->SetColorLevel(baseLevel);
-
-	updateSliceRange();
-
-	// Set camera and show a valid slice immediately (center)
-	updateCamera();
-	setSliceIndex((m_minSlice + m_maxSlice) / 2);
 
 	// Prime the interactor style so 'r' resets to this baseline WL.
 	if (auto* iren = m_renderWindow->GetInteractor()) {
@@ -411,6 +404,12 @@ void SliceView::setImageData(vtkImageData* image) {
 			style->EndWindowLevel();
 		}
 	}
+
+	updateSliceRange();
+
+	// Set camera and show a valid slice immediately (center)
+	updateCamera();
+	setSliceIndex((m_minSlice + m_maxSlice) / 2);
 }
 
 void SliceView::updateCamera() {
@@ -616,6 +615,47 @@ void SliceView::trapSpin(vtkObject* obj)
 // Allow the render widget to prevent QShortcut from stealing VTK keys
 bool SliceView::eventFilter(QObject* watched, QEvent* event)
 {
+	// Ensure the slider retains focus when clicked and also selects this frame so the title highlights.
+	if (watched == ui->sliderSlicePosition) {
+		switch (event->type()) {
+			case QEvent::MouseButtonPress:
+			case QEvent::MouseButtonDblClick: {
+				// Select this frame so title highlights and interactor gating switches here.
+				if (!isSelected()) {
+					setSelected(true);
+				}
+				// Give/restore focus to the slider for immediate drag.
+				if (!ui->sliderSlicePosition->hasFocus()) {
+					ui->sliderSlicePosition->setFocus(Qt::MouseFocusReason);
+				}
+				QTimer::singleShot(0, ui->sliderSlicePosition, [s = ui->sliderSlicePosition]() {
+					if (s) s->setFocus(Qt::OtherFocusReason);
+				});
+				break;
+			}
+			case QEvent::FocusIn: {
+				// If slider gains focus (via click or Tab), ensure this frame is selected.
+				if (!isSelected()) {
+					setSelected(true);
+				}
+				break;
+			}
+			case QEvent::FocusOut: {
+				// If focus is stolen during a drag, take it back on the next cycle.
+				if (QApplication::mouseButtons() & Qt::LeftButton) {
+					QTimer::singleShot(0, ui->sliderSlicePosition, [s = ui->sliderSlicePosition]() {
+						if (s) s->setFocus(Qt::OtherFocusReason);
+					});
+				}
+				break;
+			}
+			default:
+			break;
+		}
+		// Don't consume; let the slider handle its own behavior.
+		return false;
+	}
+
 	if (watched == ui->renderArea && event->type() == QEvent::ShortcutOverride) {
 		// Only capture keys for VTK when this frame is selected, unless restriction is disabled
 		if (!restrictInteractionToSelection() || isSelected()) {

@@ -18,7 +18,8 @@
 #include <QStyleOption>
 #include <QTimer>
 #include <QFocusEvent>
-#include <QApplication> // added
+#include <QApplication>
+#include <QChildEvent> // ADDED
 
 // Removed global static selection tracker
 
@@ -191,7 +192,6 @@ void SelectionFrameWidget::setCentralWidget(QWidget* widget)
 		return;
 
 	if (m_centralWidget) {
-		// Remove previous widget from layout; do not delete (caller may own it).
 		m_mainLayout->removeWidget(m_centralWidget);
 		m_centralWidget->setParent(nullptr);
 		m_centralWidget->hide();
@@ -204,9 +204,12 @@ void SelectionFrameWidget::setCentralWidget(QWidget* widget)
 		m_centralWidget->show();
 
 		// Ensure we can gate mouse interaction inside the central area when not selected
+		// Install on central widget and ALL existing descendants (QObject-level),
+		// because VTK/Qt may add native children later (QWindow, platform windows).
 		m_centralWidget->installEventFilter(this);
-		for (QWidget* w : m_centralWidget->findChildren<QWidget*>()) {
-			w->installEventFilter(this);
+		const auto allObjs = m_centralWidget->findChildren<QObject*>();
+		for (QObject* o : allObjs) {
+			if (o) o->installEventFilter(this);
 		}
 	}
 }
@@ -256,31 +259,51 @@ void SelectionFrameWidget::setRestrictInteractionToSelection(bool on)
 
 bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 {
-	// Gate interaction for unselected frames (optional, default ON)
-	if (m_restrictInteractionToSelection && m_centralWidget) {
-		if (QWidget* w = qobject_cast<QWidget*>(watched)) {
-			const bool inCentralArea = (w == m_centralWidget) || m_centralWidget->isAncestorOf(w);
-			if (inCentralArea && !m_selected) {
-				switch (event->type()) {
-					case QEvent::MouseButtonPress:
-					// Click once to select this frame; consume so VTK won't act on the same click
-					setSelected(true);
-					event->accept();
-					return true;
-					case QEvent::MouseMove:
-					case QEvent::MouseButtonRelease:
-					case QEvent::Wheel:
-					case QEvent::Gesture:
-					case QEvent::TouchBegin:
-					case QEvent::TouchUpdate:
-					case QEvent::TouchEnd:
-					case QEvent::ContextMenu:
-					// Block any interaction while not selected
-					event->accept();
-					return true;
-					default:
-					break;
+	// Dynamically install on newly created children so gating stays effective
+	if (event->type() == QEvent::ChildAdded) {
+		if (auto* ce = static_cast<QChildEvent*>(event)) {
+			if (QObject* child = ce->child()) {
+				// Watch the new child
+				child->installEventFilter(this);
+				// And also its current descendants, if any
+				for (QObject* sub : child->findChildren<QObject*>()) {
+					sub->installEventFilter(this);
 				}
+			}
+		}
+		// Continue normal processing
+	}
+
+	// Determine if the event target lies within the central area (QObject ancestry)
+	bool inCentralArea = false;
+	if (m_centralWidget) {
+		for (QObject* o = watched; o; o = o->parent()) {
+			if (o == m_centralWidget) { inCentralArea = true; break; }
+		}
+	}
+
+	// Gate interaction for unselected frames (optional, default ON)
+	if (m_restrictInteractionToSelection && m_centralWidget && inCentralArea) {
+		if (!m_selected) {
+			switch (event->type()) {
+				case QEvent::MouseButtonPress:
+				// Select and allow this same press to continue so interaction is immediate
+				setSelected(true);
+				setFocus(Qt::MouseFocusReason);
+				return false; // do NOT consume; let VTK/controls handle it now
+				case QEvent::MouseMove:
+				case QEvent::MouseButtonRelease:
+				case QEvent::Wheel:
+				case QEvent::Gesture:
+				case QEvent::TouchBegin:
+				case QEvent::TouchUpdate:
+				case QEvent::TouchEnd:
+				case QEvent::ContextMenu:
+				// Until selected, block other interactions
+				event->accept();
+				return true;
+				default:
+				break;
 			}
 		}
 	}
