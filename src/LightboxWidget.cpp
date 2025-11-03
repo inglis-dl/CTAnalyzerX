@@ -2,8 +2,11 @@
 #include "SliceView.h"
 #include "VolumeView.h"
 #include "SelectionFrameWidget.h"
+
 #include <vtkImageSinusoidSource.h>
 #include <vtkSmartPointer.h>
+
+#include <QTimer>
 #include <array>
 #include <cmath>
 
@@ -12,11 +15,13 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 {
 	ui.setupUi(this);
 
-	ui.YZView->setViewOrientation(SceneFrameWidget::VIEW_ORIENTATION_YZ);
-	ui.XZView->setViewOrientation(SceneFrameWidget::VIEW_ORIENTATION_XZ);
-	ui.XYView->setViewOrientation(SceneFrameWidget::VIEW_ORIENTATION_XY);
+	ui.YZView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_YZ);
+	ui.XZView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_XZ);
+	ui.XYView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_XY);
 
-	setDefaultImage();
+	// Defer default image until after the widget is realized/context ready
+	QTimer::singleShot(0, this, [this]() { setDefaultImage(); });
+
 	connectSliceSynchronization();
 	connectSelectionCoordination();
 

@@ -202,6 +202,12 @@ void SelectionFrameWidget::setCentralWidget(QWidget* widget)
 		m_centralWidget->setParent(this);
 		m_mainLayout->addWidget(m_centralWidget, /*stretch*/ 1);
 		m_centralWidget->show();
+
+		// Ensure we can gate mouse interaction inside the central area when not selected
+		m_centralWidget->installEventFilter(this);
+		for (QWidget* w : m_centralWidget->findChildren<QWidget*>()) {
+			w->installEventFilter(this);
+		}
 	}
 }
 
@@ -222,127 +228,63 @@ void SelectionFrameWidget::setSelected(bool selected)
 		return;
 	}
 
+	// Enforce single selection within the same top-level window (LightBox area)
+	if (selected) {
+		if (QWidget* root = this->window()) {
+			const auto others = root->findChildren<SelectionFrameWidget*>();
+			for (SelectionFrameWidget* w : others) {
+				if (w && w != this && w->isSelected()) {
+					w->setSelected(false);
+				}
+			}
+		}
+	}
+
 	m_selected = selected;
 	updateVisuals();
+	onSelectionChanged(m_selected); // let derived classes enable/disable VTK interactor
 	emit selectedChanged(m_selected);
 }
 
-void SelectionFrameWidget::setSelectionListVisible(bool visible)
+void SelectionFrameWidget::setRestrictInteractionToSelection(bool on)
 {
-	m_selectionListVisible = visible;
-	if (m_selectionMenuButton)
-		m_selectionMenuButton->setVisible(visible);
-}
-
-void SelectionFrameWidget::setTitleBarVisible(bool visible)
-{
-	m_titleBarVisible = visible;
-	if (m_headerContainer)
-		m_headerContainer->setVisible(visible);
-
-	if (visible) {
-		QTimer::singleShot(0, this, [this]() { syncMenuButtonSizeToHeader(); });
-	}
-}
-
-void SelectionFrameWidget::setOuterBorderWidth(int px)
-{
-	if (m_outerBorderWidth == px) return;
-	m_outerBorderWidth = px;
-	updateVisuals();
-}
-
-void SelectionFrameWidget::setTitleColors(const QColor& foreground, const QColor& background)
-{
-	m_titleFg = foreground;
-	m_titleBg = background;
-	updateVisuals();
-}
-
-void SelectionFrameWidget::setSelectedTitleColors(const QColor& foreground, const QColor& background)
-{
-	m_selectedTitleFg = foreground;
-	m_selectedTitleBg = background;
-	updateVisuals();
-}
-
-void SelectionFrameWidget::setBorderColors(const QColor& normal, const QColor& selected)
-{
-	m_borderColor = normal;
-	m_borderSelectedColor = selected;
-	updateVisuals();
-}
-
-// Individual color property setters
-
-void SelectionFrameWidget::setTitleForegroundColor(const QColor& c)
-{
-	if (m_titleFg == c) return;
-	m_titleFg = c;
-	updateVisuals();
-}
-
-void SelectionFrameWidget::setTitleBackgroundColor(const QColor& c)
-{
-	if (m_titleBg == c) return;
-	m_titleBg = c;
-	updateVisuals();
-}
-
-void SelectionFrameWidget::setSelectedTitleForegroundColor(const QColor& c)
-{
-	if (m_selectedTitleFg == c) return;
-	m_selectedTitleFg = c;
-	updateVisuals();
-}
-
-void SelectionFrameWidget::setSelectedTitleBackgroundColor(const QColor& c)
-{
-	if (m_selectedTitleBg == c) return;
-	m_selectedTitleBg = c;
-	updateVisuals();
-}
-
-void SelectionFrameWidget::setBorderColor(const QColor& c)
-{
-	if (m_borderColor == c) return;
-	m_borderColor = c;
-	updateVisuals();
-}
-
-void SelectionFrameWidget::setBorderSelectedColor(const QColor& c)
-{
-	if (m_borderSelectedColor == c) return;
-	m_borderSelectedColor = c;
-	updateVisuals();
-}
-
-void SelectionFrameWidget::setAllowChangeTitle(bool on)
-{
-	if (m_allowChangeTitle == on) return;
-	m_allowChangeTitle = on;
-	appendAuxMenuActions();
-}
-
-void SelectionFrameWidget::setAllowClose(bool on)
-{
-	if (m_allowClose == on) return;
-	m_allowClose = on;
-	appendAuxMenuActions();
-}
-
-QAction* SelectionFrameWidget::addHeaderAction(QAction* action)
-{
-	if (!action) return nullptr;
-	auto* btn = new QToolButton(m_headerActionsContainer);
-	btn->setDefaultAction(action);
-	btn->setAutoRaise(true);
-	m_headerActionsLayout->addWidget(btn);
-	return action;
+	if (m_restrictInteractionToSelection == on) return;
+	m_restrictInteractionToSelection = on;
+	// Re-apply interaction state according to current selection
+	onSelectionChanged(m_selected);
 }
 
 bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 {
+	// Gate interaction for unselected frames (optional, default ON)
+	if (m_restrictInteractionToSelection && m_centralWidget) {
+		if (QWidget* w = qobject_cast<QWidget*>(watched)) {
+			const bool inCentralArea = (w == m_centralWidget) || m_centralWidget->isAncestorOf(w);
+			if (inCentralArea && !m_selected) {
+				switch (event->type()) {
+					case QEvent::MouseButtonPress:
+					// Click once to select this frame; consume so VTK won't act on the same click
+					setSelected(true);
+					event->accept();
+					return true;
+					case QEvent::MouseMove:
+					case QEvent::MouseButtonRelease:
+					case QEvent::Wheel:
+					case QEvent::Gesture:
+					case QEvent::TouchBegin:
+					case QEvent::TouchUpdate:
+					case QEvent::TouchEnd:
+					case QEvent::ContextMenu:
+					// Block any interaction while not selected
+					event->accept();
+					return true;
+					default:
+					break;
+				}
+			}
+		}
+	}
+
 	if (watched == m_headerContainer || watched == m_titleLabel || watched == m_selectionMenuButton) {
 		if ((watched == m_headerContainer || watched == m_titleLabel) &&
 			(event->type() == QEvent::Resize ||
@@ -528,4 +470,125 @@ void SelectionFrameWidget::focusInEvent(QFocusEvent* e)
 {
 	QFrame::focusInEvent(e);
 	setSelected(true);
+}
+
+void SelectionFrameWidget::setSelectionListVisible(bool visible)
+{
+	if (m_selectionListVisible == visible) return;
+	m_selectionListVisible = visible;
+	if (m_selectionMenuButton) m_selectionMenuButton->setVisible(visible);
+}
+
+void SelectionFrameWidget::setTitleBarVisible(bool visible)
+{
+	if (m_titleBarVisible == visible) return;
+	m_titleBarVisible = visible;
+	if (m_headerContainer) m_headerContainer->setVisible(visible);
+	// Keep the menu button aligned after visibility changes
+	syncMenuButtonSizeToHeader();
+}
+
+void SelectionFrameWidget::setOuterBorderWidth(int px)
+{
+	if (m_outerBorderWidth == px) return;
+	m_outerBorderWidth = px;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setTitleColors(const QColor& foreground, const QColor& background)
+{
+	m_titleFg = foreground;
+	m_titleBg = background;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setSelectedTitleColors(const QColor& foreground, const QColor& background)
+{
+	m_selectedTitleFg = foreground;
+	m_selectedTitleBg = background;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setBorderColors(const QColor& normal, const QColor& selected)
+{
+	m_borderColor = normal;
+	m_borderSelectedColor = selected;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setTitleForegroundColor(const QColor& c)
+{
+	if (m_titleFg == c) return;
+	m_titleFg = c;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setTitleBackgroundColor(const QColor& c)
+{
+	if (m_titleBg == c) return;
+	m_titleBg = c;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setSelectedTitleForegroundColor(const QColor& c)
+{
+	if (m_selectedTitleFg == c) return;
+	m_selectedTitleFg = c;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setSelectedTitleBackgroundColor(const QColor& c)
+{
+	if (m_selectedTitleBg == c) return;
+	m_selectedTitleBg = c;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setBorderColor(const QColor& c)
+{
+	if (m_borderColor == c) return;
+	m_borderColor = c;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setBorderSelectedColor(const QColor& c)
+{
+	if (m_borderSelectedColor == c) return;
+	m_borderSelectedColor = c;
+	updateVisuals();
+}
+
+void SelectionFrameWidget::setAllowChangeTitle(bool on)
+{
+	if (m_allowChangeTitle == on) return;
+	m_allowChangeTitle = on;
+	appendAuxMenuActions();
+}
+
+void SelectionFrameWidget::setAllowClose(bool on)
+{
+	if (m_allowClose == on) return;
+	m_allowClose = on;
+	appendAuxMenuActions();
+}
+
+QAction* SelectionFrameWidget::addHeaderAction(QAction* action)
+{
+	if (!action || !m_headerActionsLayout) return action;
+	// Avoid duplicates: only add if not already in layout
+	bool alreadyAdded = false;
+	for (int i = 0; i < m_headerActionsLayout->count(); ++i) {
+		if (auto* w = m_headerActionsLayout->itemAt(i)->widget()) {
+			if (auto* tb = qobject_cast<QToolButton*>(w)) {
+				if (tb->defaultAction() == action) { alreadyAdded = true; break; }
+			}
+		}
+	}
+	if (!alreadyAdded) {
+		auto* btn = new QToolButton(m_headerActionsContainer);
+		btn->setAutoRaise(true);
+		btn->setDefaultAction(action);
+		m_headerActionsLayout->addWidget(btn);
+	}
+	return action;
 }

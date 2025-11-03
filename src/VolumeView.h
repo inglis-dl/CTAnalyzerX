@@ -1,65 +1,83 @@
 #ifndef VOLUMEVIEW_H
 #define VOLUMEVIEW_H
 
-#include <QFrame>
-#include "ui_VolumeView.h"
+#include "ImageFrameWidget.h"
 
 #include <vtkSmartPointer.h>
-#include <vtkImageData.h>
-#include <vtkRenderWindow.h>
 
-class vtkRenderer;
 class vtkVolume;
 class vtkVolumeProperty;
 class vtkGPUVolumeRayCastMapper;
 class vtkImagePlaneWidget;
-class vtkGenericOpenGLRenderWindow;
-class vtkImageShiftScale;
+class vtkImageData;
+class vtkColorTransferFunction;
+class vtkPiecewiseFunction;
+class vtkInteractorStyleTrackballCamera;
+class vtkRenderWindowInteractor;
 
-class VolumeView : public QFrame {
+namespace Ui { class VolumeView; }
+
+class VolumeView : public ImageFrameWidget
+{
 	Q_OBJECT
-		Q_PROPERTY(bool slicePlanesVisible READ getSlicePlanesVisible WRITE setSlicePlanesVisible NOTIFY slicePlanesVisibleChanged)
+		Q_PROPERTY(bool slicePlanesVisible READ slicePlanesVisible WRITE setSlicePlanesVisible NOTIFY slicePlanesVisibleChanged)
 
 public:
 	explicit VolumeView(QWidget* parent = nullptr);
+	~VolumeView();
 
-	void setImageData(vtkImageData* image);
+	void setImageData(vtkImageData* image) override;
+	void setInterpolation(Interpolation newInterpolation) override;
+
+	// Window/level for volume rendering (updates opacity/color TFs)
+	Q_INVOKABLE void setColorWindowLevel(double window, double level) override;
+
+	// Slice planes (for cross-hairs / link to SliceView)
 	void updateSlicePlanes(int x, int y, int z);
 
-	vtkRenderWindow* GetRenderWindow() const;
-
 	// Property accessors
-	bool getSlicePlanesVisible() const;
+	bool slicePlanesVisible() const { return m_slicePlanesVisible; }
 	void setSlicePlanesVisible(bool visible);
 
+	void createMenuAndActions();
+
 signals:
-	// Signal emitted when a new image is set, with extents for each axis
+	// Emitted when a new image is set
 	void imageExtentsChanged(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 	void slicePlanesVisibleChanged(bool visible);
 
 public slots:
-	// Set cropping region for volume rendering
+	// Cropping region for the volume mapper
 	void setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 
+	// Recenter camera on the volume while preserving current rotation
+	void resetCamera() override;
+
 private:
-	Ui::VolumeView ui;
 
-	vtkSmartPointer<vtkRenderer> renderer;
-	vtkSmartPointer<vtkGenericOpenGLRenderWindow> renderWindow;
+	Ui::VolumeView* ui = nullptr;
 
-	vtkSmartPointer<vtkImageShiftScale> shiftScale;
-	vtkSmartPointer<vtkVolume> volume;
-	vtkSmartPointer<vtkVolumeProperty> property;
-	vtkSmartPointer<vtkGPUVolumeRayCastMapper> mapper;
+	// Pipeline
+	vtkSmartPointer<vtkGPUVolumeRayCastMapper> m_mapper;
+	vtkSmartPointer<vtkVolumeProperty>         m_volumeProperty;
+	vtkSmartPointer<vtkVolume>                 m_volume;
 
-	vtkSmartPointer<vtkImageData> imageData;
+	// Transfer functions: maintain both actual and mapped (post shift/scale) like vtkVolumeScene
+	vtkSmartPointer<vtkColorTransferFunction>  m_actualColorTF;
+	vtkSmartPointer<vtkColorTransferFunction>  m_colorTF;
+	vtkSmartPointer<vtkPiecewiseFunction>      m_actualScalarOpacity;
+	vtkSmartPointer<vtkPiecewiseFunction>      m_scalarOpacity;
 
-	vtkSmartPointer<vtkImagePlaneWidget> yzPlane;
-	vtkSmartPointer<vtkImagePlaneWidget> xzPlane;
-	vtkSmartPointer<vtkImagePlaneWidget> xyPlane;
+	// Plane widgets
+	vtkSmartPointer<vtkImagePlaneWidget> m_yzPlane; // normal X
+	vtkSmartPointer<vtkImagePlaneWidget> m_xzPlane; // normal Y
+	vtkSmartPointer<vtkImagePlaneWidget> m_xyPlane; // normal Z
 
-	bool imageInitialized = false;
-	bool slicePlanesVisible = false;
+	bool m_slicePlanesVisible = false;
+
+	void updateMappedOpacityFromActual();
+	void updateMappedColorsFromActual();
+	void initializeDefaultTransferFunctions();
 };
 
 #endif // VOLUMEVIEW_H

@@ -107,10 +107,10 @@ set(SOURCES
 	 src/MenuButton.h
 	 src/SelectionFrameWidget.cpp
 	 src/SelectionFrameWidget.h
-     src/SceneFrameWidget.cpp
-     src/SceneFrameWidget.h
      src/SunkenSliderStyle.cpp
      src/SunkenSliderStyle.h
+     src/ImageFrameWidget.cpp
+     src/ImageFrameWidget.h
     ${CTANALYZERX_RESOURCES}
 )
 

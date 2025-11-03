@@ -33,6 +33,7 @@ class SelectionFrameWidget : public QFrame
 		Q_PROPERTY(QColor selectedTitleBackgroundColor READ selectedTitleBackgroundColor WRITE setSelectedTitleBackgroundColor)
 		Q_PROPERTY(QColor borderColor READ borderColor WRITE setBorderColor)
 		Q_PROPERTY(QColor borderSelectedColor READ borderSelectedColor WRITE setBorderSelectedColor)
+		Q_PROPERTY(bool restrictInteractionToSelection READ restrictInteractionToSelection WRITE setRestrictInteractionToSelection)
 
 public:
 	explicit SelectionFrameWidget(QWidget* parent = nullptr);
@@ -97,6 +98,9 @@ public:
 	void setAllowClose(bool on);
 	bool allowClose() const { return m_allowClose; }
 
+	void setRestrictInteractionToSelection(bool on);
+	bool restrictInteractionToSelection() const { return m_restrictInteractionToSelection; }
+
 	// Add small actions placed on the right side of the header
 	QAction* addHeaderAction(QAction* action);
 
@@ -114,6 +118,9 @@ protected:
 	void resizeEvent(QResizeEvent* e) override;
 	void showEvent(QShowEvent* e) override;
 	void focusInEvent(QFocusEvent* e) override;
+
+	// Notifies derived widgets (e.g., SliceView/VolumeView) so they can enable/disable VTK interactor
+	virtual void onSelectionChanged(bool selected) {}
 
 private:
 	void updateVisuals();
@@ -150,4 +157,6 @@ private:
 	QColor m_selectedTitleBg;
 	QColor m_borderColor;
 	QColor m_borderSelectedColor;
+
+	bool m_restrictInteractionToSelection = true; // default: single-frame focus
 };

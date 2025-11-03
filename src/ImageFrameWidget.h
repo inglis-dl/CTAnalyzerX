@@ -1,0 +1,102 @@
+#pragma once
+
+#include "SelectionFrameWidget.h"
+
+#include <vtkSmartPointer.h>
+#include <vtkRenderer.h>
+#include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkImageData.h>
+#include <vtkImageShiftScale.h>
+
+class ImageFrameWidget : public SelectionFrameWidget
+{
+	Q_OBJECT
+		Q_PROPERTY(ImageFrameWidget::ViewOrientation viewOrientation READ viewOrientation WRITE setViewOrientation NOTIFY viewOrientationChanged)
+		Q_PROPERTY(Interpolation interpolation READ interpolation WRITE setInterpolation NOTIFY viewOrientationChanged)
+
+
+public:
+	enum Interpolation { Nearest, Linear, Cubic };
+	Q_ENUM(Interpolation)
+
+		enum ViewOrientation { VIEW_ORIENTATION_YZ = 0, VIEW_ORIENTATION_XZ = 1, VIEW_ORIENTATION_XY = 2 };
+	Q_ENUM(ViewOrientation)
+
+		explicit ImageFrameWidget(QWidget* parent = nullptr);
+	~ImageFrameWidget() override;
+
+	// Rendering entry point
+	Q_INVOKABLE void render();
+
+	// Orientation API (now strongly-typed)
+	ViewOrientation viewOrientation() const { return m_viewOrientation; }
+	virtual void setViewOrientation(ViewOrientation orientation);
+	Q_INVOKABLE void setViewOrientationToXY() { setViewOrientation(VIEW_ORIENTATION_XY); }
+	Q_INVOKABLE void setViewOrientationToYZ() { setViewOrientation(VIEW_ORIENTATION_YZ); }
+	Q_INVOKABLE void setViewOrientationToXZ() { setViewOrientation(VIEW_ORIENTATION_XZ); }
+
+
+	virtual void setInterpolation(Interpolation newInterpolation) {};
+	Interpolation interpolation() const { return m_interpolation; }
+	Q_INVOKABLE void setInterpolationToNearest() { setInterpolation(Nearest); };
+	Q_INVOKABLE void setInterpolationToLinear() { setInterpolation(Linear); };
+	Q_INVOKABLE void setInterpolationToCubic() { setInterpolation(Cubic); };
+
+	// Common image setter: stores the image then calls the derived hook.
+	virtual void setImageData(vtkImageData* image) {};
+	vtkImageData* imageData() const { return m_imageData; }
+
+signals:
+	void viewOrientationChanged(ImageFrameWidget::ViewOrientation);
+	void interpolationChanged(Interpolation);
+	void windowLevelChanged(double window, double level);
+
+protected:
+	// SceneFrameWidget override: used by render() and tooling.
+	vtkRenderWindow* getRenderWindow() const;
+
+	// Helper to install the scene content into the SelectionFrameWidget body.
+	void setSceneContent(QWidget* content) { setCentralWidget(content); }
+
+	// Camera helpers with safe defaults (shared by derived classes).
+	virtual void resetCamera();
+	virtual void rotateCamera(double degrees) {}
+
+	// Hook from SelectionFrameWidget to gate VTK interactivity on selection
+	void onSelectionChanged(bool selected) override;
+
+	// Abstract hooks for derived classes to implement their pipelines/behavior
+	// - setColorWindowLevel(): slice maps to colors; volume updates TFs.
+
+	virtual void setColorWindowLevel(double window, double level) {};
+
+	// Access to the shared renderer and render window for derived classes.
+	vtkRenderer* renderer() const { return m_renderer; }
+	vtkGenericOpenGLRenderWindow* genericRenderWindow() const { return m_renderWindow; }
+
+	// Optional: allow derived classes to adjust default renderer config.
+	virtual void initializeRendererDefaults();
+
+	// Map orientation <-> label
+	QString orientationLabel(ViewOrientation orient) const;
+	ViewOrientation labelToOrientation(const QString& label) const;
+
+	ViewOrientation  m_viewOrientation = VIEW_ORIENTATION_XY;
+	Interpolation   m_interpolation = Linear;
+
+	vtkSmartPointer<vtkImageData>                   m_imageData;
+	vtkSmartPointer<vtkRenderer>                    m_renderer;
+	vtkSmartPointer<vtkGenericOpenGLRenderWindow>   m_renderWindow;
+	vtkSmartPointer<vtkImageShiftScale> shiftScaleFilter;
+
+	// Mapping info derived from input
+	int    m_nativeScalarType = -1;
+	double m_scalarRangeMin = 0.0;
+	double m_scalarRangeMax = 1.0;
+	double m_scalarShift = 0.0;  // shift applied by shiftScaleFilter
+	double m_scalarScale = 1.0;  // scale applied by shiftScaleFilter
+	void computeShiftScaleFromInput(vtkImageData* image);
+
+	bool m_imageInitialized = false;
+};
+
