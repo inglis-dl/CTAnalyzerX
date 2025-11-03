@@ -1,5 +1,4 @@
-#ifndef VOLUMEVIEW_H
-#define VOLUMEVIEW_H
+#pragma once
 
 #include "ImageFrameWidget.h"
 
@@ -21,6 +20,8 @@ class VolumeView : public ImageFrameWidget
 {
 	Q_OBJECT
 		Q_PROPERTY(bool slicePlanesVisible READ slicePlanesVisible WRITE setSlicePlanesVisible NOTIFY slicePlanesVisibleChanged)
+		// Optional convenience: expose shading toggle (off by default)
+		Q_PROPERTY(bool shadingEnabled READ shadingEnabled WRITE setShadingEnabled)
 
 public:
 	explicit VolumeView(QWidget* parent = nullptr);
@@ -41,6 +42,10 @@ public:
 	bool slicePlanesVisible() const { return m_slicePlanesVisible; }
 	void setSlicePlanesVisible(bool visible);
 
+	// Optional shading control
+	bool shadingEnabled() const { return m_shadingEnabled; }
+	void setShadingEnabled(bool on);
+
 	void createMenuAndActions();
 
 signals:
@@ -56,7 +61,6 @@ public slots:
 	void resetCamera() override;
 
 private:
-
 	Ui::VolumeView* ui = nullptr;
 
 	// Pipeline
@@ -76,11 +80,10 @@ private:
 	vtkSmartPointer<vtkImagePlaneWidget> m_xyPlane; // normal Z
 
 	bool m_slicePlanesVisible = false;
+	bool m_shadingEnabled = false; // new
 
 	void updateMappedOpacityFromActual();
 	void updateMappedColorsFromActual();
 	void initializeDefaultTransferFunctions();
 };
-
-#endif // VOLUMEVIEW_H
 
