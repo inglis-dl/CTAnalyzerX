@@ -20,13 +20,14 @@
 #include <QFocusEvent>
 #include <QApplication>
 #include <QChildEvent> // ADDED
+#include <QContextMenuEvent> // ADDED
 
 // Removed global static selection tracker
 
 SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	: QFrame(parent)
 	, m_headerContainer(new QWidget(this))
-	, m_headerLayout(new QHBoxLayout)
+	, m_headerLayout(new QHBoxLayout) // will be installed on header container below
 	, m_mainLayout(new QVBoxLayout)
 	, m_selectionMenuButton(new MenuButton(this))
 	, m_titleLabel(new QLabel(this))
@@ -58,16 +59,16 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	m_headerActionsLayout->setSpacing(4);
 	m_headerActionsContainer->setLayout(m_headerActionsLayout);
 
-	// Header: [MenuButton] [TitleLabel expanding] ...spacer... [actions]
-	auto* headerBox = new QHBoxLayout(m_headerContainer);
-	headerBox->setContentsMargins(0, 0, 0, 0);
-	headerBox->setSpacing(4);
+	// Header layout: [MenuButton] [TitleLabel expanding] ...spacer... [actions]
+	m_headerLayout->setContentsMargins(0, 0, 0, 0);
+	m_headerLayout->setSpacing(4);
+	m_headerContainer->setLayout(m_headerLayout);
 
 	m_titleLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-	headerBox->addWidget(m_selectionMenuButton);
-	headerBox->addWidget(m_titleLabel, /*stretch*/ 1);
-	headerBox->addStretch(1);
-	headerBox->addWidget(m_headerActionsContainer);
+	m_headerLayout->addWidget(m_selectionMenuButton);
+	m_headerLayout->addWidget(m_titleLabel, /*stretch*/ 1);
+	m_headerLayout->addStretch(1);
+	m_headerLayout->addWidget(m_headerActionsContainer);
 
 	// MenuButton appearance
 	m_selectionMenuButton->setText(QString());
@@ -320,6 +321,15 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 			syncMenuButtonSizeToHeader();
 		}
 
+		// Open the same selection menu on header/title context-click
+		if (event->type() == QEvent::ContextMenu) {
+			if (m_selectionMenuButton && m_selectionMenuButton->menu()) {
+				auto* ce = static_cast<QContextMenuEvent*>(event);
+				m_selectionMenuButton->menu()->exec(ce->globalPos());
+				return true; // consume
+			}
+		}
+
 		if (event->type() == QEvent::MouseButtonPress) {
 			// Select and focus this view when its title bar or menu button is pressed
 			setSelected(true);
@@ -391,25 +401,22 @@ void SelectionFrameWidget::appendAuxMenuActions()
 	// (identified by their objectName)
 	for (QAction* act : m->actions()) {
 		if (act->objectName() == QLatin1String("SelectionFrame-ChangeTitle") ||
-			act->objectName() == QLatin1String("SelectionFrame-Close")) {
+			act->objectName() == QLatin1String("SelectionFrame-Close") ||
+			act->objectName() == QLatin1String("SelectionFrame-AuxSep")) {
 			m->removeAction(act);
 			delete act;
 		}
-	}
-	// Remove trailing separator if it became dangling
-	if (!m->actions().isEmpty() && m->actions().back()->isSeparator())
-	{
-		QAction* sep = m->actions().back();
-		m->removeAction(sep);
-		delete sep;
 	}
 
 	const bool needAux = (m_allowChangeTitle || m_allowClose);
 	const bool hasItems = !m->actions().isEmpty();
 	if (!needAux) return;
 
-	// If menu already has items, add a separator before aux actions
-	if (hasItems) m->addSeparator();
+	// If menu already has items, add a tagged separator before aux actions
+	if (hasItems) {
+		QAction* sep = m->addSeparator();
+		sep->setObjectName(QStringLiteral("SelectionFrame-AuxSep"));
+	}
 
 	if (m_allowChangeTitle) {
 		QAction* change = m->addAction(tr("Change Title..."));
@@ -430,19 +437,25 @@ void SelectionFrameWidget::syncMenuCheckedFromTitle()
 
 	const QString title = getTitle();
 	QMenu* m = m_selectionMenuButton->menu();
+
 	QAction* firstCheckable = nullptr;
+	bool matched = false;
+
 	for (QAction* act : m->actions()) {
 		if (act->isSeparator()) continue;
 		if (!act->isCheckable()) continue; // skip aux actions
 		if (!firstCheckable) firstCheckable = act;
-		if (act->text() == title) {
-			act->setChecked(true);
-			return;
-		}
+		const bool check = (!title.isEmpty() && act->text() == title);
+		act->setChecked(check);
+		matched |= check;
 	}
-	// If no exact match found but we have a checkable item and no title, check first
-	if (title.isEmpty() && firstCheckable) {
-		firstCheckable->setChecked(true);
+
+	// If no exact match and title empty, pick the first checkable as default
+	if (!matched && title.isEmpty() && firstCheckable) {
+		for (QAction* act : m->actions()) {
+			if (act->isSeparator() || !act->isCheckable()) continue;
+			act->setChecked(act == firstCheckable);
+		}
 	}
 }
 
@@ -611,6 +624,7 @@ QAction* SelectionFrameWidget::addHeaderAction(QAction* action)
 		auto* btn = new QToolButton(m_headerActionsContainer);
 		btn->setAutoRaise(true);
 		btn->setDefaultAction(action);
+		btn->setFocusPolicy(Qt::NoFocus); // avoid stealing keyboard focus from the frame
 		m_headerActionsLayout->addWidget(btn);
 	}
 	return action;

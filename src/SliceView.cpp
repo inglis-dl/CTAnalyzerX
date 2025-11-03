@@ -121,6 +121,8 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 			m_editSliceIndex->setText(QString::number(value));
 		}
 	});
+
+	setTitle(orientationLabel(m_viewOrientation));
 }
 
 void SliceView::createMenuAndActions()
@@ -471,7 +473,11 @@ void SliceView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation
 	if (m_viewOrientation == orientation)
 		return;
 
+	// First update state
 	m_viewOrientation = orientation;
+
+	// Now keep title and menu state in sync with the new orientation
+	setTitle(orientationLabel(m_viewOrientation));
 
 	// If no image/pipeline yet, just broadcast and return (avoid VTK errors).
 	if (!m_imageData || !sliceMapper || sliceMapper->GetNumberOfInputConnections(0) == 0) {
