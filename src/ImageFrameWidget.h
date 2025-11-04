@@ -13,7 +13,7 @@ class ImageFrameWidget : public SelectionFrameWidget
 	Q_OBJECT
 		// Properties
 		Q_PROPERTY(ViewOrientation viewOrientation READ viewOrientation WRITE setViewOrientation NOTIFY viewOrientationChanged)
-		Q_PROPERTY(Interpolation interpolation READ interpolation WRITE setInterpolation NOTIFY viewOrientationChanged)
+		Q_PROPERTY(Interpolation interpolation READ interpolation WRITE setInterpolation NOTIFY interpolationChanged)
 		Q_PROPERTY(LinkPropagationMode linkPropagationMode READ linkPropagationMode WRITE setLinkPropagationMode NOTIFY linkPropagationModeChanged)
 
 public:
@@ -93,6 +93,9 @@ protected:
 	// Map orientation <-> label
 	QString orientationLabel(ViewOrientation orient) const;
 	ViewOrientation labelToOrientation(const QString& label) const;
+
+	// for derived classes that set m_viewOrientation directly
+	void notifyViewOrientationChanged();
 
 	ViewOrientation  m_viewOrientation = VIEW_ORIENTATION_XY;
 	Interpolation    m_interpolation = Linear;

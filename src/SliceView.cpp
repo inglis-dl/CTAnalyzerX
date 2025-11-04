@@ -481,7 +481,7 @@ void SliceView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation
 
 	// If no image/pipeline yet, just broadcast and return (avoid VTK errors).
 	if (!m_imageData || !sliceMapper || sliceMapper->GetNumberOfInputConnections(0) == 0) {
-		emit viewOrientationChanged(orientation);
+		notifyViewOrientationChanged(); // base helper
 		return;
 	}
 
@@ -498,7 +498,7 @@ void SliceView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation
 	updateCamera();
 	setSliceIndex((m_minSlice + m_maxSlice) / 2); // also triggers render()
 
-	emit viewOrientationChanged(orientation);
+	notifyViewOrientationChanged(); // base helper
 }
 
 void SliceView::updateSliceRange() {

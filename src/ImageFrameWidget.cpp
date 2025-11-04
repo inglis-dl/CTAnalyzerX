@@ -1,11 +1,11 @@
 #include "ImageFrameWidget.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <vtkCamera.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
-
 
 ImageFrameWidget::ImageFrameWidget(QWidget* parent)
 	: SelectionFrameWidget(parent)
@@ -58,10 +58,14 @@ void ImageFrameWidget::render()
 
 void ImageFrameWidget::setViewOrientation(ViewOrientation orient)
 {
-	if (m_viewOrientation == orient)
-		return;
-
+	if (m_viewOrientation == orient) return;
 	m_viewOrientation = orient;
+	emit viewOrientationChanged(m_viewOrientation);
+}
+
+void ImageFrameWidget::notifyViewOrientationChanged()
+{
+	emit viewOrientationChanged(m_viewOrientation);
 }
 
 vtkRenderWindow* ImageFrameWidget::getRenderWindow() const
@@ -92,9 +96,12 @@ void ImageFrameWidget::computeShiftScaleFromInput(vtkImageData* image)
 	m_nativeScalarType = image->GetScalarType();
 	double scalarRange[2] = { 0, 1 };
 	image->GetScalarRange(scalarRange);
-	m_scalarRangeMin = scalarRange[0];
-	m_scalarRangeMax = scalarRange[1];
-	const double diff = scalarRange[1] - scalarRange[0];
+	// Guard against NaN/Inf and inverted ranges
+	const double r0 = std::isfinite(scalarRange[0]) ? scalarRange[0] : 0.0;
+	const double r1 = std::isfinite(scalarRange[1]) ? scalarRange[1] : 1.0;
+	m_scalarRangeMin = std::min(r0, r1);
+	m_scalarRangeMax = std::max(r0, r1);
+	const double diff = m_scalarRangeMax - m_scalarRangeMin;
 
 	// Default: keep as unsigned short
 	m_scalarShift = 0.0;
@@ -116,11 +123,15 @@ void ImageFrameWidget::computeShiftScaleFromInput(vtkImageData* image)
 		m_scalarScale = 1.0;
 		break;
 		default: {
-			// For larger ranges or floating point: shift negatives, scale to 16-bit if needed
-			m_scalarShift = (scalarRange[0] < 0.0) ? -scalarRange[0] : 0.0;
-			m_scalarScale = (diff > 0.0)
-				? std::min(65535.0 / diff, 1.0)
-				: 1.0;
+			// For larger ranges or floating point: shift negatives, scale up to at most 16-bit range
+			m_scalarShift = (m_scalarRangeMin < 0.0) ? -m_scalarRangeMin : 0.0;
+			if (diff > 0.0) {
+				// Preserve existing behavior: do not amplify if the range is already within 16-bit
+				m_scalarScale = std::min(65535.0 / diff, 1.0);
+			}
+			else {
+				m_scalarScale = 1.0;
+			}
 			break;
 		}
 	}

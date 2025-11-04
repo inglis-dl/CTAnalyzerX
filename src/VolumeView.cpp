@@ -497,13 +497,14 @@ void VolumeView::resetCamera()
 
 void VolumeView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation)
 {
-	const bool changed = (m_viewOrientation != orientation);
+	if (m_viewOrientation == orientation) return;
+
 	m_viewOrientation = orientation;
 
 	vtkCamera* cam = m_renderer ? m_renderer->GetActiveCamera() : nullptr;
 
 	if (!m_imageData || !m_renderer || !cam) {
-		if (changed) emit viewOrientationChanged(m_viewOrientation);
+		notifyViewOrientationChanged();
 		return;
 	}
 
@@ -546,7 +547,8 @@ void VolumeView::setViewOrientation(ImageFrameWidget::ViewOrientation orientatio
 	m_renderer->ResetCameraClippingRange(bounds);
 
 	render();
-	if (changed) emit viewOrientationChanged(m_viewOrientation);
+
+	notifyViewOrientationChanged();
 }
 
 // Map actual -> mapped for opacity using current shift/scale (like vtkVolumeScene::UpdateOpacityFunction)
