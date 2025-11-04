@@ -157,6 +157,10 @@ private:
 	void updateToggleMaximizeActionVisuals(); // update icon/text/tooltip for single toggle action
 	void ensureOpacityEffect();
 
+	// Add these private helpers (only declarations) to keep icon size unchanged while recoloring buttons.
+	void styleHeaderActionButton(QToolButton* btn);
+	void refreshHeaderActionStyles();
+
 private:
 	// Header container to catch clicks/double-clicks
 	QWidget* m_headerContainer;

@@ -374,6 +374,54 @@ void SelectionFrameWidget::keyPressEvent(QKeyEvent* e)
 	QFrame::keyPressEvent(e);
 }
 
+// Ensure header action buttons have an opaque, lighter background consistent with MenuButton.
+// Only color is changed; icon size and layout sizing are not modified.
+void SelectionFrameWidget::styleHeaderActionButton(QToolButton* btn)
+{
+	if (!btn) return;
+
+	// Use MenuButton palette for consistency
+	const QPalette pal = m_selectionMenuButton ? m_selectionMenuButton->palette() : QApplication::palette();
+	QColor base = pal.button().color().lighter(110);   // slightly lighter
+	QColor hover = base.lighter(110);
+	QColor press = base.darker(110);
+	QColor text = pal.buttonText().color();
+
+	// Force opaque colors
+	base.setAlpha(255);
+	hover.setAlpha(255);
+	press.setAlpha(255);
+	text.setAlpha(255);
+
+	// Apply coloring only. No padding/border/icon-size adjustments to avoid size changes.
+	const QString css = QString(
+		"QToolButton {"
+		"  background-color: %1;"
+		"  color: %2;"
+		"  border: none;"
+		"}"
+		"QToolButton:hover { background-color: %3; }"
+		"QToolButton:pressed { background-color: %4; }"
+	).arg(base.name(), text.name(), hover.name(), press.name());
+
+	btn->setAttribute(Qt::WA_StyledBackground, true);
+	btn->setAutoRaise(false); // ensure background is painted
+	btn->setStyleSheet(css);
+}
+
+void SelectionFrameWidget::refreshHeaderActionStyles()
+{
+	if (!m_headerActionsLayout) return;
+	for (int i = 0; i < m_headerActionsLayout->count(); ++i) {
+		if (auto* w = m_headerActionsLayout->itemAt(i)->widget()) {
+			if (auto* tb = qobject_cast<QToolButton*>(w)) {
+				styleHeaderActionButton(tb);
+			}
+		}
+	}
+}
+
+// Ensure colors stay in sync with selection/title bar changes
 void SelectionFrameWidget::updateVisuals()
 {
 	// Compute colors based on selection
@@ -393,6 +441,9 @@ void SelectionFrameWidget::updateVisuals()
 		"#SelectionFrameWidget { border: %1px solid %2; }")
 		.arg(QString::number(m_outerBorderWidth), border.name());
 	this->setStyleSheet(frameStyle);
+
+	// Re-apply button coloring (does not change icon size)
+	refreshHeaderActionStyles();
 }
 
 void SelectionFrameWidget::appendAuxMenuActions()
