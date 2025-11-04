@@ -1,12 +1,14 @@
-#ifndef LIGHTBOXWIDGET_H
-#define LIGHTBOXWIDGET_H
+#pragma once
 
 #include <QWidget>
 #include "ui_LightboxWidget.h"
 
 class SliceView;
 class VolumeView;
-class SelectionFrameWidget; // forward decl for maximize/restore wiring
+class SelectionFrameWidget;
+
+class QLabel;
+class QPropertyAnimation;
 
 class LightboxWidget : public QWidget {
 	Q_OBJECT
@@ -27,7 +29,6 @@ public:
 	VolumeView* getVolumeView() const;
 
 protected:
-	// Hook to wire maximize/restore after UI is built
 	void showEvent(QShowEvent* e) override;
 
 private slots:
@@ -36,18 +37,24 @@ private slots:
 	void onRequestRestore(SelectionFrameWidget* w);
 
 private:
-	Ui::LightboxWidget ui;
-
-	// Existing helpers preserved
 	void connectSliceSynchronization();
 	void connectSelectionCoordination();
-
-	// New: connect maximize/restore signals from child frames
 	void connectMaximizeSignals();
 
-	// Track maximize state (preserves existing members/API)
+	// Expansion animation helpers
+	QRect mapToThis(SelectionFrameWidget* w) const;
+	void startExpandAnimation(SelectionFrameWidget* target, const QRect& from, const QRect& to, bool toMaximized);
+	void clearAnimOverlay();
+
+private:
+	Ui::LightboxWidget ui;
+
+	// Maximize state
 	bool m_isMaximized = false;
 	SelectionFrameWidget* m_maximized = nullptr;
-};
 
-#endif // LIGHTBOXWIDGET_H
+	// Geometry-based expand/collapse animation overlay
+	QLabel* m_animOverlay = nullptr;
+	QPropertyAnimation* m_anim = nullptr;
+	QRect m_savedTargetRect; // original rect of maximized frame relative to this
+};

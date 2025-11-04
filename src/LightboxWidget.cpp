@@ -8,7 +8,9 @@
 
 #include <QShowEvent>
 #include <QTimer>
-#include <QPropertyAnimation> // ADDED
+#include <QLabel>
+#include <QPropertyAnimation>
+#include <QEasingCurve>
 #include <array>
 #include <cmath>
 
@@ -136,80 +138,112 @@ void LightboxWidget::connectMaximizeSignals()
 	connectOne(ui.volumeView);
 }
 
-// Maximize one child: fade-out siblings then hide; fade-in the chosen one
+// Utility: map a child frame geometry into this widget's coordinate system
+QRect LightboxWidget::mapToThis(SelectionFrameWidget* w) const
+{
+	if (!w) return {};
+	const QPoint topLeft = w->mapTo(const_cast<LightboxWidget*>(this), QPoint(0, 0));
+	return QRect(topLeft, w->size());
+}
+
+// Create and run a geometry-based expansion/collapse overlay animation
+void LightboxWidget::startExpandAnimation(SelectionFrameWidget* target, const QRect& from, const QRect& to, bool toMaximized)
+{
+	// Create overlay
+	clearAnimOverlay();
+	m_animOverlay = new QLabel(this);
+	m_animOverlay->setObjectName("MaximizeAnimOverlay");
+	m_animOverlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+	m_animOverlay->setScaledContents(true);
+
+	// Try to snapshot the target (works for non-native content). Fallback to flat color.
+	QPixmap pm = target ? target->grab() : QPixmap();
+	if (!pm.isNull()) {
+		m_animOverlay->setPixmap(pm);
+	}
+	else {
+		m_animOverlay->setStyleSheet("background: palette(window); border: 1px solid palette(dark);");
+	}
+
+	m_animOverlay->setGeometry(from);
+	m_animOverlay->show();
+	m_anim = new QPropertyAnimation(m_animOverlay, "geometry", this);
+	m_anim->setDuration(200);
+	m_anim->setStartValue(from);
+	m_anim->setEndValue(to);
+	m_anim->setEasingCurve(QEasingCurve::InOutCubic);
+
+	// Temporarily hide target to avoid duplicate during animation
+	if (target) target->setVisible(false);
+
+	connect(m_anim, &QPropertyAnimation::finished, this, [this, target, toMaximized]() {
+		clearAnimOverlay();
+
+		// Apply final visibility state
+		const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
+		if (toMaximized) {
+			for (auto* f : frames) {
+				if (!f) continue;
+				f->setVisible(f == target);
+				f->setMaximized(f == target);
+			}
+			m_isMaximized = true;
+			m_maximized = target;
+		}
+		else {
+			for (auto* f : frames) {
+				if (!f) continue;
+				f->setVisible(true);
+				f->setMaximized(false);
+			}
+			m_isMaximized = false;
+			m_maximized = nullptr;
+		}
+	});
+
+	m_anim->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
+// Remove any existing overlay/animation
+void LightboxWidget::clearAnimOverlay()
+{
+	if (m_anim) { m_anim->stop(); m_anim = nullptr; }
+	if (m_animOverlay) { m_animOverlay->hide(); m_animOverlay->deleteLater(); m_animOverlay = nullptr; }
+}
+
+// Maximize one child: expand from its current rect to fill the Lightbox area.
+// The perceived expansion direction depends on the frame's quadrant:
+// TL -> down-right, TR -> down-left, BL -> up-right, BR -> up-left.
 void LightboxWidget::onRequestMaximize(SelectionFrameWidget* w)
 {
 	if (!w) return;
 	if (m_maximized == w && m_isMaximized) return;
 
-	const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
+	// Save original geometry of target for animated restore later
+	m_savedTargetRect = mapToThis(w);
 
-	// If switching which frame is maximized, unmark previous
-	if (m_maximized && m_maximized != w) {
-		m_maximized->setMaximized(false);
-	}
+	// Prepare target/others visibility before anim (keep everyone visible so overlay sits on top)
+	const QRect from = m_savedTargetRect;
+	const QRect to = this->rect();
 
-	// Make sure target is visible before fade-in
-	w->setVisible(true);
-	w->raise();
-	w->setMaximized(true);
-
-	// Duration is taken from the target (keeps UX consistent)
-	const int dur = (w->maximizeAnimationEnabled() ? w->maximizeAnimationDuration() : 0);
-
-	for (auto* f : frames) {
-		if (!f) continue;
-		if (f == w) {
-			// Fade-in target if it was hidden or partially transparent
-			if (dur > 0 && f->maximizeAnimationEnabled()) {
-				// If currently invisible, start from 0
-				f->fadeTo(1.0, dur);
-			}
-			continue;
-		}
-
-		// Fade-out others then hide
-		if (dur > 0 && f->maximizeAnimationEnabled()) {
-			auto* anim = f->fadeTo(0.0, dur);
-			connect(anim, &QPropertyAnimation::finished, this, [f]() {
-				f->setVisible(false);
-				// Reset opacity for next restore
-				f->fadeTo(1.0, 0);
-			});
-		}
-		else {
-			f->setVisible(false);
-		}
-	}
-
-	m_isMaximized = true;
-	m_maximized = w;
+	startExpandAnimation(w, from, to, /*toMaximized*/ true);
 }
 
-// Restore all children: show and fade-in everyone
+// Restore all children: collapse the maximized frame back to its original rect.
 void LightboxWidget::onRequestRestore(SelectionFrameWidget* /*w*/)
 {
-	const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
-
-	// Pick a duration from any visible frame (prefer maximized one if available)
-	int dur = 0;
-	if (m_maximized && m_maximized->maximizeAnimationEnabled())
-		dur = m_maximized->maximizeAnimationDuration();
-	else if (ui.XYView && ui.XYView->maximizeAnimationEnabled())
-		dur = ui.XYView->maximizeAnimationDuration();
-
-	for (auto* f : frames) {
-		if (!f) continue;
-		f->setVisible(true);
-		f->setMaximized(false);
-		if (dur > 0 && f->maximizeAnimationEnabled()) {
-			// Start from transparent and fade-in
-			f->fadeTo(0.0, 0);
-			f->fadeTo(1.0, dur);
-		}
+	if (!m_isMaximized || !m_maximized) {
+		// Nothing maximized: just ensure all visible
+		const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
+		for (auto* f : frames) if (f) f->setVisible(true);
+		m_isMaximized = false;
+		m_maximized = nullptr;
+		return;
 	}
 
-	m_isMaximized = false;
-	m_maximized = nullptr;
+	// Current full rect is the Lightbox area; collapse back to saved rect of target.
+	const QRect from = this->rect();
+	const QRect to = m_savedTargetRect;
+	startExpandAnimation(m_maximized, from, to, /*toMaximized*/ false);
 }
 
