@@ -8,6 +8,7 @@
 
 #include <QShowEvent>
 #include <QTimer>
+#include <QPropertyAnimation> // ADDED
 #include <array>
 #include <cmath>
 
@@ -135,31 +136,79 @@ void LightboxWidget::connectMaximizeSignals()
 	connectOne(ui.volumeView);
 }
 
-// Maximize one child: hide all siblings so the chosen one fills the layout
+// Maximize one child: fade-out siblings then hide; fade-in the chosen one
 void LightboxWidget::onRequestMaximize(SelectionFrameWidget* w)
 {
 	if (!w) return;
-	if (m_maximized && m_maximized != w) m_maximized->setMaximized(false);
+	if (m_maximized == w && m_isMaximized) return;
 
 	const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
+
+	// If switching which frame is maximized, unmark previous
+	if (m_maximized && m_maximized != w) {
+		m_maximized->setMaximized(false);
+	}
+
+	// Make sure target is visible before fade-in
+	w->setVisible(true);
+	w->raise();
+	w->setMaximized(true);
+
+	// Duration is taken from the target (keeps UX consistent)
+	const int dur = (w->maximizeAnimationEnabled() ? w->maximizeAnimationDuration() : 0);
+
 	for (auto* f : frames) {
 		if (!f) continue;
-		f->setVisible(f == w);
-		if (f == w) f->setMaximized(true);
+		if (f == w) {
+			// Fade-in target if it was hidden or partially transparent
+			if (dur > 0 && f->maximizeAnimationEnabled()) {
+				// If currently invisible, start from 0
+				f->fadeTo(1.0, dur);
+			}
+			continue;
+		}
+
+		// Fade-out others then hide
+		if (dur > 0 && f->maximizeAnimationEnabled()) {
+			auto* anim = f->fadeTo(0.0, dur);
+			connect(anim, &QPropertyAnimation::finished, this, [f]() {
+				f->setVisible(false);
+				// Reset opacity for next restore
+				f->fadeTo(1.0, 0);
+			});
+		}
+		else {
+			f->setVisible(false);
+		}
 	}
+
 	m_isMaximized = true;
 	m_maximized = w;
 }
 
-// Restore all children: show all frames again
-void LightboxWidget::onRequestRestore(SelectionFrameWidget*)
+// Restore all children: show and fade-in everyone
+void LightboxWidget::onRequestRestore(SelectionFrameWidget* /*w*/)
 {
 	const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
+
+	// Pick a duration from any visible frame (prefer maximized one if available)
+	int dur = 0;
+	if (m_maximized && m_maximized->maximizeAnimationEnabled())
+		dur = m_maximized->maximizeAnimationDuration();
+	else if (ui.XYView && ui.XYView->maximizeAnimationEnabled())
+		dur = ui.XYView->maximizeAnimationDuration();
+
 	for (auto* f : frames) {
 		if (!f) continue;
 		f->setVisible(true);
 		f->setMaximized(false);
+		if (dur > 0 && f->maximizeAnimationEnabled()) {
+			// Start from transparent and fade-in
+			f->fadeTo(0.0, 0);
+			f->fadeTo(1.0, dur);
+		}
 	}
+
 	m_isMaximized = false;
 	m_maximized = nullptr;
 }

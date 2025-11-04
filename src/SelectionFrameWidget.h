@@ -11,6 +11,8 @@ class QToolButton;
 class QWidget;
 class QEvent;
 class QKeyEvent;
+class QGraphicsOpacityEffect;
+class QPropertyAnimation;
 
 class MenuButton;
 
@@ -36,6 +38,9 @@ class SelectionFrameWidget : public QFrame
 		Q_PROPERTY(bool restrictInteractionToSelection READ restrictInteractionToSelection WRITE setRestrictInteractionToSelection)
 		// Maximize/restore
 		Q_PROPERTY(bool maximized READ isMaximized WRITE setMaximized NOTIFY maximizedChanged)
+		// Animation properties for maximize/minimize
+		Q_PROPERTY(bool maximizeAnimationEnabled READ maximizeAnimationEnabled WRITE setMaximizeAnimationEnabled)
+		Q_PROPERTY(int maximizeAnimationDuration READ maximizeAnimationDuration WRITE setMaximizeAnimationDuration)
 
 public:
 	explicit SelectionFrameWidget(QWidget* parent = nullptr);
@@ -111,6 +116,15 @@ public:
 	bool isMaximized() const { return m_isMaximized; }
 	void setMaximized(bool on);
 
+	// Animation configuration (Q_PROPERTY-backed)
+	bool maximizeAnimationEnabled() const { return m_maximizeAnimEnabled; }
+	void setMaximizeAnimationEnabled(bool on) { m_maximizeAnimEnabled = on; }
+	int maximizeAnimationDuration() const { return m_maximizeAnimDurationMs; }
+	void setMaximizeAnimationDuration(int ms) { m_maximizeAnimDurationMs = std::max(0, ms); }
+
+	// Helper used by container to animate fading
+	QPropertyAnimation* fadeTo(double opacity, int durationMs);
+
 signals:
 	void selectionChanged(const QString& item);
 	void currentItemChanged(const QString& item);
@@ -141,6 +155,7 @@ private:
 	void beginEditTitle(); // F2 / menu handler
 	void syncMenuButtonSizeToHeader();
 	void updateToggleMaximizeActionVisuals(); // update icon/text/tooltip for single toggle action
+	void ensureOpacityEffect();
 
 private:
 	// Header container to catch clicks/double-clicks
@@ -176,4 +191,9 @@ private:
 	// Single toggle action (maximize <-> restore)
 	QAction* m_actToggleMaximize = nullptr;
 	bool m_isMaximized = false;
+
+	// Animation state
+	bool m_maximizeAnimEnabled = true;
+	int m_maximizeAnimDurationMs = 200;
+	QGraphicsOpacityEffect* m_opacityEffect = nullptr;
 };

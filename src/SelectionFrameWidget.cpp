@@ -21,6 +21,9 @@
 #include <QApplication>
 #include <QChildEvent> // ADDED
 #include <QContextMenuEvent> // ADDED
+#include <QGraphicsOpacityEffect>   // ADDED
+#include <QPropertyAnimation>       // ADDED
+#include <QEasingCurve>             // ADDED
 
 // Removed global static selection tracker
 
@@ -687,4 +690,27 @@ void SelectionFrameWidget::setMaximized(bool on)
 	m_isMaximized = on;
 	updateToggleMaximizeActionVisuals();
 	emit maximizedChanged(on);
+}
+
+// Ensure an opacity effect exists for fade animations
+void SelectionFrameWidget::ensureOpacityEffect()
+{
+	if (!m_opacityEffect) {
+		m_opacityEffect = new QGraphicsOpacityEffect(this);
+		m_opacityEffect->setOpacity(1.0);
+		this->setGraphicsEffect(m_opacityEffect);
+	}
+}
+
+// Helper used by the container to animate fading in/out
+QPropertyAnimation* SelectionFrameWidget::fadeTo(double opacity, int durationMs)
+{
+	ensureOpacityEffect();
+	auto* anim = new QPropertyAnimation(m_opacityEffect, "opacity", this);
+	anim->setDuration(std::max(0, durationMs));
+	anim->setStartValue(m_opacityEffect->opacity());
+	anim->setEndValue(opacity);
+	anim->setEasingCurve(QEasingCurve::InOutQuad);
+	anim->start(QAbstractAnimation::DeleteWhenStopped);
+	return anim;
 }
