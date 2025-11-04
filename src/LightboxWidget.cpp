@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QPropertyAnimation>
 #include <QEasingCurve>
+#include <QParallelAnimationGroup>   // ADDED
 #include <array>
 #include <cmath>
 
@@ -147,48 +148,101 @@ QRect LightboxWidget::mapToThis(SelectionFrameWidget* w) const
 }
 
 // Create and run a geometry-based expansion/collapse overlay animation
-void LightboxWidget::startExpandAnimation(SelectionFrameWidget* target, const QRect& from, const QRect& to, bool toMaximized)
+void LightboxWidget::startExpandAnimation(SelectionFrameWidget* target, const QRect& /*from*/, const QRect& /*to*/, bool toMaximized)
 {
-	// Create overlay
+	// New implementation: animate ALL frames simultaneously using per-frame overlays.
 	clearAnimOverlay();
-	m_animOverlay = new QLabel(this);
-	m_animOverlay->setObjectName("MaximizeAnimOverlay");
-	m_animOverlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-	m_animOverlay->setScaledContents(true);
 
-	// Try to snapshot the target (works for non-native content). Fallback to flat color.
-	QPixmap pm = target ? target->grab() : QPixmap();
-	if (!pm.isNull()) {
-		m_animOverlay->setPixmap(pm);
-	}
-	else {
-		m_animOverlay->setStyleSheet("background: palette(window); border: 1px solid palette(dark);");
+	const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
+
+	// Build/save start rects on maximize so we can restore later.
+	if (toMaximized) {
+		m_savedRects.clear();
+		for (auto* f : frames) {
+			if (!f) continue;
+			m_savedRects.insert(f, mapToThis(f));
+		}
 	}
 
-	m_animOverlay->setGeometry(from);
-	m_animOverlay->show();
-	m_anim = new QPropertyAnimation(m_animOverlay, "geometry", this);
-	m_anim->setDuration(200);
-	m_anim->setStartValue(from);
-	m_anim->setEndValue(to);
-	m_anim->setEasingCurve(QEasingCurve::InOutCubic);
+	// If we don't have saved rects (unexpected), synthesize current ones.
+	if (m_savedRects.isEmpty()) {
+		for (auto* f : frames) {
+			if (!f) continue;
+			m_savedRects.insert(f, mapToThis(f));
+		}
+	}
 
-	// Temporarily hide target to avoid duplicate during animation
-	if (target) target->setVisible(false);
+	// Create overlays and parallel animations
+	m_animGroup = new QParallelAnimationGroup(this);
+	m_animOverlays.clear();
+	m_animOverlays.reserve(int(frames.size()));
 
-	connect(m_anim, &QPropertyAnimation::finished, this, [this, target, toMaximized]() {
+	// Hide all real frames during the animation to avoid duplicates
+	for (auto* f : frames) {
+		if (f) f->setVisible(false);
+	}
+
+	const QRect fullRect = this->rect();
+
+	for (auto* f : frames) {
+		if (!f) continue;
+
+		// Overlay setup
+		auto* overlay = new QLabel(this);
+		overlay->setObjectName("MaximizeAnimOverlay");
+		overlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+		overlay->setScaledContents(true);
+
+		QPixmap pm = f->grab();
+		if (!pm.isNull()) {
+			overlay->setPixmap(pm);
+		}
+		else {
+			overlay->setStyleSheet("background: palette(window); border: 1px solid palette(dark);");
+		}
+
+		const QRect startRect = toMaximized ? m_savedRects.value(f)                                   // current layout -> maximize
+			: (f == target ? fullRect
+						   : QRect(m_savedRects.value(f).center(), QSize(0, 0))); // restore
+
+		overlay->setGeometry(startRect);
+		overlay->show();
+
+		// Target/end rects
+		QRect endRect;
+		if (toMaximized) {
+			endRect = (f == target) ? fullRect
+				: QRect(m_savedRects.value(f).center(), QSize(0, 0)); // shrink others into their centers
+		}
+		else {
+			endRect = m_savedRects.value(f); // restore everyone to original rectangles
+		}
+
+		// Animation
+		auto* anim = new QPropertyAnimation(overlay, "geometry", m_animGroup);
+		anim->setDuration(200);
+		anim->setStartValue(startRect);
+		anim->setEndValue(endRect);
+		anim->setEasingCurve(QEasingCurve::InOutCubic);
+		m_animGroup->addAnimation(anim);
+
+		m_animOverlays.push_back(overlay);
+	}
+
+	connect(m_animGroup, &QParallelAnimationGroup::finished, this, [this, target, toMaximized, frames]() {
 		clearAnimOverlay();
 
-		// Apply final visibility state
-		const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
+		// Apply final visibility/state
 		if (toMaximized) {
 			for (auto* f : frames) {
 				if (!f) continue;
-				f->setVisible(f == target);
-				f->setMaximized(f == target);
+				const bool isTarget = (f == target);
+				f->setVisible(isTarget);
+				f->setMaximized(isTarget);
 			}
 			m_isMaximized = true;
 			m_maximized = target;
+			// m_savedRects kept for restore
 		}
 		else {
 			for (auto* f : frames) {
@@ -198,52 +252,66 @@ void LightboxWidget::startExpandAnimation(SelectionFrameWidget* target, const QR
 			}
 			m_isMaximized = false;
 			m_maximized = nullptr;
+			m_savedRects.clear();
 		}
 	});
 
-	m_anim->start(QAbstractAnimation::DeleteWhenStopped);
+	m_animGroup->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 // Remove any existing overlay/animation
 void LightboxWidget::clearAnimOverlay()
 {
+	// Stop and delete any running parallel group
+	if (m_animGroup) {
+		m_animGroup->stop();
+		m_animGroup->deleteLater();
+		m_animGroup = nullptr;
+	}
+
+	// Remove all per-frame overlays
+	for (auto* lbl : m_animOverlays) {
+		if (!lbl) continue;
+		lbl->hide();
+		lbl->deleteLater();
+	}
+	m_animOverlays.clear();
+
+	// Back-compat cleanup (legacy single overlay if any)
 	if (m_anim) { m_anim->stop(); m_anim = nullptr; }
 	if (m_animOverlay) { m_animOverlay->hide(); m_animOverlay->deleteLater(); m_animOverlay = nullptr; }
 }
 
-// Maximize one child: expand from its current rect to fill the Lightbox area.
-// The perceived expansion direction depends on the frame's quadrant:
-// TL -> down-right, TR -> down-left, BL -> up-right, BR -> up-left.
+// ADD: Implement the missing slots so moc can link them.
+
 void LightboxWidget::onRequestMaximize(SelectionFrameWidget* w)
 {
 	if (!w) return;
 	if (m_maximized == w && m_isMaximized) return;
 
-	// Save original geometry of target for animated restore later
-	m_savedTargetRect = mapToThis(w);
-
-	// Prepare target/others visibility before anim (keep everyone visible so overlay sits on top)
-	const QRect from = m_savedTargetRect;
-	const QRect to = this->rect();
-
-	startExpandAnimation(w, from, to, /*toMaximized*/ true);
+	// The new startExpandAnimation collects current rects and animates all frames in parallel.
+	startExpandAnimation(w, QRect(), QRect(), /*toMaximized*/ true);
 }
 
-// Restore all children: collapse the maximized frame back to its original rect.
-void LightboxWidget::onRequestRestore(SelectionFrameWidget* /*w*/)
+void LightboxWidget::onRequestRestore(SelectionFrameWidget* w)
 {
+	Q_UNUSED(w);
+
+	// If nothing maximized, just ensure all frames are visible.
 	if (!m_isMaximized || !m_maximized) {
-		// Nothing maximized: just ensure all visible
 		const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
-		for (auto* f : frames) if (f) f->setVisible(true);
+		for (auto* f : frames) {
+			if (!f) continue;
+			f->setVisible(true);
+			f->setMaximized(false);
+		}
 		m_isMaximized = false;
 		m_maximized = nullptr;
+		m_savedRects.clear();
 		return;
 	}
 
-	// Current full rect is the Lightbox area; collapse back to saved rect of target.
-	const QRect from = this->rect();
-	const QRect to = m_savedTargetRect;
-	startExpandAnimation(m_maximized, from, to, /*toMaximized*/ false);
+	// Animate restore for all frames simultaneously.
+	startExpandAnimation(m_maximized, QRect(), QRect(), /*toMaximized*/ false);
 }
 

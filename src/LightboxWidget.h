@@ -2,6 +2,9 @@
 
 #include <QWidget>
 #include "ui_LightboxWidget.h"
+#include <QHash>                 // ADDED
+#include <QList>                 // ADDED
+#include <QParallelAnimationGroup>   // ADDED
 
 class SliceView;
 class VolumeView;
@@ -54,7 +57,12 @@ private:
 	SelectionFrameWidget* m_maximized = nullptr;
 
 	// Geometry-based expand/collapse animation overlay
-	QLabel* m_animOverlay = nullptr;
-	QPropertyAnimation* m_anim = nullptr;
+	QLabel* m_animOverlay = nullptr;                 // kept for compatibility, not used in new multi-anim
+	QPropertyAnimation* m_anim = nullptr;            // kept for compatibility, not used in new multi-anim
+
+	// NEW: multi-overlay parallel animation state
+	QList<QLabel*> m_animOverlays;                   // one overlay per frame
+	QParallelAnimationGroup* m_animGroup = nullptr;  // run all animations simultaneously
+	QHash<SelectionFrameWidget*, QRect> m_savedRects; // original rects (for restore)
 	QRect m_savedTargetRect; // original rect of maximized frame relative to this
 };
