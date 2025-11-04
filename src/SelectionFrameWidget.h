@@ -34,6 +34,8 @@ class SelectionFrameWidget : public QFrame
 		Q_PROPERTY(QColor borderColor READ borderColor WRITE setBorderColor)
 		Q_PROPERTY(QColor borderSelectedColor READ borderSelectedColor WRITE setBorderSelectedColor)
 		Q_PROPERTY(bool restrictInteractionToSelection READ restrictInteractionToSelection WRITE setRestrictInteractionToSelection)
+		// Maximize/restore
+		Q_PROPERTY(bool maximized READ isMaximized WRITE setMaximized NOTIFY maximizedChanged)
 
 public:
 	explicit SelectionFrameWidget(QWidget* parent = nullptr);
@@ -104,6 +106,11 @@ public:
 	// Add small actions placed on the right side of the header
 	QAction* addHeaderAction(QAction* action);
 
+	// Maximize/restore UI controls
+	void enableMaximizeControls(bool on = true);
+	bool isMaximized() const { return m_isMaximized; }
+	void setMaximized(bool on);
+
 signals:
 	void selectionChanged(const QString& item);
 	void currentItemChanged(const QString& item);
@@ -111,6 +118,11 @@ signals:
 	void selectedChanged(bool selected);
 	void doubleClicked();
 	void requestClose(); // For layout manager use
+
+	// Layout control signals handled by container (e.g., LightboxWidget)
+	void requestMaximize(SelectionFrameWidget* self);
+	void requestRestore(SelectionFrameWidget* self);
+	void maximizedChanged(bool maximized);
 
 protected:
 	bool eventFilter(QObject* watched, QEvent* event) override;
@@ -128,6 +140,7 @@ private:
 	void syncMenuCheckedFromTitle(); // Make the checked action follow the title
 	void beginEditTitle(); // F2 / menu handler
 	void syncMenuButtonSizeToHeader();
+	void updateToggleMaximizeActionVisuals(); // update icon/text/tooltip for single toggle action
 
 private:
 	// Header container to catch clicks/double-clicks
@@ -159,4 +172,8 @@ private:
 	QColor m_borderSelectedColor;
 
 	bool m_restrictInteractionToSelection = true; // default: single-frame focus
+
+	// Single toggle action (maximize <-> restore)
+	QAction* m_actToggleMaximize = nullptr;
+	bool m_isMaximized = false;
 };

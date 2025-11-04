@@ -6,6 +6,7 @@
 
 class SliceView;
 class VolumeView;
+class SelectionFrameWidget; // forward decl for maximize/restore wiring
 
 class LightboxWidget : public QWidget {
 	Q_OBJECT
@@ -25,10 +26,28 @@ public:
 	SliceView* getXYView() const;
 	VolumeView* getVolumeView() const;
 
+protected:
+	// Hook to wire maximize/restore after UI is built
+	void showEvent(QShowEvent* e) override;
+
+private slots:
+	// Handle maximize/restore requests from child frames
+	void onRequestMaximize(SelectionFrameWidget* w);
+	void onRequestRestore(SelectionFrameWidget* w);
+
 private:
 	Ui::LightboxWidget ui;
+
+	// Existing helpers preserved
 	void connectSliceSynchronization();
 	void connectSelectionCoordination();
+
+	// New: connect maximize/restore signals from child frames
+	void connectMaximizeSignals();
+
+	// Track maximize state (preserves existing members/API)
+	bool m_isMaximized = false;
+	SelectionFrameWidget* m_maximized = nullptr;
 };
 
 #endif // LIGHTBOXWIDGET_H

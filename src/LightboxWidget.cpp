@@ -6,6 +6,7 @@
 #include <vtkImageSinusoidSource.h>
 #include <vtkSmartPointer.h>
 
+#include <QShowEvent>
 #include <QTimer>
 #include <array>
 #include <cmath>
@@ -25,8 +26,18 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 	connectSliceSynchronization();
 	connectSelectionCoordination();
 
+	// Wire maximize/restore now that UI children exist
+	connectMaximizeSignals();
+
 	// Optional: choose a default selected/highlighted view
 	if (ui.XYView) ui.XYView->setSelected(true);
+}
+
+void LightboxWidget::showEvent(QShowEvent* e)
+{
+	QWidget::showEvent(e);
+	// Ensure connections exist even if UI was re-created
+	connectMaximizeSignals();
 }
 
 void LightboxWidget::setDefaultImage() {
@@ -103,5 +114,53 @@ void LightboxWidget::connectSelectionCoordination() {
 			}
 		});
 	}
+}
+
+// New: wire up maximize/restore signals from all frames
+void LightboxWidget::connectMaximizeSignals()
+{
+	auto connectOne = [this](SelectionFrameWidget* w) {
+		if (!w) return;
+		connect(w, SIGNAL(requestMaximize(SelectionFrameWidget*)),
+				this, SLOT(onRequestMaximize(SelectionFrameWidget*)),
+				Qt::UniqueConnection);
+		connect(w, SIGNAL(requestRestore(SelectionFrameWidget*)),
+				this, SLOT(onRequestRestore(SelectionFrameWidget*)),
+				Qt::UniqueConnection);
+		};
+
+	connectOne(ui.YZView);
+	connectOne(ui.XZView);
+	connectOne(ui.XYView);
+	connectOne(ui.volumeView);
+}
+
+// Maximize one child: hide all siblings so the chosen one fills the layout
+void LightboxWidget::onRequestMaximize(SelectionFrameWidget* w)
+{
+	if (!w) return;
+	if (m_maximized && m_maximized != w) m_maximized->setMaximized(false);
+
+	const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
+	for (auto* f : frames) {
+		if (!f) continue;
+		f->setVisible(f == w);
+		if (f == w) f->setMaximized(true);
+	}
+	m_isMaximized = true;
+	m_maximized = w;
+}
+
+// Restore all children: show all frames again
+void LightboxWidget::onRequestRestore(SelectionFrameWidget*)
+{
+	const std::array<SelectionFrameWidget*, 4> frames{ { ui.YZView, ui.XZView, ui.XYView, ui.volumeView } };
+	for (auto* f : frames) {
+		if (!f) continue;
+		f->setVisible(true);
+		f->setMaximized(false);
+	}
+	m_isMaximized = false;
+	m_maximized = nullptr;
 }
 

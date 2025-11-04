@@ -108,6 +108,8 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 		if (m_allowChangeTitle) beginEditTitle();
 	});
 
+	enableMaximizeControls(true);
+
 	updateVisuals();
 
 	// Keep the MenuButton height aligned to the header; width remains free (not forced square).
@@ -628,4 +630,61 @@ QAction* SelectionFrameWidget::addHeaderAction(QAction* action)
 		m_headerActionsLayout->addWidget(btn);
 	}
 	return action;
+}
+
+// Add near other helpers
+void SelectionFrameWidget::enableMaximizeControls(bool on)
+{
+	if (!on) {
+		if (m_actToggleMaximize) m_actToggleMaximize->setVisible(false);
+		return;
+	}
+
+	if (!m_actToggleMaximize) {
+		// Create a single toggle action
+		QIcon ico = m_isMaximized
+			? style()->standardIcon(QStyle::SP_TitleBarNormalButton)
+			: style()->standardIcon(QStyle::SP_TitleBarMaxButton);
+		if (ico.isNull())
+			ico = QIcon::fromTheme(m_isMaximized ? QStringLiteral("window-restore")
+												 : QStringLiteral("window-maximize"));
+
+		m_actToggleMaximize = new QAction(ico, QString(), this);
+		connect(m_actToggleMaximize, &QAction::triggered, this, [this] {
+			if (m_isMaximized) emit requestRestore(this);
+			else               emit requestMaximize(this);
+		});
+		addHeaderAction(m_actToggleMaximize);
+	}
+
+	updateToggleMaximizeActionVisuals();
+	m_actToggleMaximize->setVisible(true);
+}
+
+void SelectionFrameWidget::updateToggleMaximizeActionVisuals()
+{
+	if (!m_actToggleMaximize) return;
+
+	if (m_isMaximized) {
+		QIcon ico = style()->standardIcon(QStyle::SP_TitleBarNormalButton);
+		if (ico.isNull()) ico = QIcon::fromTheme(QStringLiteral("window-restore"));
+		m_actToggleMaximize->setIcon(ico);
+		m_actToggleMaximize->setText(tr("Restore"));
+		m_actToggleMaximize->setToolTip(tr("Restore view"));
+	}
+	else {
+		QIcon ico = style()->standardIcon(QStyle::SP_TitleBarMaxButton);
+		if (ico.isNull()) ico = QIcon::fromTheme(QStringLiteral("window-maximize"));
+		m_actToggleMaximize->setIcon(ico);
+		m_actToggleMaximize->setText(tr("Maximize"));
+		m_actToggleMaximize->setToolTip(tr("Maximize view"));
+	}
+}
+
+void SelectionFrameWidget::setMaximized(bool on)
+{
+	if (m_isMaximized == on) return;
+	m_isMaximized = on;
+	updateToggleMaximizeActionVisuals();
+	emit maximizedChanged(on);
 }
