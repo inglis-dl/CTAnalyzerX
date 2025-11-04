@@ -26,6 +26,8 @@
 #include <QStylePainter>
 #include <QStyleOptionGroupBox>
 #include <QStyle>
+#include <QPropertyAnimation>
+#include <QEasingCurve>
 
 // CTK includes
 #include "CollapsibleGroupBox.h"
@@ -78,6 +80,7 @@ public:
 	CollapsibleGroupBoxPrivate(CollapsibleGroupBox& object);
 	void init();
 	void setChildVisibility(QWidget* childWidget);
+	void animateHeight(int start, int end, bool expanding);
 
 	/// Size of the widget for collapsing
 	QSize OldSize;
@@ -97,6 +100,8 @@ public:
 
 	/// Pointer to keep track of the proxy style
 	CollapsibleGroupBoxStyle* GroupBoxStyle;
+
+	QPropertyAnimation* HeightAnim = nullptr;
 };
 
 //-----------------------------------------------------------------------------
@@ -125,6 +130,7 @@ void CollapsibleGroupBoxPrivate::init()
 	q->setStyle(this->GroupBoxStyle);
 	this->GroupBoxStyle->ensureBaseStyle();
 }
+
 //-----------------------------------------------------------------------------
 void CollapsibleGroupBoxPrivate::setChildVisibility(QWidget* childWidget)
 {
@@ -207,6 +213,42 @@ int CollapsibleGroupBox::collapsedHeight()const
 }
 
 //-----------------------------------------------------------------------------
+void CollapsibleGroupBoxPrivate::animateHeight(int start, int end, bool expanding)
+{
+	Q_Q(CollapsibleGroupBox);
+	// Lazily create the animation bound to the "maximumHeight" property
+	if (!HeightAnim) {
+		HeightAnim = new QPropertyAnimation(q, "maximumHeight", q);
+		HeightAnim->setDuration(180);
+		HeightAnim->setEasingCurve(QEasingCurve::OutCubic);
+	}
+	// Stop any ongoing animation cleanly
+	if (HeightAnim->state() == QAbstractAnimation::Running) {
+		HeightAnim->stop();
+	}
+
+	// Ensure the start constraint matches the current size to avoid huge jumps
+	q->setMaximumHeight(start);
+	HeightAnim->setStartValue(start);
+	HeightAnim->setEndValue(end);
+
+	// Restore original max height at the end of expansion so the widget can grow again
+	QObject::disconnect(HeightAnim, nullptr, nullptr, nullptr);
+	QObject::connect(HeightAnim, &QPropertyAnimation::finished, q, [this, q, expanding]() {
+		if (expanding) {
+			// Remove the cap post animation to allow layout to manage height freely
+			q->setMaximumHeight(this->MaxHeight);
+			// Optionally restore the pre-collapse size if it was valid
+			if (this->OldSize.isValid()) {
+				q->resize(this->OldSize);
+			}
+		}
+	});
+
+	HeightAnim->start();
+}
+
+//-----------------------------------------------------------------------------
 void CollapsibleGroupBox::expand(bool _expand)
 {
 	Q_D(CollapsibleGroupBox);
@@ -225,19 +267,29 @@ void CollapsibleGroupBox::expand(bool _expand)
 		}
 	}
 
+	// Determine collapsed and expanded target heights
+	QStyleOptionGroupBox option;
+	this->initStyleOption(&option);
+	QRect labelRect = this->style()->subControlRect(
+	  QStyle::CC_GroupBox, &option, QStyle::SC_GroupBoxLabel, this);
+	const int collapsedTarget = labelRect.height() + d->CollapsedHeight;
+
 	if (_expand)
 	{
-		this->setMaximumHeight(d->MaxHeight);
-		this->resize(d->OldSize);
+		// Expand: animate from current to the previous content height (or a sane fallback)
+		const int current = this->height();
+		// Remember the original cap and then relax to animate
+		const int target = d->OldSize.isValid() ? d->OldSize.height()
+			: qMax(sizeHint().height(), collapsedTarget);
+		// Keep the original maximum to restore post animation
+		d->animateHeight(current, target, /*expanding*/ true);
 	}
 	else
 	{
+		// Collapse: remember current max cap to restore when expanding
 		d->MaxHeight = this->maximumHeight();
-		QStyleOptionGroupBox option;
-		this->initStyleOption(&option);
-		QRect labelRect = this->style()->subControlRect(
-		  QStyle::CC_GroupBox, &option, QStyle::SC_GroupBoxLabel, this);
-		this->setMaximumHeight(labelRect.height() + d->CollapsedHeight);
+		const int current = this->height();
+		d->animateHeight(current, collapsedTarget, /*expanding*/ false);
 	}
 }
 

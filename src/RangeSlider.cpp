@@ -18,6 +18,8 @@
 
 =========================================================================*/
 
+#include "RangeSlider.h"
+
 // Qt includes
 #include <QDebug>
 #include <QMouseEvent>
@@ -27,9 +29,15 @@
 #include <QStylePainter>
 #include <QStyle>
 #include <QToolTip>
+#include <QWheelEvent>
+#include <QtMath>
 
-// CTK includes
-#include "RangeSlider.h"
+namespace {
+	// Clamp helper that respects min<=x<=max
+	static inline int clamp(int v, int lo, int hi) {
+		return v < lo ? lo : (v > hi ? hi : v);
+	}
+}
 
 class RangeSliderPrivate
 {
@@ -861,4 +869,138 @@ bool RangeSlider::event(QEvent* _event)
 		break;
 	}
 	return this->Superclass::event(_event);
+}
+
+void RangeSlider::keyPressEvent(QKeyEvent* ev)
+{
+	// Let QSlider handle non-navigation keys
+	switch (ev->key()) {
+		case Qt::Key_Left:
+		case Qt::Key_Right:
+		case Qt::Key_Up:
+		case Qt::Key_Down:
+		case Qt::Key_Home:
+		case Qt::Key_End:
+		case Qt::Key_PageUp:
+		case Qt::Key_PageDown:
+		break;
+		default:
+		QSlider::keyPressEvent(ev);
+		return;
+	}
+
+	const bool horizontal = (orientation() == Qt::Horizontal);
+	// Map arrows to increment direction given orientation
+	auto isDecrement = [&](int key) {
+		if (key == Qt::Key_Home || key == Qt::Key_End) return false; // handled specially
+		if (horizontal) return key == Qt::Key_Left || key == Qt::Key_Down;
+		else            return key == Qt::Key_Down || key == Qt::Key_Left;
+		};
+
+	// Determine target handle:
+	// - If a handle is currently pressed, move that one
+	// - otherwise, move the closer handle to current sliderPosition()
+	const bool minDown = isMinimumSliderDown();
+	const bool maxDown = isMaximumSliderDown();
+	int target = 0; // 0=min, 1=max
+	if (minDown && !maxDown) target = 0;
+	else if (maxDown && !minDown) target = 1;
+	else {
+		const int sp = sliderPosition(); // last moved logical position
+		const int dMin = qAbs(sp - minimumPosition());
+		const int dMax = qAbs(sp - maximumPosition());
+		target = (dMax < dMin) ? 1 : 0;
+	}
+
+	const int lo = minimum();
+	const int hi = maximum();
+
+	// Compute step amount: Shift => pageStep, else singleStep
+	int step = (ev->modifiers() & Qt::ShiftModifier) ? pageStep() : singleStep();
+	if (step <= 0) step = 1;
+
+	// Handle special keys
+	if (ev->key() == Qt::Key_Home) {
+		if (target == 0) setMinimumPosition(lo);
+		else             setMaximumPosition(maximumValue()); // keep >= minValue
+		ev->accept();
+		return;
+	}
+	if (ev->key() == Qt::Key_End) {
+		if (target == 0) setMinimumPosition(minimumValue()); // keep <= maxValue
+		else             setMaximumPosition(hi);
+		ev->accept();
+		return;
+	}
+	if (ev->key() == Qt::Key_PageUp || ev->key() == Qt::Key_PageDown) {
+		// PageUp increases, PageDown decreases
+		const int dir = (ev->key() == Qt::Key_PageUp) ? +1 : -1;
+		if (target == 0) {
+			const int newMin = clamp(minimumPosition() + dir * pageStep(), lo, maximumValue());
+			setMinimumPosition(newMin);
+		}
+		else {
+			const int newMax = clamp(maximumPosition() + dir * pageStep(), minimumValue(), hi);
+			setMaximumPosition(newMax);
+		}
+		ev->accept();
+		return;
+	}
+
+	// Arrow keys
+	const int dir = isDecrement(ev->key()) ? -1 : +1;
+	if (target == 0) {
+		const int newMin = clamp(minimumPosition() + dir * step, lo, maximumValue());
+		setMinimumPosition(newMin);
+	}
+	else {
+		const int newMax = clamp(maximumPosition() + dir * step, minimumValue(), hi);
+		setMaximumPosition(newMax);
+	}
+	ev->accept();
+}
+
+void RangeSlider::wheelEvent(QWheelEvent* ev)
+{
+	// On most platforms angleDelta().y() is used; x() for horizontal devices
+	const QPoint numDegrees = ev->angleDelta() / 8; // in degrees
+	if (numDegrees.isNull()) {
+		ev->ignore();
+		return;
+	}
+	// Each wheel step is 15 degrees; typical delta = 120 per step
+	const int steps = (numDegrees.y() != 0 ? numDegrees.y() : numDegrees.x()) / 15;
+	if (steps == 0) {
+		ev->ignore();
+		return;
+	}
+
+	// Choose active/closest handle, same heuristic as in keyPressEvent
+	const bool minDown = isMinimumSliderDown();
+	const bool maxDown = isMaximumSliderDown();
+	int target = 0;
+	if (minDown && !maxDown) target = 0;
+	else if (maxDown && !minDown) target = 1;
+	else {
+		const int sp = sliderPosition();
+		const int dMin = qAbs(sp - minimumPosition());
+		const int dMax = qAbs(sp - maximumPosition());
+		target = (dMax < dMin) ? 1 : 0;
+	}
+
+	const int lo = minimum();
+	const int hi = maximum();
+	int step = singleStep();
+	if (step <= 0) step = 1;
+
+	if (target == 0) {
+		const int newMin = clamp(minimumPosition() + steps * step, lo, maximumValue());
+		setMinimumPosition(newMin);
+	}
+	else {
+		const int newMax = clamp(maximumPosition() + steps * step, minimumValue(), hi);
+		setMaximumPosition(newMax);
+	}
+
+	ev->accept();
 }

@@ -37,37 +37,54 @@ class CollapsibleGroupBox : public QGroupBox
 {
 	Q_OBJECT
 		Q_PROPERTY(bool collapsed READ collapsed WRITE setCollapsed)
-
 		/// This property holds the height in pixels of the contents (excludes the title)
 		/// when the box is collapsed.
 		/// 14px by default, it is the smallest height that fit Mac Style.
 		Q_PROPERTY(int collapsedHeight READ collapsedHeight WRITE setCollapsedHeight)
 
 public:
-	CollapsibleGroupBox(QWidget* parent = 0);
-	CollapsibleGroupBox(const QString& title, QWidget* parent = 0);
-	virtual ~CollapsibleGroupBox();
+	CollapsibleGroupBox(QWidget* parent = nullptr);
+	CollapsibleGroupBox(const QString& title, QWidget* parent = nullptr);
+	~CollapsibleGroupBox() override;
 
 	/// Utility function to collapse the groupbox
 	/// Collapse(close) the group box if collapse is true, expand(open)
 	/// it otherwise.
 	/// \sa QGroupBox::setChecked(bool)
-	inline void setCollapsed(bool collapse);
+	inline void setCollapsed(bool collapse)
+	{
+		// Ensure checkable; use checked to represent expanded state
+		if (!this->isCheckable())
+			this->setCheckable(true);
+
+		const bool wantChecked = !collapse;
+		if (this->isChecked() != wantChecked) {
+			const QSignalBlocker b(this); // avoid double-expand signals
+			this->setChecked(wantChecked);
+		}
+		// Invoke the expansion logic (derived or internal) with final state
+		this->expand(wantChecked);
+	}
 
 	/// Return the collapse state of the groupbox
 	/// true if the groupbox is collapsed (closed), false if it is expanded(open)
-	inline bool collapsed()const;
+	inline bool collapsed() const
+	{
+		// If not checkable, treat as expanded
+		return this->isCheckable() ? !this->isChecked() : false;
+	}
 
 	/// Set the height of the collapsed box. Does not include the title height.
 	virtual void setCollapsedHeight(int heightInPixels);
-	int collapsedHeight()const;
+	int collapsedHeight() const;
 
 	/// Reimplemented for internal reasons
 	/// Catch when a child widget's visibility is externally changed
-	virtual bool eventFilter(QObject* child, QEvent* e);
+	bool eventFilter(QObject* child, QEvent* e) override;
 
 	/// Reimplemented for internal reasons
-	virtual void setVisible(bool show);
+	void setVisible(bool show) override;
+
 protected Q_SLOTS:
 	/// called when the arrow indicator is clicked
 	/// users can call it programmatically by calling setChecked(bool)
@@ -76,23 +93,11 @@ protected Q_SLOTS:
 protected:
 	QScopedPointer<CollapsibleGroupBoxPrivate> d_ptr;
 	/// reimplemented for internal reasons
-	virtual void childEvent(QChildEvent*);
+	void childEvent(QChildEvent*) override;
 
 private:
 	Q_DECLARE_PRIVATE(CollapsibleGroupBox);
 	Q_DISABLE_COPY(CollapsibleGroupBox);
 };
-
-//----------------------------------------------------------------------------
-bool CollapsibleGroupBox::collapsed()const
-{
-	return !this->isChecked();
-}
-
-//----------------------------------------------------------------------------
-void CollapsibleGroupBox::setCollapsed(bool collapse)
-{
-	this->setChecked(!collapse);
-}
 
 #endif

@@ -12,7 +12,7 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <widget class="QGroupBox" name="groupBoxVolumeRendering">
+    <widget class="CollapsibleGroupBox" name="groupBoxVolumeRendering">
      <property name="title">
       <string>Volume Rendering</string>
      </property>
@@ -202,7 +202,7 @@
     </widget>
    </item>
    <item>
-    <widget class="QGroupBox" name="groupBoxHistogram">
+    <widget class="CollapsibleGroupBox" name="groupBoxHistogram">
      <property name="title">
       <string>Histogram Threshold</string>
      </property>
@@ -224,7 +224,7 @@
     </widget>
    </item>
    <item>
-    <widget class="QGroupBox" name="groupBoxFiducials">
+    <widget class="CollapsibleGroupBox" name="groupBoxFiducials">
      <property name="title">
       <string>Fiducial Markers</string>
      </property>
@@ -252,6 +252,12 @@
    <class>RangeSlider</class>
    <extends>QWidget</extends>
    <header>RangeSlider.h</header>
+  </customwidget>
+  <customwidget>
+   <class>CollapsibleGroupBox</class>
+   <extends>QGroupBox</extends>
+   <header>CollapsibleGroupBox.h</header>
+   <container>1</container>
   </customwidget>
  </customwidgets>
  <resources/>
