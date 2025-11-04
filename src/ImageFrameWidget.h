@@ -33,6 +33,14 @@ public:
 	// Rendering entry point
 	Q_INVOKABLE void render();
 
+	// Reset WL to the retained baseline computed at setImageData() time.
+	// VolumeView uses this directly; SliceView overrides to apply mapped WL.
+	Q_INVOKABLE virtual void resetWindowLevel();
+
+	// Access to retained baseline in native scalar domain
+	double baselineWindowNative() const { return m_baselineWindowNative; }
+	double baselineLevelNative()  const { return m_baselineLevelNative; }
+
 	// Orientation API (now strongly-typed)
 	ViewOrientation viewOrientation() const { return m_viewOrientation; }
 	virtual void setViewOrientation(ViewOrientation orientation);
@@ -97,6 +105,12 @@ protected:
 	// for derived classes that set m_viewOrientation directly
 	void notifyViewOrientationChanged();
 
+	// Set/overwrite the baseline WL (native domain). Call in setImageData().
+	void setBaselineWindowLevel(double windowNative, double levelNative) {
+		m_baselineWindowNative = windowNative;
+		m_baselineLevelNative = levelNative;
+	}
+
 	ViewOrientation  m_viewOrientation = VIEW_ORIENTATION_XY;
 	Interpolation    m_interpolation = Linear;
 	LinkPropagationMode m_linkPropagationMode = Disabled;
@@ -115,5 +129,9 @@ protected:
 	void computeShiftScaleFromInput(vtkImageData* image);
 
 	bool m_imageInitialized = false;
+
+	// Retained baseline WL in native image domain
+	double m_baselineWindowNative = std::numeric_limits<double>::quiet_NaN();
+	double m_baselineLevelNative = std::numeric_limits<double>::quiet_NaN();
 };
 

@@ -54,6 +54,9 @@ protected:
 
 	void createMenuAndActions();
 
+	// Apply retained baseline WL (native -> mapped) on reset
+	void resetWindowLevel() override;
+
 private:
 	void updateCamera();
 	void updateSlice();
@@ -80,6 +83,9 @@ private:
 private slots:
 	// Must be a Qt slot for vtkEventQtSlotConnect
 	void trapSpin(vtkObject* obj);
+
+	// Handle ResetWindowLevelEvent from vtkInteractorStyleImage
+	void onResetWindowLevel(vtkObject* obj);
 };
 
 #endif // SLICEVIEW_H

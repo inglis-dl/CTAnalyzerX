@@ -32,6 +32,7 @@
 #include <vtkImageProperty.h>
 #include <vtkEventQtSlotConnect.h>
 #include <vtkRenderWindowInteractor.h>
+#include <vtkCommand.h>
 
 SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	: ImageFrameWidget(parent)
@@ -92,7 +93,7 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 		interactorStyle->SetDefaultRenderer(m_renderer);
 		interactorStyle->AutoAdjustCameraClippingRangeOn();
 		// important: allow default WL behavior even when we observe
-		interactorStyle->SetHandleObservers(false);
+		interactorStyle->SetHandleObservers(true);
 		iren->SetInteractorStyle(interactorStyle);
 	}
 
@@ -111,6 +112,12 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	this->qvtkConnection = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 	this->qvtkConnection->Connect(interactorStyle, vtkCommand::LeftButtonPressEvent,
 		this, SLOT(trapSpin(vtkObject*)));
+
+	// Listen for ResetWindowLevelEvent and apply our retained baseline WL
+	if (interactorStyle) {
+		this->qvtkConnection->Connect(interactorStyle, vtkCommand::ResetWindowLevelEvent,
+			this, SLOT(onResetWindowLevel(vtkObject*)));
+	}
 
 	connect(ui->sliderSlicePosition, &QSlider::valueChanged, this, &SliceView::setSliceIndex);
 
@@ -383,17 +390,24 @@ void SliceView::setImageData(vtkImageData* image) {
 		m_imageInitialized = true;
 	}
 
-	// Establish baseline ONCE in native domain
-	//m_initialWindowNative = std::max(m_scalarRangeMax - m_scalarRangeMin, 1.0);
-	//m_initialLevelNative = 0.5 * (m_scalarRangeMax + m_scalarRangeMin);
+	// Compute a native-domain baseline WL (trim 1% like VolumeView) and retain it	
+	const double diff = m_scalarRangeMax - m_scalarRangeMin;
+	const double lb = diff > 0.0 ? (m_scalarRangeMin + 0.01 * diff) : m_scalarRangeMin;
+	const double ub = diff > 0.0 ? (m_scalarRangeMax - 0.01 * diff) : m_scalarRangeMax;
+	const double baseWindowNative = std::max(ub - lb, 1.0);
+	const double baseLevelNative = 0.5 * (ub + lb);
+	setBaselineWindowLevel(baseWindowNative, baseLevelNative);
 
-	// Apply mapped WL corresponding to that baseline
-	const double minMapped = (m_scalarRangeMin + m_scalarShift) * m_scalarScale;
-	const double maxMapped = (m_scalarRangeMax + m_scalarShift) * m_scalarScale;
-	const double baseWindow = std::max(maxMapped - minMapped, 1.0);
-	const double baseLevel = 0.5 * (maxMapped + minMapped);
-	imageProperty->SetColorWindow(baseWindow);
-	imageProperty->SetColorLevel(baseLevel);
+	// Map baseline to the post-shift/scale domain used by vtkImageProperty
+	const double lowerNative = baseLevelNative - 0.5 * baseWindowNative;
+	const double upperNative = baseLevelNative + 0.5 * baseWindowNative;
+	const double lowerMapped = (lowerNative + m_scalarShift) * m_scalarScale;
+	const double upperMapped = (upperNative + m_scalarShift) * m_scalarScale;
+	const double mappedWindow = std::max(upperMapped - lowerMapped, 1.0);
+	const double mappedLevel = 0.5 * (upperMapped + lowerMapped);
+
+	imageProperty->SetColorWindow(mappedWindow);
+	imageProperty->SetColorLevel(mappedLevel);
 
 	// Prime the interactor style so 'r' resets to this baseline WL.
 	if (auto* iren = m_renderWindow->GetInteractor()) {
@@ -685,4 +699,42 @@ bool SliceView::eventFilter(QObject* watched, QEvent* event)
 		}
 	}
 	return SelectionFrameWidget::eventFilter(watched, event);
+}
+
+void SliceView::resetWindowLevel()
+{
+	// Apply retained baseline in native domain, mapped to vtkImageProperty domain
+	if (!m_imageData) return;
+	const double w = baselineWindowNative();
+	const double l = baselineLevelNative();
+	if (!std::isfinite(w) || !std::isfinite(l)) return;
+
+	const double lowerNative = l - 0.5 * std::fabs(w);
+	const double upperNative = l + 0.5 * std::fabs(w);
+	const double lowerMapped = (lowerNative + m_scalarShift) * m_scalarScale;
+	const double upperMapped = (upperNative + m_scalarShift) * m_scalarScale;
+	const double mappedWindow = std::max(upperMapped - lowerMapped, 1.0);
+	const double mappedLevel = 0.5 * (upperMapped + lowerMapped);
+
+	imageProperty->SetColorWindow(mappedWindow);
+	imageProperty->SetColorLevel(mappedLevel);
+
+	// Update interactor style "initial" so 'r' resets to this baseline
+	if (auto* iren = m_renderWindow->GetInteractor()) {
+		if (auto* style = vtkInteractorStyleImage::SafeDownCast(iren->GetInteractorStyle())) {
+			style->SetDefaultRenderer(m_renderer);
+			style->SetCurrentRenderer(m_renderer);
+			style->StartWindowLevel();
+			style->EndWindowLevel();
+		}
+	}
+
+	render();
+	emit windowLevelChanged(w, l);
+}
+
+void SliceView::onResetWindowLevel(vtkObject* /*obj*/)
+{
+	// Handle vtkInteractorStyleImage 'r'/'R' (no modifiers) using our retained baseline
+	this->resetWindowLevel();
 }

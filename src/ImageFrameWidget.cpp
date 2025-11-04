@@ -158,3 +158,13 @@ void ImageFrameWidget::onSelectionChanged(bool selected)
 		}
 	}
 }
+
+void ImageFrameWidget::resetWindowLevel()
+{
+	// Default implementation: delegate to derived setColorWindowLevel
+	// using the retained baseline in native domain (VolumeView overrides setColorWindowLevel).
+	if (!m_imageData) return;
+	if (!std::isfinite(m_baselineWindowNative) || !std::isfinite(m_baselineLevelNative)) return;
+	// If derived did not override setColorWindowLevel, this may be a no-op (SliceView overrides reset itself).
+	setColorWindowLevel(m_baselineWindowNative, m_baselineLevelNative);
+}

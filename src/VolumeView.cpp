@@ -22,7 +22,9 @@
 #include <vtkPiecewiseFunction.h>
 #include <vtkCamera.h>
 #include <vtkMath.h>
-#include <vtkProperty.h> // added for plane colors
+#include <vtkProperty.h>
+#include <vtkCommand.h>
+#include <vtkEventQtSlotConnect.h>
 
 VolumeView::VolumeView(QWidget* parent)
 	: ImageFrameWidget(parent)
@@ -97,6 +99,14 @@ VolumeView::VolumeView(QWidget* parent)
 	if (m_yzPlane && m_yzPlane->GetPlaneProperty()) m_yzPlane->GetPlaneProperty()->SetColor(1.0, 0.0, 0.0);
 	if (m_xzPlane && m_xzPlane->GetPlaneProperty()) m_xzPlane->GetPlaneProperty()->SetColor(0.0, 1.0, 0.0);
 	if (m_xyPlane && m_xyPlane->GetPlaneProperty()) m_xyPlane->GetPlaneProperty()->SetColor(0.0, 0.0, 1.0);
+
+	m_qvtk = vtkSmartPointer<vtkEventQtSlotConnect>::New();
+	if (interactor) {
+		// Use full-signature slot so we can abort plain 'r'/'R'
+		m_qvtk->Connect(interactor, vtkCommand::CharEvent,
+			this, SLOT(onInteractorChar(vtkObject*, unsigned long, void*, void*, vtkCommand*)),
+			nullptr, 1.0f);
+	}
 }
 
 VolumeView::~VolumeView()
@@ -194,27 +204,22 @@ void VolumeView::setImageData(vtkImageData* image)
 	}
 
 	if (!m_imageInitialized) {
-		// Volume mapper takes the post-mapped data
 		m_mapper->SetInputConnection(shiftScaleFilter->GetOutputPort());
-
 		m_yzPlane->SetPlaneOrientationToXAxes();
 		m_xzPlane->SetPlaneOrientationToYAxes();
 		m_xyPlane->SetPlaneOrientationToZAxes();
-
 		m_imageInitialized = true;
 	}
 
 	// Rebuild the ACTUAL color TF to span the native image range (not 0..65535)
-	{
-		const double diff = m_scalarRangeMax - m_scalarRangeMin;
-		const double lb = diff > 0.0 ? (m_scalarRangeMin + 0.01 * diff) : m_scalarRangeMin;
-		const double ub = diff > 0.0 ? (m_scalarRangeMax - 0.01 * diff) : m_scalarRangeMax;
+	const double diff = m_scalarRangeMax - m_scalarRangeMin;
+	const double lb = diff > 0.0 ? (m_scalarRangeMin + 0.01 * diff) : m_scalarRangeMin;
+	const double ub = diff > 0.0 ? (m_scalarRangeMax - 0.01 * diff) : m_scalarRangeMax;
 
-		m_actualColorTF->RemoveAllPoints();
-		m_actualColorTF->AddRGBPoint(lb, 0.0, 0.0, 0.0);
-		m_actualColorTF->AddRGBPoint(ub, 1.0, 1.0, 1.0);
-		m_actualColorTF->Build();
-	}
+	m_actualColorTF->RemoveAllPoints();
+	m_actualColorTF->AddRGBPoint(lb, 0.0, 0.0, 0.0);
+	m_actualColorTF->AddRGBPoint(ub, 1.0, 1.0, 1.0);
+	m_actualColorTF->Build();
 
 	// Remap ACTUAL -> MAPPED using current shift/scale, then attach to property
 	updateMappedColorsFromActual();
@@ -223,25 +228,20 @@ void VolumeView::setImageData(vtkImageData* image)
 	m_volumeProperty->SetColor(m_colorTF);
 	m_volumeProperty->SetScalarOpacity(m_scalarOpacity);
 
-	// Initialize WL in native domain
-	{
-		const double diff = m_scalarRangeMax - m_scalarRangeMin;
-		const double lb = diff > 0.0 ? (m_scalarRangeMin + 0.01 * diff) : m_scalarRangeMin;
-		const double ub = diff > 0.0 ? (m_scalarRangeMax - 0.01 * diff) : m_scalarRangeMax;
-		const double baseWindow = std::max(ub - lb, 1.0);
-		const double baseLevel = 0.5 * (ub + lb);
-		setColorWindowLevel(baseWindow, baseLevel); // updates opacity+color and renders
-	}
+	// Initialize WL in native domain and retain as baseline
+	const double baseWindow = std::max(ub - lb, 1.0);
+	const double baseLevel = 0.5 * (ub + lb);
+	setBaselineWindowLevel(baseWindow, baseLevel);
+	setColorWindowLevel(baseWindow, baseLevel); // updates opacity+color and renders
 
-	// Optional: set scalar opacity unit distance to match data spacing
-	{
-		double sp[3] = { 1,1,1 };
-		m_imageData->GetSpacing(sp);
-		const double unit = (sp[0] + sp[1] + sp[2]) / 3.0;
-		m_volumeProperty->SetScalarOpacityUnitDistance(unit);
-	}
+	// set scalar opacity unit distance to match data spacing
 
-	// Camera/planes setup (unchanged)
+	double sp[3] = { 1,1,1 };
+	m_imageData->GetSpacing(sp);
+	const double unit = (sp[0] + sp[1] + sp[2]) / 3.0;
+	m_volumeProperty->SetScalarOpacityUnitDistance(unit);
+
+
 	resetCamera();
 
 	int extent[6] = { 0,0,0,0,0,0 };
@@ -601,4 +601,56 @@ void VolumeView::setShadingEnabled(bool on)
 		else    m_volumeProperty->ShadeOff();
 	}
 	render();
+}
+
+void VolumeView::resetWindowLevel()
+{
+	// Apply retained baseline in native domain for BOTH color TF and opacity TF
+	if (!m_imageData) return;
+
+	const double w = baselineWindowNative();
+	const double l = baselineLevelNative();
+	if (!std::isfinite(w) || !std::isfinite(l)) return;
+
+	// Rebuild the actual color TF to span [lower, upper] in the native domain (same as initial)
+	const double lower = l - 0.5 * std::fabs(w);
+	const double upper = l + 0.5 * std::fabs(w);
+
+	// Clamp to native scalar range for safety
+	const double lb = std::max(lower, m_scalarRangeMin);
+	const double ub = std::min(upper, m_scalarRangeMax);
+
+	m_actualColorTF->RemoveAllPoints();
+	m_actualColorTF->AddRGBPoint(lb, 0.0, 0.0, 0.0);
+	m_actualColorTF->AddRGBPoint(ub, 1.0, 1.0, 1.0);
+	m_actualColorTF->Build();
+
+	// Map and apply the color TF
+	updateMappedColorsFromActual();
+	m_volumeProperty->SetColor(m_colorTF);
+
+	// Rebuild opacity from the same baseline WL
+	setColorWindowLevel(w, l); // updates opacity TF (and re-maps colors for consistency)
+
+	emit windowLevelChanged(w, l);
+}
+
+void VolumeView::onInteractorChar(vtkObject* caller, unsigned long /*eventId*/, void* /*clientData*/, void* /*callData*/, vtkCommand* command)
+{
+	auto* iren = vtkRenderWindowInteractor::SafeDownCast(caller);
+	if (!iren) return;
+
+	const int key = iren->GetKeyCode();
+	const bool hasModifier = (iren->GetShiftKey() || iren->GetControlKey());
+
+	if (key == 's' || key == 'S') {
+		setShadingEnabled(!m_shadingEnabled);
+		return;
+	}
+
+	// Plain r/R: restore WL + TFs to retained baseline; keep Shift/Ctrl+R for camera reset
+	if ((key == 'r' || key == 'R') && !hasModifier) {
+		resetWindowLevel();
+		if (command) command->AbortFlagOn(); // don't let TrackballCamera reset camera on plain 'r'
+	}
 }
