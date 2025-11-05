@@ -159,6 +159,7 @@ private:
 
 	// Add these private helpers (only declarations) to keep icon size unchanged while recoloring buttons.
 	void styleHeaderActionButton(QToolButton* btn);
+	void updateHeaderActionLayoutMargins();
 	void refreshHeaderActionStyles();
 
 private:

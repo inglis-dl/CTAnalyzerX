@@ -1,5 +1,11 @@
 <RCC>
-    <qresource prefix="/icons">
-        <file>icons/dicom.png</file>
+    <qresource prefix="/">
+        <file>icons/clipboard.png</file>
+		<file>icons/dicom.png</file>
+		<file>icons/maximize.png</file>
+		<file>icons/maximize_thick.png</file>
+		<file>icons/minimize.png</file>
+		<file>icons/minimize_thick.png</file>
+		<file>icons/save.png</file>
     </qresource>
 </RCC>

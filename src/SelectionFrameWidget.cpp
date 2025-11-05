@@ -60,9 +60,10 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	// Header actions area (right-aligned)
 	m_headerActionsLayout->setContentsMargins(0, 0, 0, 0);
 	m_headerActionsLayout->setSpacing(4);
+	m_headerActionsLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter); // ensure actions are right/vert-centred
 	m_headerActionsContainer->setLayout(m_headerActionsLayout);
 
-	// Header layout: [MenuButton] [TitleLabel expanding] ...spacer... [actions]
+	// Header layout: [MenuButton] [TitleLabel expanding] [actions right-aligned]
 	m_headerLayout->setContentsMargins(0, 0, 0, 0);
 	m_headerLayout->setSpacing(4);
 	m_headerContainer->setLayout(m_headerLayout);
@@ -70,8 +71,9 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	m_titleLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 	m_headerLayout->addWidget(m_selectionMenuButton);
 	m_headerLayout->addWidget(m_titleLabel, /*stretch*/ 1);
-	m_headerLayout->addStretch(1);
+	// Place actions container directly after the title; alignment keeps it at the right and vertically centered.
 	m_headerLayout->addWidget(m_headerActionsContainer);
+	m_headerLayout->setAlignment(m_headerActionsContainer, Qt::AlignRight | Qt::AlignVCenter);
 
 	// MenuButton appearance
 	m_selectionMenuButton->setText(QString());
@@ -375,38 +377,82 @@ void SelectionFrameWidget::keyPressEvent(QKeyEvent* e)
 }
 
 // Ensure header action buttons have an opaque, lighter background consistent with MenuButton.
-// Only color is changed; icon size and layout sizing are not modified.
+// Do NOT change the button size here; only color it so it looks like it sits on the header.
 void SelectionFrameWidget::styleHeaderActionButton(QToolButton* btn)
 {
 	if (!btn) return;
 
-	// Use MenuButton palette for consistency
+	// Keep button size untouched; the layout supplies vertical centering and right-gap.
+	btn->setFocusPolicy(Qt::NoFocus);
+	btn->setAutoRaise(false);                // allow painted background
+	btn->setAttribute(Qt::WA_StyledBackground, true);
+
+	// Compute colors from MenuButton palette (matches header theme)
 	const QPalette pal = m_selectionMenuButton ? m_selectionMenuButton->palette() : QApplication::palette();
-	QColor base = pal.button().color().lighter(110);   // slightly lighter
-	QColor hover = base.lighter(110);
+	QColor base = pal.button().color().lighter(110);   // slightly lighter than header
+	QColor hover = base.lighter(105);
 	QColor press = base.darker(110);
 	QColor text = pal.buttonText().color();
 
-	// Force opaque colors
 	base.setAlpha(255);
 	hover.setAlpha(255);
 	press.setAlpha(255);
 	text.setAlpha(255);
 
-	// Apply coloring only. No padding/border/icon-size adjustments to avoid size changes.
+	// Small corner radius can help the button look like a tile on top of header.
 	const QString css = QString(
 		"QToolButton {"
 		"  background-color: %1;"
 		"  color: %2;"
 		"  border: none;"
+		"  border-radius: 3px;"
 		"}"
 		"QToolButton:hover { background-color: %3; }"
 		"QToolButton:pressed { background-color: %4; }"
 	).arg(base.name(), text.name(), hover.name(), press.name());
 
-	btn->setAttribute(Qt::WA_StyledBackground, true);
-	btn->setAutoRaise(false); // ensure background is painted
-	btn->setStyleSheet(css);
+	// Preserve existing style rules but ensure our tile color is applied.
+	const QString existing = btn->styleSheet();
+	if (!existing.isEmpty())
+		btn->setStyleSheet(existing + QLatin1Char('\n') + css);
+	else
+		btn->setStyleSheet(css);
+
+	// Ensure layout margins reflect the current sizes
+	updateHeaderActionLayoutMargins();
+}
+
+// Compute a vertical gap from header/button geometry and set the header actions layout
+// contents margins so the right margin equals the top/bottom gap. This preserves button
+// size and produces the desired visual padding on the right side.
+void SelectionFrameWidget::updateHeaderActionLayoutMargins()
+{
+	if (!m_headerActionsLayout || !m_headerContainer) return;
+
+	// Title bar height (prefer sizeHint when possible)
+	int titleBarHeight = m_headerContainer->height();
+	if (titleBarHeight <= 0) titleBarHeight = m_headerContainer->sizeHint().height();
+	if (titleBarHeight <= 0) titleBarHeight = qMax(20, QFontMetrics(font()).height() + 8);
+
+	// Representative button height from header actions (fall back to menu button)
+	int btnContentH = 0;
+	for (int i = 0; i < m_headerActionsLayout->count(); ++i) {
+		if (auto* w = m_headerActionsLayout->itemAt(i)->widget()) {
+			if (auto* tb = qobject_cast<QToolButton*>(w)) {
+				btnContentH = tb->sizeHint().height();
+				break;
+			}
+		}
+	}
+	if (btnContentH <= 0 && m_selectionMenuButton) btnContentH = m_selectionMenuButton->sizeHint().height();
+	if (btnContentH <= 0) btnContentH = qMax(16, titleBarHeight - 4);
+
+	// Compute the top/bottom gap (ensure at least 2px)
+	int verticalGap = qMax(2, (titleBarHeight - btnContentH) / 2);
+
+	// left = 0, top = verticalGap, right = verticalGap, bottom = verticalGap
+	m_headerActionsLayout->setContentsMargins(0, verticalGap, verticalGap, verticalGap);
+	m_headerActionsLayout->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
 }
 
 void SelectionFrameWidget::refreshHeaderActionStyles()
@@ -686,7 +732,7 @@ QAction* SelectionFrameWidget::addHeaderAction(QAction* action)
 	return action;
 }
 
-// Add near other helpers
+// Add resource-backed icons for the toggle action (falls back to style/theme icons)
 void SelectionFrameWidget::enableMaximizeControls(bool on)
 {
 	if (!on) {
@@ -695,13 +741,23 @@ void SelectionFrameWidget::enableMaximizeControls(bool on)
 	}
 
 	if (!m_actToggleMaximize) {
-		// Create a single toggle action
-		QIcon ico = m_isMaximized
-			? style()->standardIcon(QStyle::SP_TitleBarNormalButton)
-			: style()->standardIcon(QStyle::SP_TitleBarMaxButton);
-		if (ico.isNull())
-			ico = QIcon::fromTheme(m_isMaximized ? QStringLiteral("window-restore")
-												 : QStringLiteral("window-maximize"));
+		// Prefer project resource icons; fall back to style/theme icons if resource missing.
+		const QIcon resMaximize(":/icons/maximize.png");
+		const QIcon resMinimize(":/icons/minimize.png");
+
+		QIcon ico;
+		if (m_isMaximized) {
+			ico = !resMinimize.isNull()
+				? resMinimize
+				: style()->standardIcon(QStyle::SP_TitleBarNormalButton);
+			if (ico.isNull()) ico = QIcon::fromTheme(QStringLiteral("window-restore"));
+		}
+		else {
+			ico = !resMaximize.isNull()
+				? resMaximize
+				: style()->standardIcon(QStyle::SP_TitleBarMaxButton);
+			if (ico.isNull()) ico = QIcon::fromTheme(QStringLiteral("window-maximize"));
+		}
 
 		m_actToggleMaximize = new QAction(ico, QString(), this);
 		connect(m_actToggleMaximize, &QAction::triggered, this, [this] {
@@ -719,15 +775,23 @@ void SelectionFrameWidget::updateToggleMaximizeActionVisuals()
 {
 	if (!m_actToggleMaximize) return;
 
+	// Prefer resource icons if available, otherwise fall back to style/theme icons
+	const QIcon resMaximize(":/icons/maximize.png");
+	const QIcon resMinimize(":/icons/minimize.png");
+
 	if (m_isMaximized) {
-		QIcon ico = style()->standardIcon(QStyle::SP_TitleBarNormalButton);
+		QIcon ico = !resMinimize.isNull()
+			? resMinimize
+			: style()->standardIcon(QStyle::SP_TitleBarNormalButton);
 		if (ico.isNull()) ico = QIcon::fromTheme(QStringLiteral("window-restore"));
 		m_actToggleMaximize->setIcon(ico);
 		m_actToggleMaximize->setText(tr("Restore"));
 		m_actToggleMaximize->setToolTip(tr("Restore view"));
 	}
 	else {
-		QIcon ico = style()->standardIcon(QStyle::SP_TitleBarMaxButton);
+		QIcon ico = !resMaximize.isNull()
+			? resMaximize
+			: style()->standardIcon(QStyle::SP_TitleBarMaxButton);
 		if (ico.isNull()) ico = QIcon::fromTheme(QStringLiteral("window-maximize"));
 		m_actToggleMaximize->setIcon(ico);
 		m_actToggleMaximize->setText(tr("Maximize"));

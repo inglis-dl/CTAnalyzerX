@@ -223,7 +223,7 @@ void LightboxWidget::startExpandAnimation(SelectionFrameWidget* target, const QR
 		anim->setDuration(200);
 		anim->setStartValue(startRect);
 		anim->setEndValue(endRect);
-		anim->setEasingCurve(QEasingCurve::InOutCubic);
+		anim->setEasingCurve(QEasingCurve::Linear);
 		m_animGroup->addAnimation(anim);
 
 		m_animOverlays.push_back(overlay);

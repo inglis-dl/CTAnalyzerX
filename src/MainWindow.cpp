@@ -1,6 +1,9 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
 
+#include "LightboxWidget.h"
+#include "ImageLoader.h"
+
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QSettings>
@@ -14,11 +17,16 @@
 #include <QFileInfo>
 #include <QMimeData>
 #include <QUrl>
+#include <QSysInfo>
+#include <QOpenGLContext>
+#include <QOffscreenSurface>
+#include <QSurfaceFormat>
+#include <QOpenGLFunctions>
 
-#include "LightboxWidget.h"
-#include "ImageLoader.h"
-
+#include <vtkVersion.h>   // VTK version macros
 #include <vtkEventQtSlotConnect.h>
+
+#include <itkVersion.h>   // ITK version macros
 #include <itkImage.h>
 #include <itkImageSeriesReader.h>
 #include <itkGDCMImageIO.h>
@@ -27,6 +35,34 @@
 #include <itkImageToVTKImageFilter.h>
 
 using ImageType = itk::Image<short, 3>;
+
+namespace {
+	QString queryOpenGLSummary()
+	{
+		QSurfaceFormat fmt;
+		fmt.setRenderableType(QSurfaceFormat::OpenGL);
+		QOffscreenSurface surface;
+		surface.setFormat(fmt);
+		surface.create();
+
+		QOpenGLContext ctx;
+		ctx.setFormat(fmt);
+		if (!ctx.create() || !surface.isValid() || !ctx.makeCurrent(&surface))
+			return QStringLiteral("unavailable");
+
+		QOpenGLFunctions* f = ctx.functions();
+		const char* vendor = reinterpret_cast<const char*>(f->glGetString(GL_VENDOR));
+		const char* renderer = reinterpret_cast<const char*>(f->glGetString(GL_RENDERER));
+		const char* version = reinterpret_cast<const char*>(f->glGetString(GL_VERSION));
+		ctx.doneCurrent();
+
+		const QString v = vendor ? QString::fromLatin1(vendor) : QStringLiteral("?");
+		const QString r = renderer ? QString::fromLatin1(renderer) : QStringLiteral("?");
+		const QString ver = version ? QString::fromLatin1(version) : QStringLiteral("?");
+
+		return QStringLiteral("%1 | %2 | %3").arg(v, r, ver);
+	}
+}
 
 MainWindow::MainWindow(QWidget* parent)
 	: QMainWindow(parent), ui(new Ui::MainWindow), defaultImageLoaded(false)
@@ -110,7 +146,67 @@ void MainWindow::onActionExit()
 
 void MainWindow::onActionAbout()
 {
-	QMessageBox::about(this, tr("About CTAnalyzerX"), tr("3D volume image visualization tool for DICOM and Scanco .isq files."));
+	// Compile-time fallbacks
+#ifndef CTANALYZERX_VERSION
+#define CTANALYZERX_VERSION "unknown"
+#endif
+#ifndef CTANALYZERX_BUILD_DATE
+#define CTANALYZERX_BUILD_DATE "unknown"
+#endif
+#ifndef CTANALYZERX_GIT_HASH
+#define CTANALYZERX_GIT_HASH "unknown"
+#endif
+#ifndef CTANALYZERX_BUILD_TYPE
+#define CTANALYZERX_BUILD_TYPE "unknown"
+#endif
+#ifndef CTANALYZERX_COMPILER
+#define CTANALYZERX_COMPILER "unknown"
+#endif
+#ifndef CTANALYZERX_VTKDICOM_VERSION
+#define CTANALYZERX_VTKDICOM_VERSION "unknown"
+#endif
+
+	const QString ver = QString::fromUtf8(CTANALYZERX_VERSION).trimmed();
+	const QString build = QString::fromUtf8(CTANALYZERX_BUILD_DATE).trimmed();
+	const QString fullHash = QString::fromUtf8(CTANALYZERX_GIT_HASH).trimmed();
+	const QString shortHash = fullHash.left(7);
+	const QString buildType = QString::fromUtf8(CTANALYZERX_BUILD_TYPE).trimmed();
+	const QString compiler = QString::fromUtf8(CTANALYZERX_COMPILER).trimmed();
+	const QString vtkDicomVer = QString::fromUtf8(CTANALYZERX_VTKDICOM_VERSION).trimmed();
+
+	// Platform
+	const QString os = QSysInfo::prettyProductName();
+	const QString arch = QSysInfo::currentCpuArchitecture();
+
+	// Libraries
+	const QString qtVer = QString::fromLatin1(QT_VERSION_STR);
+	// Use vtkVersion API (same scheme as jswqAboutDialog.cxx) instead of raw macros which may differ between VTK releases
+	const QString vtkVer = QString::fromLatin1(vtkVersion::GetVTKVersionFull());
+	const QString itkVer = QStringLiteral("%1.%2.%3")
+		.arg(QString::number(ITK_VERSION_MAJOR),
+			 QString::number(ITK_VERSION_MINOR),
+			 QString::number(ITK_VERSION_PATCH));
+
+	// OpenGL summary (vendor | renderer | version)
+	const QString gl = queryOpenGLSummary();
+
+	const QString details = tr(
+		"3D volume image visualization tool for DICOM and Scanco .isq files.\n\n"
+		"Version:   %1\n"
+		"Build:     %2\n"
+		"Git:       %3\n"
+		"BuildCfg:  %4\n"
+		"Compiler:  %5\n"
+		"OS:        %6 (%7)\n"
+		"Qt:        %8\n"
+		"VTK:       %9\n"
+		"ITK:       %10\n"
+		"VTK-DICOM: %11\n"
+		"OpenGL:    %12")
+		.arg(ver, build, shortHash, buildType, compiler,
+			 os, arch, qtVer, vtkVer, itkVer, vtkDicomVer, gl);
+
+	QMessageBox::about(this, tr("About CTAnalyzerX"), details);
 }
 
 void MainWindow::setupPanelConnections()
