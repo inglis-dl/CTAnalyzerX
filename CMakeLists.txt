@@ -154,8 +154,10 @@ set(SOURCES
      src/SunkenSliderStyle.h
      src/ImageFrameWidget.cpp
      src/ImageFrameWidget.h
-     #src/WindowLevelBus.cpp
-     #src/WindowLevelBus.h
+     src/WindowLevelController.cpp
+	 src/WindowLevelController.h
+     src/WindowLevelBridge.cpp
+     src/WindowLevelBridge.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early

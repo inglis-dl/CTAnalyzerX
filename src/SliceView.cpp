@@ -113,10 +113,31 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	this->qvtkConnection->Connect(interactorStyle, vtkCommand::LeftButtonPressEvent,
 		this, SLOT(trapSpin(vtkObject*)));
 
-	// Listen for ResetWindowLevelEvent and apply our retained baseline WL
+	m_windowLevelStartPosition[0] = 0;
+	m_windowLevelStartPosition[1] = 0;
+
+	m_windowLevelCurrentPosition[0] = 0;
+	m_windowLevelCurrentPosition[1] = 0;
+
+	m_windowLevelInitial[0] = 1.0; // Window
+	m_windowLevelInitial[1] = 0.5; // Level
+
+	// Wire window-level lifecycle events from the interactor style.
 	if (interactorStyle) {
+		// Reset event (already handled)
 		this->qvtkConnection->Connect(interactorStyle, vtkCommand::ResetWindowLevelEvent,
 			this, SLOT(onResetWindowLevel(vtkObject*)));
+
+		// Interactive WL (mouse-drag updates)
+		this->qvtkConnection->Connect(interactorStyle, vtkCommand::WindowLevelEvent,
+			this, SLOT(onInteractorWindowLevel(vtkObject*)), nullptr, -1.0f);
+
+		// Start/End lifecycle so we can update UI and store baseline on end
+		this->qvtkConnection->Connect(interactorStyle, vtkCommand::StartWindowLevelEvent,
+			this, SLOT(onInteractorStartWindowLevel(vtkObject*)), nullptr, -1.0f);
+
+		this->qvtkConnection->Connect(interactorStyle, vtkCommand::EndWindowLevelEvent,
+			this, SLOT(onInteractorEndWindowLevel(vtkObject*)), nullptr, -1.0f);
 	}
 
 	connect(ui->sliderSlicePosition, &QSlider::valueChanged, this, &SliceView::setSliceIndex);
@@ -415,6 +436,11 @@ void SliceView::setImageData(vtkImageData* image) {
 			// Ensure the style can find the image and property
 			style->SetDefaultRenderer(m_renderer);
 			style->SetCurrentRenderer(m_renderer);
+
+			// Force the style to (re)scan the renderer's image props so CurrentImageProperty is valid.
+			// Use -1 to mean "last/topmost" like the style's logic expects.
+			style->SetCurrentImageNumber(-1);
+
 			// This captures imageProperty->GetColorWindow/Level() into WindowLevelInitial
 			style->StartWindowLevel();
 			style->EndWindowLevel();
@@ -701,6 +727,37 @@ bool SliceView::eventFilter(QObject* watched, QEvent* event)
 	return SelectionFrameWidget::eventFilter(watched, event);
 }
 
+void SliceView::setWindowLevelNative(double window, double level)
+{
+	if (!m_imageData) return;
+
+	// Compute native lower/upper and map using shift/scale (same mapping as in setImageData/resetWindowLevel)
+	const double lowerNative = level - 0.5 * std::fabs(window);
+	const double upperNative = level + 0.5 * std::fabs(window);
+	const double lowerMapped = (lowerNative + m_scalarShift) * m_scalarScale;
+	const double upperMapped = (upperNative + m_scalarShift) * m_scalarScale;
+	const double mappedWindow = std::max(upperMapped - lowerMapped, 1.0);
+	const double mappedLevel = 0.5 * (upperMapped + lowerMapped);
+
+	if (imageProperty) {
+		imageProperty->SetColorWindow(mappedWindow);
+		imageProperty->SetColorLevel(mappedLevel);
+	}
+
+	// Update interactor style baseline so plain 'r' will restore this WL
+	if (auto* iren = m_renderWindow->GetInteractor()) {
+		if (auto* style = vtkInteractorStyleImage::SafeDownCast(iren->GetInteractorStyle())) {
+			style->SetDefaultRenderer(m_renderer);
+			style->SetCurrentRenderer(m_renderer);
+			style->StartWindowLevel();
+			style->EndWindowLevel();
+		}
+	}
+
+	render();
+	emit windowLevelChanged(window, level);
+}
+
 void SliceView::resetWindowLevel()
 {
 	// Apply retained baseline in native domain, mapped to vtkImageProperty domain
@@ -737,4 +794,133 @@ void SliceView::onResetWindowLevel(vtkObject* /*obj*/)
 {
 	// Handle vtkInteractorStyleImage 'r'/'R' (no modifiers) using our retained baseline
 	this->resetWindowLevel();
+}
+
+void SliceView::onInteractorWindowLevel(vtkObject* caller)
+{
+	// caller is the vtkInteractorStyleImage that invoked the event
+	auto* style = vtkInteractorStyleImage::SafeDownCast(caller);
+	if (!style) return;
+
+	// Need interactor and current image property
+	auto* iren = style->GetInteractor();
+	vtkImageProperty* prop = style->GetCurrentImageProperty();
+	if (!iren || !prop || !m_imageData) return;
+
+	// Get viewport size (use render window size as a robust fallback)
+	int size[2] = { 1, 1 };
+	if (iren->GetRenderWindow()) {
+		const int* s = iren->GetRenderWindow()->GetSize();
+		if (s) { size[0] = s[0]; size[1] = s[1]; }
+	}
+
+	m_windowLevelCurrentPosition[0] = style->GetWindowLevelCurrentPosition()[0];
+	m_windowLevelCurrentPosition[1] = style->GetWindowLevelCurrentPosition()[1];
+
+	double window = m_windowLevelInitial[0];
+	double level = m_windowLevelInitial[1];
+
+	// Compute normalized delta
+
+	double dx =
+		(m_windowLevelCurrentPosition[0] - m_windowLevelStartPosition[0]) * 4.0 / size[0];
+	double dy =
+		(m_windowLevelStartPosition[1] - m_windowLevelCurrentPosition[1]) * 4.0 / size[1];
+
+	// Scale by current values
+
+	if (fabs(window) > 0.01)
+	{
+		dx = dx * window;
+	}
+	else
+	{
+		dx = dx * (window < 0 ? -0.01 : 0.01);
+	}
+	if (fabs(level) > 0.01)
+	{
+		dy = dy * level;
+	}
+	else
+	{
+		dy = dy * (level < 0 ? -0.01 : 0.01);
+	}
+
+	// Abs so that direction does not flip
+
+	if (window < 0.0)
+	{
+		dx = -1 * dx;
+	}
+	if (level < 0.0)
+	{
+		dy = -1 * dy;
+	}
+
+	// Compute new window level
+
+	double newWindow = dx + window;
+	double newLevel = level - dy;
+
+	if (newWindow < 0.01)
+	{
+		newWindow = 0.01;
+	}
+
+	// Apply mapped-domain change to the image property (we must do this because style did not)
+	prop->SetColorWindow(newWindow);
+	prop->SetColorLevel(newLevel);
+	iren->Render();
+
+	// Convert mapped -> native domain (inverse of (native + shift)*scale)
+	const double lowerMapped = newLevel - 0.5 * std::fabs(newWindow);
+	const double upperMapped = newLevel + 0.5 * std::fabs(newWindow);
+	const double lowerNative = (lowerMapped / m_scalarScale) - m_scalarShift;
+	const double upperNative = (upperMapped / m_scalarScale) - m_scalarShift;
+	const double nativeWindow = std::max(upperNative - lowerNative, 1.0);
+	const double nativeLevel = 0.5 * (upperNative + lowerNative);
+
+	// Emit native-domain signal for bridge/controller
+	emit windowLevelChanged(nativeWindow, nativeLevel);
+}
+
+void SliceView::onInteractorStartWindowLevel(vtkObject* caller)
+{
+	// Called when a WL interaction starts. Read current mapped WL and update UI.
+	auto* style = vtkInteractorStyleImage::SafeDownCast(caller);
+	if (!style) return;
+
+	vtkImageProperty* prop = style->GetCurrentImageProperty();
+	if (!prop || !m_imageData) return;
+
+	m_windowLevelInitial[0] = prop->GetColorWindow();
+	m_windowLevelInitial[1] = prop->GetColorLevel();
+
+	m_windowLevelStartPosition[0] = style->GetWindowLevelStartPosition()[0];
+	m_windowLevelStartPosition[1] = style->GetWindowLevelStartPosition()[1];
+}
+
+void SliceView::onInteractorEndWindowLevel(vtkObject* caller)
+{
+	// Called when WL interaction ends. Convert mapped->native, store baseline and emit final.
+	auto* style = vtkInteractorStyleImage::SafeDownCast(caller);
+	if (!style) return;
+
+	vtkImageProperty* prop = style->GetCurrentImageProperty();
+	if (!prop || !m_imageData) return;
+
+	const double mappedWindow = prop->GetColorWindow();
+	const double mappedLevel = prop->GetColorLevel();
+
+	const double lowerMapped = mappedLevel - 0.5 * std::fabs(mappedWindow);
+	const double upperMapped = mappedLevel + 0.5 * std::fabs(mappedWindow);
+	const double lowerNative = (lowerMapped / m_scalarScale) - m_scalarShift;
+	const double upperNative = (upperMapped / m_scalarScale) - m_scalarShift;
+	const double nativeWindow = std::max(upperNative - lowerNative, 1.0);
+	const double nativeLevel = 0.5 * (upperNative + lowerNative);
+
+	// Persist as baseline so plain 'r' will restore to this WL
+	setBaselineWindowLevel(nativeWindow, nativeLevel);
+
+	emit windowLevelChanged(nativeWindow, nativeLevel);
 }

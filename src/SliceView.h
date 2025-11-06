@@ -39,6 +39,11 @@ public:
 	int getMaxSliceIndex() const;
 	int getMinSliceIndex() const;
 
+	// Apply Window/Level specified in the image's native scalar domain.
+	// This method maps to the vtkImageProperty domain using the view's m_scalarShift/m_scalarScale
+	// and updates the interactor style baseline so plain 'r' will restore it.
+	void setWindowLevelNative(double window, double level);
+
 signals:
 	void sliceChanged(int);
 	void interpolationChanged(Interpolation);
@@ -80,12 +85,23 @@ private:
 	// Build a bottom bar: [minLabel] [slider] [maxLabel] [lineEdit]
 	void buildSliderBar(QWidget* rootContent);
 
+	double m_windowLevelInitial[2];
+	int m_windowLevelStartPosition[2];
+	int m_windowLevelCurrentPosition[2];
+
 private slots:
 	// Must be a Qt slot for vtkEventQtSlotConnect
-	void trapSpin(vtkObject* obj);
+	void trapSpin(vtkObject*);
 
 	// Handle ResetWindowLevelEvent from vtkInteractorStyleImage
 	void onResetWindowLevel(vtkObject* obj);
+
+	// Handle interactive WindowLevelEvent from vtkInteractorStyleImage
+	void onInteractorWindowLevel(vtkObject* obj);
+
+	// Handle StartWindowLevelEvent and EndWindowLevelEvent so we can update UI/baseline
+	void onInteractorStartWindowLevel(vtkObject* obj);
+	void onInteractorEndWindowLevel(vtkObject* obj);
 };
 
 #endif // SLICEVIEW_H
