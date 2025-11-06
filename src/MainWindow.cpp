@@ -238,45 +238,19 @@ void MainWindow::setupPanelConnections()
 		ui->lightboxWidget->getVolumeView(), &VolumeView::setSlicePlanesVisible);
 
 
-	// --- Window/Level controller + bridge (native-domain WL)
-	// Create controller and add into the control panel layout (below existing widgets)
-	auto* wlController = new WindowLevelController(ui->controlPanel);
-	if (ui->controlPanelLayout) {
-		ui->controlPanelLayout->insertWidget(1, wlController); // insert after VolumeControlsWidget (adjust index as desired)
-	}
-	else {
-		wlController->setParent(ui->controlPanel);
-	}
-
-	// Bridge applies native-window/level to views. SliceView can be nullptr if not needed.
-	auto* bridge = new WindowLevelBridge(ui->lightboxWidget->getVolumeView(), nullptr, this);
-
-	// Forward interactive / committed events to the bridge
-	connect(wlController, &WindowLevelController::windowLevelChanged, bridge, &WindowLevelBridge::onWindowLevelChanged);
-	connect(wlController, &WindowLevelController::windowLevelCommitted, bridge, &WindowLevelBridge::onWindowLevelCommitted);
-
-	// Keep controller UI in sync when the active VolumeView emits windowLevelChanged
-	if (auto* vol = ui->lightboxWidget->getVolumeView()) {
-		connect(vol, &VolumeView::windowLevelChanged, this, [wlController](double w, double l) {
-			if (wlController) {
-				wlController->setWindow(w);
-				wlController->setLevel(l);
+	// --- Window/Level controller (now owned by LightboxWidget)
+	if (ui->lightboxWidget) {
+		if (auto* wlController = ui->lightboxWidget->windowLevelController()) {
+			if (ui->controlPanelLayout) {
+				ui->controlPanelLayout->insertWidget(1, wlController); // insert after VolumeControlsWidget
 			}
-		});
+			else {
+				wlController->setParent(ui->controlPanel);
+			}
+		}
 	}
 
-	// Also keep all slice views in the lightbox synchronized back to controller.
-	// LightboxWidget exposes accessors for its three slice panels.
-	// Hook slice -> bridge so slice WL interaction drives the volume (and thus controller via volume signal).
-	if (auto* yz = ui->lightboxWidget->getYZView()) {
-		connect(yz, &SliceView::windowLevelChanged, bridge, &WindowLevelBridge::onWindowLevelFromSlice);
-	}
-	if (auto* xz = ui->lightboxWidget->getXZView()) {
-		connect(xz, &SliceView::windowLevelChanged, bridge, &WindowLevelBridge::onWindowLevelFromSlice);
-	}
-	if (auto* xy = ui->lightboxWidget->getXYView()) {
-		connect(xy, &SliceView::windowLevelChanged, bridge, &WindowLevelBridge::onWindowLevelFromSlice);
-	}
+	// NOTE: signal wiring between controller <-> bridge <-> views happens inside LightboxWidget.
 }
 
 void MainWindow::addToRecentFiles(const QString& filePath)

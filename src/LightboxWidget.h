@@ -2,13 +2,15 @@
 
 #include <QWidget>
 #include "ui_LightboxWidget.h"
-#include <QHash>                 // ADDED
-#include <QList>                 // ADDED
-#include <QParallelAnimationGroup>   // ADDED
+#include <QHash>
+#include <QList>
+#include <QParallelAnimationGroup>
 
 class SliceView;
 class VolumeView;
 class SelectionFrameWidget;
+class WindowLevelController;
+class WindowLevelBridge;
 
 class QLabel;
 class QPropertyAnimation;
@@ -33,6 +35,9 @@ public:
 	SliceView* getXZView() const;
 	SliceView* getXYView() const;
 	VolumeView* getVolumeView() const;
+
+	// Minimal accessor so MainWindow can place the controller in its layout
+	WindowLevelController* windowLevelController() const { return m_wlController; }
 
 protected:
 	void showEvent(QShowEvent* e) override;
@@ -78,4 +83,8 @@ private:
 
 	bool m_linkWindowLevel = false;
 	vtkSmartPointer<vtkImageProperty> m_sharedImageProperty;
+
+	// Encapsulated Window/Level controller + bridge (owned by LightboxWidget)
+	WindowLevelController* m_wlController = nullptr;
+	WindowLevelBridge* m_wlBridge = nullptr;
 };

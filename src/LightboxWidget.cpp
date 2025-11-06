@@ -3,6 +3,9 @@
 #include "VolumeView.h"
 #include "SelectionFrameWidget.h"
 
+#include "WindowLevelController.h"
+#include "WindowLevelBridge.h"
+
 #include <vtkImageSinusoidSource.h>
 #include <vtkSmartPointer.h>
 #include <vtkImageProperty.h>
@@ -12,7 +15,7 @@
 #include <QLabel>
 #include <QPropertyAnimation>
 #include <QEasingCurve>
-#include <QParallelAnimationGroup>   // ADDED
+#include <QParallelAnimationGroup>
 #include <array>
 #include <cmath>
 
@@ -21,9 +24,10 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 {
 	ui.setupUi(this);
 
-	ui.YZView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_YZ);
-	ui.XZView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_XZ);
-	ui.XYView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_XY);
+	// Safety: UI may be created from Designer; guard null children where appropriate.
+	if (ui.YZView) ui.YZView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_YZ);
+	if (ui.XZView) ui.XZView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_XZ);
+	if (ui.XYView) ui.XYView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_XY);
 
 	// Defer default image until after the widget is realized/context ready
 	QTimer::singleShot(0, this, [this]() { setDefaultImage(); });
@@ -36,6 +40,44 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 
 	// Optional: choose a default selected/highlighted view
 	if (ui.XYView) ui.XYView->setSelected(true);
+
+	// Minimal, safe encapsulation:
+	// create WindowLevelController and WindowLevelBridge here, parented to this widget.
+	// MainWindow will only take the controller widget to insert into its layout.
+	if (!m_wlController) {
+		m_wlController = new WindowLevelController(this);
+	}
+	if (!m_wlBridge) {
+		// Bridge targets the volume view; slice-to-bridge connections are wired below.
+		m_wlBridge = new WindowLevelBridge(getVolumeView(), nullptr, this);
+	}
+
+	// Connect controller -> bridge
+	connect(m_wlController, &WindowLevelController::windowLevelChanged,
+			m_wlBridge, &WindowLevelBridge::onWindowLevelChanged, Qt::UniqueConnection);
+	connect(m_wlController, &WindowLevelController::windowLevelCommitted,
+			m_wlBridge, &WindowLevelBridge::onWindowLevelCommitted, Qt::UniqueConnection);
+
+	// Keep controller UI in sync when the active VolumeView emits windowLevelChanged
+	if (auto* vol = getVolumeView()) {
+		connect(vol, &VolumeView::windowLevelChanged, this, [this](double w, double l) {
+			if (m_wlController) {
+				m_wlController->setWindow(w);
+				m_wlController->setLevel(l);
+			}
+		}, Qt::UniqueConnection);
+	}
+
+	// Hook slice -> bridge so slice WL interaction drives the volume (and thus controller via volume signal).
+	if (auto* yz = getYZView()) {
+		connect(yz, &SliceView::windowLevelChanged, m_wlBridge, &WindowLevelBridge::onWindowLevelFromSlice, Qt::UniqueConnection);
+	}
+	if (auto* xz = getXZView()) {
+		connect(xz, &SliceView::windowLevelChanged, m_wlBridge, &WindowLevelBridge::onWindowLevelFromSlice, Qt::UniqueConnection);
+	}
+	if (auto* xy = getXYView()) {
+		connect(xy, &SliceView::windowLevelChanged, m_wlBridge, &WindowLevelBridge::onWindowLevelFromSlice, Qt::UniqueConnection);
+	}
 }
 
 void LightboxWidget::showEvent(QShowEvent* e)
@@ -45,7 +87,9 @@ void LightboxWidget::showEvent(QShowEvent* e)
 	connectMaximizeSignals();
 }
 
-void LightboxWidget::setDefaultImage() {
+void LightboxWidget::setDefaultImage()
+{
+	// Provide a simple textured default image when no input is available.
 	auto sinusoid = vtkSmartPointer<vtkImageSinusoidSource>::New();
 	sinusoid->SetPeriod(32);
 	sinusoid->SetPhase(0);
@@ -58,26 +102,32 @@ void LightboxWidget::setDefaultImage() {
 	setImageData(defaultImage);
 }
 
-void LightboxWidget::setImageData(vtkImageData* image) {
-	ui.YZView->setImageData(image);
-	ui.XZView->setImageData(image);
-	ui.XYView->setImageData(image);
-	ui.volumeView->setImageData(image);
+void LightboxWidget::setImageData(vtkImageData* image)
+{
+	// Forward to child views if they exist
+	if (ui.YZView) ui.YZView->setImageData(image);
+	if (ui.XZView) ui.XZView->setImageData(image);
+	if (ui.XYView) ui.XYView->setImageData(image);
+	if (ui.volumeView) ui.volumeView->setImageData(image);
 }
 
-void LightboxWidget::setYZSlice(int index) {
-	ui.YZView->setSliceIndex(index);
+void LightboxWidget::setYZSlice(int index)
+{
+	if (ui.YZView) ui.YZView->setSliceIndex(index);
 }
 
-void LightboxWidget::setXZSlice(int index) {
-	ui.XZView->setSliceIndex(index);
+void LightboxWidget::setXZSlice(int index)
+{
+	if (ui.XZView) ui.XZView->setSliceIndex(index);
 }
 
-void LightboxWidget::setXYSlice(int index) {
-	ui.XYView->setSliceIndex(index);
+void LightboxWidget::setXYSlice(int index)
+{
+	if (ui.XYView) ui.XYView->setSliceIndex(index);
 }
 
-QPixmap LightboxWidget::grabFramebuffer() {
+QPixmap LightboxWidget::grabFramebuffer()
+{
 	return this->grab();
 }
 
@@ -86,23 +136,28 @@ SliceView* LightboxWidget::getXZView() const { return ui.XZView; }
 SliceView* LightboxWidget::getXYView() const { return ui.XYView; }
 VolumeView* LightboxWidget::getVolumeView() const { return ui.volumeView; }
 
-void LightboxWidget::connectSliceSynchronization() {
+void LightboxWidget::connectSliceSynchronization()
+{
+	if (!ui.YZView || !ui.XZView || !ui.XYView || !ui.volumeView) return;
+
 	connect(ui.YZView, &SliceView::sliceChanged, this, [this](int index) {
-		ui.volumeView->updateSlicePlanes(index, ui.XZView->getSliceIndex(), ui.XYView->getSliceIndex());
+		if (ui.volumeView) ui.volumeView->updateSlicePlanes(index, ui.XZView->getSliceIndex(), ui.XYView->getSliceIndex());
 	});
 	connect(ui.XZView, &SliceView::sliceChanged, this, [this](int index) {
-		ui.volumeView->updateSlicePlanes(ui.YZView->getSliceIndex(), index, ui.XYView->getSliceIndex());
+		if (ui.volumeView) ui.volumeView->updateSlicePlanes(ui.YZView->getSliceIndex(), index, ui.XYView->getSliceIndex());
 	});
 	connect(ui.XYView, &SliceView::sliceChanged, this, [this](int index) {
-		ui.volumeView->updateSlicePlanes(ui.YZView->getSliceIndex(), ui.XZView->getSliceIndex(), index);
+		if (ui.volumeView) ui.volumeView->updateSlicePlanes(ui.YZView->getSliceIndex(), ui.XZView->getSliceIndex(), index);
 	});
 }
 
-void LightboxWidget::connectSelectionCoordination() {
+void LightboxWidget::connectSelectionCoordination()
+{
 	using SF = SelectionFrameWidget;
 	std::array<SF*, 3> views{ { ui.YZView, ui.XZView, ui.XYView } };
 
 	for (SF* v : views) {
+		if (!v) continue;
 		connect(v, &SF::selectedChanged, this, [this, v](bool on) {
 			if (!on) return;
 
@@ -117,7 +172,7 @@ void LightboxWidget::connectSelectionCoordination() {
 			if (v) {
 				v->setFocus(Qt::OtherFocusReason);
 			}
-		});
+		}, Qt::UniqueConnection);
 	}
 }
 
