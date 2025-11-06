@@ -386,8 +386,6 @@ void SliceView::setImageData(vtkImageData* image) {
 
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput(image);
-	shiftScaleFilter->SetInputData(m_imageData);
-	shiftScaleFilter->Update();
 
 	// feed the slice mapper directly from the 16-bit shift/scale output
 	sliceMapper->SetInputConnection(shiftScaleFilter->GetOutputPort());
@@ -754,35 +752,21 @@ void SliceView::setWindowLevelNative(double window, double level)
 
 void SliceView::resetWindowLevel()
 {
-	// Apply retained baseline in native domain, mapped to vtkImageProperty domain
-	if (!m_imageData) return;
-	// Prefer the original baseline computed at setImageData() if present.
-	const double w = (m_originalBaselineValid ? m_originalBaselineWindowNative : baselineWindowNative());
-	const double l = (m_originalBaselineValid ? m_originalBaselineLevelNative : baselineLevelNative());
-	if (!std::isfinite(w) || !std::isfinite(l)) return;
+	// Apply retained baseline: convert native baseline -> mapped domain in base class
+	if (!m_imageData || !imageProperty) return;
 
-	const double lowerNative = l - 0.5 * std::fabs(w);
-	const double upperNative = l + 0.5 * std::fabs(w);
-	const double lowerMapped = (lowerNative + m_scalarShift) * m_scalarScale;
-	const double upperMapped = (upperNative + m_scalarShift) * m_scalarScale;
-	const double mappedWindow = std::max(upperMapped - lowerMapped, 1.0);
-	const double mappedLevel = 0.5 * (upperMapped + lowerMapped);
+	const auto [windowMapped, levelMapped] = baselineMapped();
+	if (!std::isfinite(windowMapped) || !std::isfinite(levelMapped)) return;
 
-	imageProperty->SetColorWindow(mappedWindow);
-	imageProperty->SetColorLevel(mappedLevel);
+	// Apply mapped window/level to the image property (mapped domain)
+	imageProperty->SetColorWindow(windowMapped);
+	imageProperty->SetColorLevel(levelMapped);
 
-	// Update interactor style "initial" so 'r' resets to this baseline
-	if (auto* iren = m_renderWindow->GetInteractor()) {
-		if (auto* style = vtkInteractorStyleImage::SafeDownCast(iren->GetInteractorStyle())) {
-			style->SetDefaultRenderer(m_renderer);
-			style->SetCurrentRenderer(m_renderer);
-			style->StartWindowLevel();
-			style->EndWindowLevel();
-		}
-	}
+	// Ensure interactor style uses same baseline so plain 'r' restores it
+	updateInteractorWindowLevelBaseline();
 
+	// Refresh display
 	render();
-	emit windowLevelChanged(w, l);
 }
 
 void SliceView::onResetWindowLevel(vtkObject* /*obj*/)

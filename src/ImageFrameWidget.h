@@ -71,6 +71,12 @@ public:
 	}
 	LinkPropagationMode linkPropagationMode() const { return m_linkPropagationMode; }
 
+	// helpers to convert baseline WL to mapped domain
+	void setBaselineWindowLevel(double windowNative, double levelNative);
+	std::pair<double, double> mapWindowLevelToMapped(double windowNative, double levelNative) const;
+	std::pair<double, double> baselineMapped() const;
+
+
 signals:
 	void viewOrientationChanged(ViewOrientation);
 	void interpolationChanged(Interpolation);
@@ -104,12 +110,6 @@ protected:
 
 	// for derived classes that set m_viewOrientation directly
 	void notifyViewOrientationChanged();
-
-	// Set/overwrite the baseline WL (native domain). Call in setImageData().
-	void setBaselineWindowLevel(double windowNative, double levelNative) {
-		m_baselineWindowNative = windowNative;
-		m_baselineLevelNative = levelNative;
-	}
 
 	ViewOrientation  m_viewOrientation = VIEW_ORIENTATION_XY;
 	Interpolation    m_interpolation = Linear;

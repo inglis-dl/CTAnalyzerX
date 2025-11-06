@@ -140,6 +140,9 @@ void ImageFrameWidget::computeShiftScaleFromInput(vtkImageData* image)
 	shiftScaleFilter->SetOutputScalarTypeToUnsignedShort();
 	shiftScaleFilter->SetShift(m_scalarShift);
 	shiftScaleFilter->SetScale(m_scalarScale);
+
+	shiftScaleFilter->SetInputData(m_imageData);
+	shiftScaleFilter->Update();
 }
 
 void ImageFrameWidget::onSelectionChanged(bool selected)
@@ -167,4 +170,23 @@ void ImageFrameWidget::resetWindowLevel()
 	if (!std::isfinite(m_baselineWindowNative) || !std::isfinite(m_baselineLevelNative)) return;
 	// If derived did not override setColorWindowLevel, this may be a no-op (SliceView overrides reset itself).
 	setColorWindowLevel(m_baselineWindowNative, m_baselineLevelNative);
+}
+
+void ImageFrameWidget::setBaselineWindowLevel(double windowNative, double levelNative)
+{
+	m_baselineWindowNative = windowNative;
+	m_baselineLevelNative = levelNative;
+}
+
+std::pair<double, double> ImageFrameWidget::mapWindowLevelToMapped(double windowNative, double levelNative) const
+{
+	// x_mapped = (x_native + shift) * scale
+	const double levelMapped = (levelNative + m_scalarShift) * m_scalarScale;
+	const double windowMapped = std::fabs(windowNative) * m_scalarScale;
+	return { windowMapped, levelMapped };
+}
+
+std::pair<double, double> ImageFrameWidget::baselineMapped() const
+{
+	return mapWindowLevelToMapped(m_baselineWindowNative, m_baselineLevelNative);
 }
