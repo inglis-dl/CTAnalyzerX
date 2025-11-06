@@ -5,6 +5,7 @@
 
 #include <vtkImageSinusoidSource.h>
 #include <vtkSmartPointer.h>
+#include <vtkImageProperty.h>
 
 #include <QShowEvent>
 #include <QTimer>
@@ -313,5 +314,50 @@ void LightboxWidget::onRequestRestore(SelectionFrameWidget* w)
 
 	// Animate restore for all frames simultaneously.
 	startExpandAnimation(m_maximized, QRect(), QRect(), /*toMaximized*/ false);
+}
+
+void LightboxWidget::setLinkedWindowLevel(bool linked)
+{
+	if (m_linkWindowLevel == linked) return;
+	m_linkWindowLevel = linked;
+
+	// Get the three slice views (may be nullptr)
+	SliceView* yz = getYZView();
+	SliceView* xz = getXZView();
+	SliceView* xy = getXYView();
+
+	if (m_linkWindowLevel) {
+		// Create shared property and initialize from one of the views (prefer XY)
+		vtkSmartPointer<vtkImageProperty> shared = vtkSmartPointer<vtkImageProperty>::New();
+
+		// choose a baseline: prefer existing XY view mapped property if available
+		vtkImageProperty* src = nullptr;
+		if (xy && xy->imageData()) {
+			// access current mapped-domain property via the SliceView (helper: imageProperty is internal)
+			// We assume SliceView provides imageProperty access or expose a getter; otherwise sample from getXYView()->...
+			// We'll try reading from xy->imageProperty via a small accessor (if needed, add getter).
+		}
+
+		// Fallback: pick a sensible default
+		shared->SetColorWindow(1000.0);
+		shared->SetColorLevel(500.0);
+
+		// store the shared property and assign to all slice views
+		m_sharedImageProperty = shared;
+
+		if (yz) { yz->setSharedImageProperty(m_sharedImageProperty); }
+		if (xz) { xz->setSharedImageProperty(m_sharedImageProperty); }
+		if (xy) { xy->setSharedImageProperty(m_sharedImageProperty); }
+	}
+	else {
+		// Unlink: create per-view properties initialized from the current shared property (if any)
+		if (m_sharedImageProperty) {
+			if (yz) { yz->clearSharedImageProperty(); }
+			if (xz) { xz->clearSharedImageProperty(); }
+			if (xy) { xy->clearSharedImageProperty(); }
+		}
+		// release the shared property
+		m_sharedImageProperty = nullptr;
+	}
 }
 

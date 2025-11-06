@@ -15,6 +15,9 @@ class QPropertyAnimation;
 
 class LightboxWidget : public QWidget {
 	Q_OBJECT
+		// Expose linked window/level mode to Qt (Designer, bindings, property animations)
+		Q_PROPERTY(bool linkedWindowLevel READ linkedWindowLevel WRITE setLinkedWindowLevel NOTIFY linkedWindowLevelChanged)
+
 public:
 	explicit LightboxWidget(QWidget* parent = nullptr);
 
@@ -34,6 +37,14 @@ public:
 protected:
 	void showEvent(QShowEvent* e) override;
 
+public slots:
+	void setLinkedWindowLevel(bool linked);
+	bool linkedWindowLevel() const { return m_linkWindowLevel; }
+
+signals:
+	// Notify when linked window/level mode toggles
+	void linkedWindowLevelChanged(bool linked);
+
 private slots:
 	// Handle maximize/restore requests from child frames
 	void onRequestMaximize(SelectionFrameWidget* w);
@@ -49,7 +60,6 @@ private:
 	void startExpandAnimation(SelectionFrameWidget* target, const QRect& from, const QRect& to, bool toMaximized);
 	void clearAnimOverlay();
 
-private:
 	Ui::LightboxWidget ui;
 
 	// Maximize state
@@ -65,4 +75,7 @@ private:
 	QParallelAnimationGroup* m_animGroup = nullptr;  // run all animations simultaneously
 	QHash<SelectionFrameWidget*, QRect> m_savedRects; // original rects (for restore)
 	QRect m_savedTargetRect; // original rect of maximized frame relative to this
+
+	bool m_linkWindowLevel = false;
+	vtkSmartPointer<vtkImageProperty> m_sharedImageProperty;
 };

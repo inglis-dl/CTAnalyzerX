@@ -13,6 +13,7 @@
 #include <vtkInteractorStyleImage.h>
 #include <vtkImageActor.h>
 #include <vtkImageSliceMapper.h>
+#include <vtkImageProperty.h>
 
 class vtkEventQtSlotConnect;
 class vtkObject; // forward declare for slot
@@ -43,6 +44,12 @@ public:
 	// This method maps to the vtkImageProperty domain using the view's m_scalarShift/m_scalarScale
 	// and updates the interactor style baseline so plain 'r' will restore it.
 	void setWindowLevelNative(double window, double level);
+
+	// install a shared vtkImageProperty (sharedProp may be the same instance across views)
+	void setSharedImageProperty(vtkImageProperty* sharedProp);
+
+	// restore an independent imageProperty (fresh copy) if caller wants to un-link
+	void clearSharedImageProperty();
 
 signals:
 	void sliceChanged(int);
@@ -88,6 +95,15 @@ private:
 	double m_windowLevelInitial[2];
 	int m_windowLevelStartPosition[2];
 	int m_windowLevelCurrentPosition[2];
+
+	// Preserve the original baseline (native domain) computed at setImageData().
+	// These must remain constant until the next setImageData() call.
+	bool m_originalBaselineValid = false;
+	double m_originalBaselineWindowNative = std::numeric_limits<double>::quiet_NaN();
+	double m_originalBaselineLevelNative = std::numeric_limits<double>::quiet_NaN();
+
+	// helper: ensure vtkInteractorStyleImage internal baseline values reflect imageProperty
+	void updateInteractorWindowLevelBaseline();
 
 private slots:
 	// Must be a Qt slot for vtkEventQtSlotConnect

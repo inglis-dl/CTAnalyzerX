@@ -414,6 +414,13 @@ void SliceView::setImageData(vtkImageData* image) {
 	const double baseLevelNative = 0.5 * (ub + lb);
 	setBaselineWindowLevel(baseWindowNative, baseLevelNative);
 
+	// Store the original baseline computed from the input image.
+	// This original baseline must not be overwritten by interactive WL
+	// and will be used by resetWindowLevel() until the next setImageData().
+	m_originalBaselineValid = true;
+	m_originalBaselineWindowNative = baseWindowNative;
+	m_originalBaselineLevelNative = baseLevelNative;
+
 	// Map baseline to the post-shift/scale domain used by vtkImageProperty
 	const double lowerNative = baseLevelNative - 0.5 * baseWindowNative;
 	const double upperNative = baseLevelNative + 0.5 * baseWindowNative;
@@ -688,7 +695,12 @@ bool SliceView::eventFilter(QObject* watched, QEvent* event)
 	}
 
 	if (watched == ui->renderArea && event->type() == QEvent::ShortcutOverride) {
-		if (!restrictInteractionToSelection() || isSelected()) {
+		// Allow VTK keys to be handled when either:
+		// - interaction is not restricted to selection, or
+		// - this frame is selected, or
+		// - the render widget itself currently has keyboard focus.
+		if (!restrictInteractionToSelection() || isSelected() ||
+			(ui->renderArea && ui->renderArea->hasFocus())) {
 			auto* ke = reinterpret_cast<QKeyEvent*>(event);
 			const Qt::KeyboardModifiers mods = ke->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
 			if (mods == Qt::NoModifier || mods == Qt::ShiftModifier) {
@@ -744,8 +756,9 @@ void SliceView::resetWindowLevel()
 {
 	// Apply retained baseline in native domain, mapped to vtkImageProperty domain
 	if (!m_imageData) return;
-	const double w = baselineWindowNative();
-	const double l = baselineLevelNative();
+	// Prefer the original baseline computed at setImageData() if present.
+	const double w = (m_originalBaselineValid ? m_originalBaselineWindowNative : baselineWindowNative());
+	const double l = (m_originalBaselineValid ? m_originalBaselineLevelNative : baselineLevelNative());
 	if (!std::isfinite(w) || !std::isfinite(l)) return;
 
 	const double lowerNative = l - 0.5 * std::fabs(w);
@@ -901,8 +914,10 @@ void SliceView::onInteractorEndWindowLevel(vtkObject* caller)
 	const double nativeWindow = std::max(upperNative - lowerNative, 1.0);
 	const double nativeLevel = 0.5 * (upperNative + lowerNative);
 
-	// Persist as baseline so plain 'r' will restore to this WL
-	setBaselineWindowLevel(nativeWindow, nativeLevel);
+	// DO NOT overwrite the original baseline here.
+	// We still emit the interactive result so controllers/bridges can react,
+	// but the retained baseline used by resetWindowLevel() must remain the
+	// original values computed in setImageData().
 
 	emit windowLevelChanged(nativeWindow, nativeLevel);
 }
@@ -931,6 +946,53 @@ void SliceView::onEditorReturnPressed()
 	const int v = m_editSliceIndex->text().toInt(&ok);
 	if (ok) setSliceIndex(v);
 }
-// -------------------------------------------------------------------------
 
-// rest of file unchanged...
+// new method: install a shared vtkImageProperty (sharedProp may be the same instance across views)
+void SliceView::setSharedImageProperty(vtkImageProperty* sharedProp)
+{
+	if (!sharedProp || !imageSlice) return;
+
+	// Replace our local imageProperty pointer with the shared one
+	imageSlice->SetProperty(sharedProp);
+	imageProperty = vtkImageProperty::SafeDownCast(sharedProp);
+
+	// Ensure interactor style baseline picks up the new property values
+	updateInteractorWindowLevelBaseline();
+
+	// Re-render to reflect the change immediately
+	render();
+}
+
+// new method: restore an independent imageProperty (fresh copy) if caller wants to un-link
+void SliceView::clearSharedImageProperty()
+{
+	// Create a fresh property preserving current mapped-domain WL/level
+	vtkSmartPointer<vtkImageProperty> newProp = vtkSmartPointer<vtkImageProperty>::New();
+	if (imageProperty) {
+		newProp->SetColorWindow(imageProperty->GetColorWindow());
+		newProp->SetColorLevel(imageProperty->GetColorLevel());
+		newProp->SetInterpolationType(imageProperty->GetInterpolationType());
+	}
+	// Apply the new property to our slice
+	imageSlice->SetProperty(newProp);
+	imageProperty = newProp;
+
+	// Update baseline in interactor style so 'r' restores to this new property
+	updateInteractorWindowLevelBaseline();
+	render();
+}
+
+// helper: ensure vtkInteractorStyleImage internal baseline values reflect imageProperty
+void SliceView::updateInteractorWindowLevelBaseline()
+{
+	if (!m_renderWindow || !interactorStyle) return;
+
+	// ensure style knows about this renderer and image
+	interactorStyle->SetDefaultRenderer(m_renderer);
+	interactorStyle->SetCurrentRenderer(m_renderer);
+	interactorStyle->SetCurrentImageNumber(-1);
+
+	// Start/End to capture current imageProperty colors into the style's initial values
+	interactorStyle->StartWindowLevel();
+	interactorStyle->EndWindowLevel();
+}
