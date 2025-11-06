@@ -19,18 +19,16 @@
 #include <QTimer>
 #include <QFocusEvent>
 #include <QApplication>
-#include <QChildEvent> // ADDED
-#include <QContextMenuEvent> // ADDED
-#include <QGraphicsOpacityEffect>   // ADDED
-#include <QPropertyAnimation>       // ADDED
-#include <QEasingCurve>             // ADDED
-
-// Removed global static selection tracker
+#include <QChildEvent>
+#include <QContextMenuEvent>
+#include <QGraphicsOpacityEffect>
+#include <QPropertyAnimation>
+#include <QEasingCurve>
 
 SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	: QFrame(parent)
 	, m_headerContainer(new QWidget(this))
-	, m_headerLayout(new QHBoxLayout) // will be installed on header container below
+	, m_headerLayout(new QHBoxLayout)
 	, m_mainLayout(new QVBoxLayout)
 	, m_selectionMenuButton(new MenuButton(this))
 	, m_titleLabel(new QLabel(this))
@@ -38,7 +36,6 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	, m_headerActionsContainer(new QWidget(this))
 	, m_headerActionsLayout(new QHBoxLayout)
 {
-	// Object names for stylesheet targeting
 	this->setObjectName(QStringLiteral("SelectionFrameWidget"));
 	m_headerContainer->setObjectName(QStringLiteral("SelectionFrameHeader"));
 	m_titleLabel->setObjectName(QStringLiteral("SelectionFrameTitleLabel"));
@@ -48,22 +45,22 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	// Focus to handle keyboard shortcuts (Enter/Space/F2/Ctrl+W)
 	this->setFocusPolicy(Qt::StrongFocus);
 
-	// Title bar palette: darker gray when unselected, dark blue when selected
+	// palette & colors
 	const QPalette appPal = QApplication::palette();
 	m_titleFg = Qt::black;
-	m_titleBg = appPal.window().color().darker(125);          // darker gray to indicate inactive/unselected
+	m_titleBg = appPal.window().color().darker(125);
 	m_selectedTitleFg = Qt::white;
 	m_selectedTitleBg = Qt::darkBlue;
-	m_borderColor = appPal.mid().color();                     // subtle border
-	m_borderSelectedColor = Qt::darkBlue;                     // match selected header
+	m_borderColor = appPal.mid().color();
+	m_borderSelectedColor = Qt::darkBlue;
 
-	// Header actions area (right-aligned)
+	// Header actions area
 	m_headerActionsLayout->setContentsMargins(0, 0, 0, 0);
 	m_headerActionsLayout->setSpacing(4);
-	m_headerActionsLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter); // ensure actions are right/vert-centred
+	m_headerActionsLayout->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 	m_headerActionsContainer->setLayout(m_headerActionsLayout);
 
-	// Header layout: [MenuButton] [TitleLabel expanding] [actions right-aligned]
+	// Header layout
 	m_headerLayout->setContentsMargins(0, 0, 0, 0);
 	m_headerLayout->setSpacing(4);
 	m_headerContainer->setLayout(m_headerLayout);
@@ -71,13 +68,11 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	m_titleLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 	m_headerLayout->addWidget(m_selectionMenuButton);
 	m_headerLayout->addWidget(m_titleLabel, /*stretch*/ 1);
-	// Place actions container directly after the title; alignment keeps it at the right and vertically centered.
 	m_headerLayout->addWidget(m_headerActionsContainer);
 	m_headerLayout->setAlignment(m_headerActionsContainer, Qt::AlignRight | Qt::AlignVCenter);
 
-	// MenuButton appearance
 	m_selectionMenuButton->setText(QString());
-	m_selectionMenuButton->setPalette(appPal); // ensure standard control colors
+	m_selectionMenuButton->setPalette(appPal);
 
 	// Main layout
 	m_mainLayout->setContentsMargins(0, 0, 0, 0);
@@ -94,7 +89,6 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	m_titleLabel->installEventFilter(this);
 	m_selectionMenuButton->installEventFilter(this);
 
-	// When a menu item is selected, update title and propagate signals.
 	connect(m_selectionMenuButton, &MenuButton::itemSelected, this,
 			[this](const QString& item) {
 				this->setTitle(item);
@@ -114,23 +108,17 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	});
 
 	enableMaximizeControls(true);
-
 	updateVisuals();
 
-	// Keep the MenuButton height aligned to the header; width remains free (not forced square).
 	QTimer::singleShot(0, this, [this]() { syncMenuButtonSizeToHeader(); });
 }
 
 void SelectionFrameWidget::setTitle(const QString& title)
 {
 	const QString old = this->getTitle();
-	if (old == title)
-		return;
-
+	if (old == title) return;
 	m_titleLabel->setText(title);
 	emit titleChanged(title);
-
-	// Keep menu's checked action synchronized with the title
 	syncMenuCheckedFromTitle();
 }
 
@@ -141,37 +129,20 @@ QString SelectionFrameWidget::getTitle() const
 
 void SelectionFrameWidget::setSelectionList(const QStringList& items)
 {
-	// Populate the menu; MenuButton handles separators and enabled state.
-	if (m_selectionMenuButton)
-		m_selectionMenuButton->setMenuItems(items);
-
-	// Keep the button icon-only (avoid any text showing up)
-	if (m_selectionMenuButton)
-		m_selectionMenuButton->setText(QString());
-
-	// Append auxiliary actions (Change Title / Close) if enabled.
+	if (m_selectionMenuButton) m_selectionMenuButton->setMenuItems(items);
+	if (m_selectionMenuButton) m_selectionMenuButton->setText(QString());
 	appendAuxMenuActions();
-
-	// If no title set yet, default to the first selectable item.
 	if (this->getTitle().isEmpty()) {
 		for (const QString& it : items) {
-			if (it != QStringLiteral("--")) {
-				this->setTitle(it);
-				break;
-			}
+			if (it != QStringLiteral("--")) { this->setTitle(it); break; }
 		}
 	}
-
-	// Ensure checked state matches the (possibly new) title
 	syncMenuCheckedFromTitle();
 }
 
 void SelectionFrameWidget::setCurrentItem(const QString& item)
 {
-	if (item.isEmpty())
-		return;
-
-	// Update title (emits titleChanged) and selection signals
+	if (item.isEmpty()) return;
 	const bool changed = (getTitle() != item);
 	setTitle(item);
 	if (changed) {
@@ -183,21 +154,17 @@ void SelectionFrameWidget::setCurrentItem(const QString& item)
 
 QString SelectionFrameWidget::currentItem() const
 {
-	if (!m_selectionMenuButton || !m_selectionMenuButton->menu())
-		return QString();
-
+	if (!m_selectionMenuButton || !m_selectionMenuButton->menu()) return QString();
 	for (QAction* act : m_selectionMenuButton->menu()->actions()) {
 		if (act->isSeparator()) continue;
-		if (act->isCheckable() && act->isChecked())
-			return act->text();
+		if (act->isCheckable() && act->isChecked()) return act->text();
 	}
 	return QString();
 }
 
 void SelectionFrameWidget::setCentralWidget(QWidget* widget)
 {
-	if (m_centralWidget == widget)
-		return;
+	if (m_centralWidget == widget) return;
 
 	if (m_centralWidget) {
 		m_mainLayout->removeWidget(m_centralWidget);
@@ -211,9 +178,7 @@ void SelectionFrameWidget::setCentralWidget(QWidget* widget)
 		m_mainLayout->addWidget(m_centralWidget, /*stretch*/ 1);
 		m_centralWidget->show();
 
-		// Ensure we can gate mouse interaction inside the central area when not selected
-		// Install on central widget and ALL existing descendants (QObject-level),
-		// because VTK/Qt may add native children later (QWindow, platform windows).
+		// Install event filter on central widget and its current descendants
 		m_centralWidget->installEventFilter(this);
 		const auto allObjs = m_centralWidget->findChildren<QObject*>();
 		for (QObject* o : allObjs) {
@@ -222,38 +187,25 @@ void SelectionFrameWidget::setCentralWidget(QWidget* widget)
 	}
 }
 
-MenuButton* SelectionFrameWidget::menuButton() const
-{
-	return m_selectionMenuButton;
-}
-
-QWidget* SelectionFrameWidget::centralWidget() const
-{
-	return m_centralWidget;
-}
+MenuButton* SelectionFrameWidget::menuButton() const { return m_selectionMenuButton; }
+QWidget* SelectionFrameWidget::centralWidget() const { return m_centralWidget; }
 
 void SelectionFrameWidget::setSelected(bool selected)
 {
-	// No change
-	if (m_selected == selected) {
-		return;
-	}
+	if (m_selected == selected) return;
 
-	// Enforce single selection within the same top-level window (LightBox area)
 	if (selected) {
 		if (QWidget* root = this->window()) {
 			const auto others = root->findChildren<SelectionFrameWidget*>();
 			for (SelectionFrameWidget* w : others) {
-				if (w && w != this && w->isSelected()) {
-					w->setSelected(false);
-				}
+				if (w && w != this && w->isSelected()) w->setSelected(false);
 			}
 		}
 	}
 
 	m_selected = selected;
 	updateVisuals();
-	onSelectionChanged(m_selected); // let derived classes enable/disable VTK interactor
+	onSelectionChanged(m_selected);
 	emit selectedChanged(m_selected);
 }
 
@@ -261,25 +213,21 @@ void SelectionFrameWidget::setRestrictInteractionToSelection(bool on)
 {
 	if (m_restrictInteractionToSelection == on) return;
 	m_restrictInteractionToSelection = on;
-	// Re-apply interaction state according to current selection
 	onSelectionChanged(m_selected);
 }
 
 bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 {
-	// Dynamically install on newly created children so gating stays effective
+	// Install event filter dynamically for newly added children
 	if (event->type() == QEvent::ChildAdded) {
 		if (auto* ce = static_cast<QChildEvent*>(event)) {
 			if (QObject* child = ce->child()) {
-				// Watch the new child
 				child->installEventFilter(this);
-				// And also its current descendants, if any
 				for (QObject* sub : child->findChildren<QObject*>()) {
 					sub->installEventFilter(this);
 				}
 			}
 		}
-		// Continue normal processing
 	}
 
 	// Determine if the event target lies within the central area (QObject ancestry)
@@ -290,15 +238,37 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 		}
 	}
 
-	// Gate interaction for unselected frames (optional, default ON)
+	// Gate interaction for unselected frames
 	if (m_restrictInteractionToSelection && m_centralWidget && inCentralArea) {
 		if (!m_selected) {
 			switch (event->type()) {
-				case QEvent::MouseButtonPress:
-				// Select and allow this same press to continue so interaction is immediate
-				setSelected(true);
-				setFocus(Qt::MouseFocusReason);
-				return false; // do NOT consume; let VTK/controls handle it now
+				case QEvent::MouseButtonPress: {
+					// Select and allow this same press to continue so interaction is immediate
+					setSelected(true);
+
+					// If the clicked widget accepts focus, do not forcibly steal it here.
+					bool giveFrameFocus = true;
+					if (auto* clickedWidget = qobject_cast<QWidget*>(watched)) {
+						const Qt::FocusPolicy fp = clickedWidget->focusPolicy();
+						// If the child can accept focus via mouse, allow it to do so.
+						if (fp == Qt::ClickFocus || fp == Qt::StrongFocus || fp == Qt::WheelFocus || fp == Qt::TabFocus) {
+							giveFrameFocus = false;
+						}
+					}
+
+					if (giveFrameFocus) {
+						// target won't take focus — give focus to the frame (may forward to focusProxy)
+						setFocus(Qt::MouseFocusReason);
+						// ensure toplevel is active
+						if (QWidget* w = this->window()) { w->raise(); w->activateWindow(); }
+					}
+					else {
+						// If child will receive focus, ensure the toplevel is active so the mouse-driven change succeeds.
+						if (QWidget* w = this->window()) { w->raise(); w->activateWindow(); }
+					}
+
+					return false; // do not consume; allow child/VTK to handle the event
+				}
 				case QEvent::MouseMove:
 				case QEvent::MouseButtonRelease:
 				case QEvent::Wheel:
@@ -316,6 +286,7 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 		}
 	}
 
+	// Header/title/menu interactions
 	if (watched == m_headerContainer || watched == m_titleLabel || watched == m_selectionMenuButton) {
 		if ((watched == m_headerContainer || watched == m_titleLabel) &&
 			(event->type() == QEvent::Resize ||
@@ -328,19 +299,27 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 			syncMenuButtonSizeToHeader();
 		}
 
-		// Open the same selection menu on header/title context-click
 		if (event->type() == QEvent::ContextMenu) {
 			if (m_selectionMenuButton && m_selectionMenuButton->menu()) {
 				auto* ce = static_cast<QContextMenuEvent*>(event);
 				m_selectionMenuButton->menu()->exec(ce->globalPos());
-				return true; // consume
+				return true;
 			}
 		}
 
 		if (event->type() == QEvent::MouseButtonPress) {
 			// Select and focus this view when its title bar or menu button is pressed
 			setSelected(true);
-			setFocus(Qt::MouseFocusReason);
+
+			// Ensure window becomes active and raised (helps platforms/Qt deliver focus)
+			if (QWidget* w = this->window()) { w->raise(); w->activateWindow(); }
+
+			// Request focus on this frame (Mouse reason) and also explicitly on its focus proxy if any
+			this->setFocus(Qt::MouseFocusReason);
+			if (QWidget* fp = qobject_cast<QWidget*>(this->focusProxy())) {
+				fp->setFocus(Qt::MouseFocusReason);
+			}
+
 			return false; // allow normal processing
 		}
 		if (event->type() == QEvent::MouseButtonDblClick) {
@@ -350,6 +329,7 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 			return true; // consume double-click
 		}
 	}
+
 	return QFrame::eventFilter(watched, event);
 }
 
@@ -364,9 +344,7 @@ void SelectionFrameWidget::keyPressEvent(QKeyEvent* e)
 		return;
 		case Qt::Key_F2:
 		if (m_allowChangeTitle) { beginEditTitle(); e->accept(); return; }
-		break;
-		default:
-		break;
+		default: break;
 	}
 
 	if ((e->modifiers() & Qt::ControlModifier) && e->key() == Qt::Key_W) {

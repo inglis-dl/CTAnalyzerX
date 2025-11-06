@@ -18,6 +18,7 @@
 #include <QApplication>
 #include <QMouseEvent>
 #include <QTimer>
+#include <QDebug>
 
 #include <vtkRenderWindow.h>
 #include <vtkGenericOpenGLRenderWindow.h>
@@ -222,7 +223,7 @@ void SliceView::setInterpolation(Interpolation newInterpolation)
 
 void SliceView::buildSliderBar(QWidget* rootContent)
 {
-	// 1) Find the original parent layout and index BEFORE reparenting the slider
+	// Find the original parent layout and index BEFORE reparenting the slider
 	QLayout* originalLayout = nullptr;
 	int insertIndex = -1;
 
@@ -234,7 +235,7 @@ void SliceView::buildSliderBar(QWidget* rootContent)
 	if (originalLayout)
 		insertIndex = originalLayout->indexOf(ui->sliderSlicePosition);
 
-	// 2) Detach the slider from its original layout (the widget stays alive)
+	// Detach the slider from its original layout (the widget stays alive)
 	if (originalLayout) {
 		if (auto* box = qobject_cast<QBoxLayout*>(originalLayout)) {
 			if (insertIndex >= 0) {
@@ -257,7 +258,7 @@ void SliceView::buildSliderBar(QWidget* rootContent)
 		}
 	}
 
-	// 3) Build the replacement bar: [minLabel] [slider] [maxLabel] [lineEdit]
+	// Build the replacement bar: [minLabel] [slider] [maxLabel] [lineEdit]
 	QWidget* bar = new QWidget(rootContent);
 	auto* hl = new QHBoxLayout(bar);
 	hl->setContentsMargins(6, 2, 6, 2);
@@ -281,18 +282,12 @@ void SliceView::buildSliderBar(QWidget* rootContent)
 	m_editSliceIndex->setAlignment(Qt::AlignLeft);
 	m_editSliceIndex->setValidator(new QIntValidator(0, 0, m_editSliceIndex));
 
+	// Prefer ClickFocus so mouse clicks into it behave correctly (avoids keyboard-only grabs).
+	m_editSliceIndex->setFocusPolicy(Qt::ClickFocus);
+
 	// Jump to typed slice when the user confirms
-	connect(m_editSliceIndex, &QLineEdit::editingFinished, this, [this]() {
-		bool ok = false;
-		const int v = m_editSliceIndex->text().toInt(&ok);
-		if (ok) setSliceIndex(v);
-		else m_editSliceIndex->setText(QString::number(m_currentSlice));
-	});
-	connect(m_editSliceIndex, &QLineEdit::returnPressed, this, [this]() {
-		bool ok = false;
-		const int v = m_editSliceIndex->text().toInt(&ok);
-		if (ok) setSliceIndex(v);
-	});
+	connect(m_editSliceIndex, &QLineEdit::editingFinished, this, &SliceView::onEditorEditingFinished);
+	connect(m_editSliceIndex, &QLineEdit::returnPressed, this, &SliceView::onEditorReturnPressed);
 
 	// Compose (add slider directly, no QFrame wrapper)
 	hl->addWidget(m_labelMinSlice, 0, Qt::AlignVCenter);
@@ -670,13 +665,10 @@ bool SliceView::eventFilter(QObject* watched, QEvent* event)
 				if (!isSelected()) {
 					setSelected(true);
 				}
-				// Give/restore focus to the slider for immediate drag.
+				// Give focus to the slider for immediate drag. Do NOT queue a delayed focus restore.
 				if (!ui->sliderSlicePosition->hasFocus()) {
 					ui->sliderSlicePosition->setFocus(Qt::MouseFocusReason);
 				}
-				QTimer::singleShot(0, ui->sliderSlicePosition, [s = ui->sliderSlicePosition]() {
-					if (s) s->setFocus(Qt::OtherFocusReason);
-				});
 				break;
 			}
 			case QEvent::FocusIn: {
@@ -687,37 +679,27 @@ bool SliceView::eventFilter(QObject* watched, QEvent* event)
 				break;
 			}
 			case QEvent::FocusOut: {
-				// If focus is stolen during a drag, take it back on the next cycle.
-				if (QApplication::mouseButtons() & Qt::LeftButton) {
-					QTimer::singleShot(0, ui->sliderSlicePosition, [s = ui->sliderSlicePosition]() {
-						if (s) s->setFocus(Qt::OtherFocusReason);
-					});
-				}
 				break;
 			}
 			default:
 			break;
 		}
-		// Don't consume; let the slider handle its own behavior.
 		return false;
 	}
 
 	if (watched == ui->renderArea && event->type() == QEvent::ShortcutOverride) {
-		// Only capture keys for VTK when this frame is selected, unless restriction is disabled
 		if (!restrictInteractionToSelection() || isSelected()) {
 			auto* ke = reinterpret_cast<QKeyEvent*>(event);
-
-			// Accept when no modifiers or Shift only; let Ctrl/Alt/Meta fall through to app shortcuts
 			const Qt::KeyboardModifiers mods = ke->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
 			if (mods == Qt::NoModifier || mods == Qt::ShiftModifier) {
 				switch (ke->key()) {
-					case Qt::Key_R: // Reset window/level in vtkInteractorStyleImage::OnChar
-					case Qt::Key_F: // Fly-to
-					case Qt::Key_X: // Set orientation
+					case Qt::Key_R:
+					case Qt::Key_F:
+					case Qt::Key_X:
 					case Qt::Key_Y:
 					case Qt::Key_Z:
 					ke->accept();
-					return true; // stop shortcut processing; deliver to KeyPress/VTK
+					return true;
 					default:
 					break;
 				}
@@ -880,7 +862,7 @@ void SliceView::onInteractorWindowLevel(vtkObject* caller)
 	const double nativeWindow = std::max(upperNative - lowerNative, 1.0);
 	const double nativeLevel = 0.5 * (upperNative + lowerNative);
 
-	// Emit native-domain signal for bridge/controller
+	// Emit native-domain signal for bridge-controller
 	emit windowLevelChanged(nativeWindow, nativeLevel);
 }
 
@@ -924,3 +906,31 @@ void SliceView::onInteractorEndWindowLevel(vtkObject* caller)
 
 	emit windowLevelChanged(nativeWindow, nativeLevel);
 }
+
+void SliceView::onEditorEditingFinished()
+{
+	if (!m_editSliceIndex) return;
+
+	bool ok = false;
+	const int v = m_editSliceIndex->text().toInt(&ok);
+	if (ok) {
+		setSliceIndex(v);
+	}
+	else {
+		// restore current valid value
+		const QSignalBlocker b(m_editSliceIndex);
+		m_editSliceIndex->setText(QString::number(m_currentSlice));
+	}
+}
+
+void SliceView::onEditorReturnPressed()
+{
+	if (!m_editSliceIndex) return;
+
+	bool ok = false;
+	const int v = m_editSliceIndex->text().toInt(&ok);
+	if (ok) setSliceIndex(v);
+}
+// -------------------------------------------------------------------------
+
+// rest of file unchanged...

@@ -102,6 +102,10 @@ private slots:
 	// Handle StartWindowLevelEvent and EndWindowLevelEvent so we can update UI/baseline
 	void onInteractorStartWindowLevel(vtkObject* obj);
 	void onInteractorEndWindowLevel(vtkObject* obj);
+
+	// Explicit editor handlers (replaced lambdas to improve diagnosability)
+	void onEditorEditingFinished();
+	void onEditorReturnPressed();
 };
 
 #endif // SLICEVIEW_H

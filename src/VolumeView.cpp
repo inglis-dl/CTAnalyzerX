@@ -183,7 +183,7 @@ void VolumeView::setImageData(vtkImageData* image)
 
 	m_imageData = image;
 
-	// 1) Compute mapping and connect the shared filter
+	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput(image);
 
 	shiftScaleFilter->SetInputData(m_imageData);
@@ -235,12 +235,10 @@ void VolumeView::setImageData(vtkImageData* image)
 	setColorWindowLevel(baseWindow, baseLevel); // updates opacity+color and renders
 
 	// set scalar opacity unit distance to match data spacing
-
 	double sp[3] = { 1,1,1 };
 	m_imageData->GetSpacing(sp);
 	const double unit = (sp[0] + sp[1] + sp[2]) / 3.0;
 	m_volumeProperty->SetScalarOpacityUnitDistance(unit);
-
 
 	resetCamera();
 
