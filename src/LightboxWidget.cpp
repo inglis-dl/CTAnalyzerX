@@ -52,31 +52,90 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 		m_wlBridge = new WindowLevelBridge(getVolumeView(), nullptr, this);
 	}
 
-	// Connect controller -> bridge
-	connect(m_wlController, &WindowLevelController::windowLevelChanged,
-			m_wlBridge, &WindowLevelBridge::onWindowLevelChanged, Qt::UniqueConnection);
-	connect(m_wlController, &WindowLevelController::windowLevelCommitted,
-			m_wlBridge, &WindowLevelBridge::onWindowLevelCommitted, Qt::UniqueConnection);
+	// Connect controller -> local propagator (so controller updates slices + volume)
+	connect(m_wlController, &WindowLevelController::windowLevelChanged, this, [this](double w, double l) {
+		if (m_propagatingWindowLevel) return;
+		m_propagatingWindowLevel = true;
+
+		// Apply to volume via bridge (native domain)
+		if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
+
+		// Also apply to all slice views (mapped via each slice's mapping)
+		if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
+		if (auto* xz = getXZView()) xz->setWindowLevelNative(w, l);
+		if (auto* xy = getXYView()) xy->setWindowLevelNative(w, l);
+
+		m_propagatingWindowLevel = false;
+	}, Qt::UniqueConnection);
+
+	connect(m_wlController, &WindowLevelController::windowLevelCommitted, this, [this](double w, double l) {
+		if (m_propagatingWindowLevel) return;
+		m_propagatingWindowLevel = true;
+
+		if (m_wlBridge) m_wlBridge->onWindowLevelCommitted(w, l);
+
+		if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
+		if (auto* xz = getXZView()) xz->setWindowLevelNative(w, l);
+		if (auto* xy = getXYView()) xy->setWindowLevelNative(w, l);
+
+		m_propagatingWindowLevel = false;
+	}, Qt::UniqueConnection);
 
 	// Keep controller UI in sync when the active VolumeView emits windowLevelChanged
 	if (auto* vol = getVolumeView()) {
 		connect(vol, &VolumeView::windowLevelChanged, this, [this](double w, double l) {
 			if (m_wlController) {
+				// Prevent re-entrancy into our propagation handlers
+				const bool prev = m_propagatingWindowLevel;
+				m_propagatingWindowLevel = true;
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
+				m_propagatingWindowLevel = prev;
 			}
 		}, Qt::UniqueConnection);
 	}
 
-	// Hook slice -> bridge so slice WL interaction drives the volume (and thus controller via volume signal).
+	// Hook slice -> local propagator so slice-driven WL updates siblings + volume
 	if (auto* yz = getYZView()) {
-		connect(yz, &SliceView::windowLevelChanged, m_wlBridge, &WindowLevelBridge::onWindowLevelFromSlice, Qt::UniqueConnection);
+		connect(yz, &SliceView::windowLevelChanged, this, [this, yz](double w, double l) {
+			if (m_propagatingWindowLevel) return;
+			m_propagatingWindowLevel = true;
+
+			// Update volume via bridge
+			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
+
+			// Update other slices (slaves)
+			if (auto* xz = getXZView()) { if (xz != yz) xz->setWindowLevelNative(w, l); }
+			if (auto* xy = getXYView()) { if (xy != yz) xy->setWindowLevelNative(w, l); }
+
+			m_propagatingWindowLevel = false;
+		}, Qt::UniqueConnection);
 	}
 	if (auto* xz = getXZView()) {
-		connect(xz, &SliceView::windowLevelChanged, m_wlBridge, &WindowLevelBridge::onWindowLevelFromSlice, Qt::UniqueConnection);
+		connect(xz, &SliceView::windowLevelChanged, this, [this, xz](double w, double l) {
+			if (m_propagatingWindowLevel) return;
+			m_propagatingWindowLevel = true;
+
+			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
+
+			if (auto* yz = getYZView()) { if (yz != xz) yz->setWindowLevelNative(w, l); }
+			if (auto* xy = getXYView()) { if (xy != xz) xy->setWindowLevelNative(w, l); }
+
+			m_propagatingWindowLevel = false;
+		}, Qt::UniqueConnection);
 	}
 	if (auto* xy = getXYView()) {
-		connect(xy, &SliceView::windowLevelChanged, m_wlBridge, &WindowLevelBridge::onWindowLevelFromSlice, Qt::UniqueConnection);
+		connect(xy, &SliceView::windowLevelChanged, this, [this, xy](double w, double l) {
+			if (m_propagatingWindowLevel) return;
+			m_propagatingWindowLevel = true;
+
+			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
+
+			if (auto* yz = getYZView()) { if (yz != xy) yz->setWindowLevelNative(w, l); }
+			if (auto* xz = getXZView()) { if (xz != xy) xz->setWindowLevelNative(w, l); }
+
+			m_propagatingWindowLevel = false;
+		}, Qt::UniqueConnection);
 	}
 }
 

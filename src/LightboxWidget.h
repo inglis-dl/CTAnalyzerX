@@ -87,4 +87,7 @@ private:
 	// Encapsulated Window/Level controller + bridge (owned by LightboxWidget)
 	WindowLevelController* m_wlController = nullptr;
 	WindowLevelBridge* m_wlBridge = nullptr;
+
+	// Guard to prevent feedback loops while propagating WL changes
+	bool m_propagatingWindowLevel = false;
 };
