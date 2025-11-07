@@ -17,37 +17,15 @@
    <layout class="QHBoxLayout" name="horizontalLayout">
     <item>
      <widget class="QFrame" name="controlPanel">
-      <property name="minimumWidth">
-       <number>280</number>
-      </property>
-      <property name="maximumWidth">
-       <number>280</number>
-      </property>
       <property name="sizePolicy">
-       <sizepolicy hsizetype="Fixed" vsizetype="Expanding"/>
+       <sizepolicy hsizetype="Fixed" vsizetype="Expanding">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
       </property>
       <layout class="QVBoxLayout" name="controlPanelLayout">
        <item>
-        <widget class="VolumeControlsWidget" name="volumeControlsWidget"/>
-       </item>
-       <item>
-        <widget class="QGroupBox" name="groupAnalysis">
-         <property name="title">
-          <string>Analysis</string>
-         </property>
-         <layout class="QVBoxLayout">
-          <item>
-           <widget class="QPushButton" name="btnRunAnalysis">
-            <property name="text">
-             <string>Run Analysis</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QTextEdit" name="txtAnalysisOutput"/>
-          </item>
-         </layout>
-        </widget>
+        <widget class="VolumeControlsWidget" name="volumeControlsWidget" native="true"/>
        </item>
       </layout>
      </widget>
@@ -55,7 +33,10 @@
     <item>
      <widget class="LightboxWidget" name="lightboxWidget">
       <property name="sizePolicy">
-       <sizepolicy hsizetype="Expanding" vsizetype="Expanding"/>
+       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
       </property>
      </widget>
     </item>
@@ -117,10 +98,10 @@
  </widget>
  <customwidgets>
   <customwidget>
-	<class>VolumeControlsWidget</class>
-		<extends>QWidget</extends>
-		<header>VolumeControlsWidget.h</header>
-</customwidget>
+   <class>VolumeControlsWidget</class>
+   <extends>QWidget</extends>
+   <header>VolumeControlsWidget.h</header>
+  </customwidget>
   <customwidget>
    <class>LightboxWidget</class>
    <extends>QLabel</extends>

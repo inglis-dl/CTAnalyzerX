@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QLayout>
 #include <QSizePolicy>
+#include <QDebug>
 
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkRenderer.h>
@@ -248,6 +249,16 @@ void VolumeView::setImageData(vtkImageData* image)
 	m_xzPlane->SetSliceIndex((extent[2] + extent[3]) / 2);
 	m_xyPlane->SetSliceIndex((extent[4] + extent[5]) / 2);
 
+	// Reset cropping to full image extent to avoid applying stale/invalid crop planes
+	if (m_mapper) {
+		m_mapper->SetCroppingRegionPlanes(extent[0], extent[1],
+										  extent[2], extent[3],
+										  extent[4], extent[5]);
+		m_mapper->SetCropping(false); // start with cropping off; UI can enable it
+		// Notify UI that cropping has been disabled/reset for the new image
+		emit croppingEnabledChanged(false);
+	}
+
 	emit imageExtentsChanged(extent[0], extent[1], extent[2], extent[3], extent[4], extent[5]);
 
 	setSlicePlanesVisible(m_slicePlanesVisible);
@@ -363,8 +374,109 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 {
 	if (!m_mapper || !m_imageData) return;
 
+	// Clamp indices to extent and ensure lo <= hi and non-degenerate
+	int extent[6] = { 0,0,0,0,0,0 };
+	m_imageData->GetExtent(extent); // {x0,x1,y0,y1,z0,z1}
+
+	auto clampNormalize = [](int& lo, int& hi, int loB, int hiB) {
+		lo = std::clamp(lo, loB, hiB);
+		hi = std::clamp(hi, loB, hiB);
+		if (lo > hi) std::swap(lo, hi);
+		// avoid a degenerate single-voxel region if possible
+		if (lo == hi) {
+			if (hi < hiB) ++hi;
+			else if (lo > loB) --lo;
+		}
+		};
+
+	clampNormalize(xMin, xMax, extent[0], extent[1]);
+	clampNormalize(yMin, yMax, extent[2], extent[3]);
+	clampNormalize(zMin, zMax, extent[4], extent[5]);
+
+	// Convert voxel (continuous index) -> physical/world coordinates
+	double idx[3], physMin[3], physMax[3], physPt[3];
+
+	// X min/max
+	idx[0] = static_cast<double>(xMin); idx[1] = 0.0; idx[2] = 0.0;
+	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
+		// fallback to origin + spacing calculation if TransformContinuousIndexToPhysicalPoint is not appropriate
+		double origin[3], spacing[3];
+		m_imageData->GetOrigin(origin);
+		m_imageData->GetSpacing(spacing);
+		physMin[0] = origin[0] + idx[0] * spacing[0];
+	}
+	else {
+		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
+		physMin[0] = physPt[0];
+	}
+	idx[0] = static_cast<double>(xMax);
+	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
+		double origin[3], spacing[3];
+		m_imageData->GetOrigin(origin);
+		m_imageData->GetSpacing(spacing);
+		physMax[0] = origin[0] + idx[0] * spacing[0];
+	}
+	else {
+		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
+		physMax[0] = physPt[0];
+	}
+
+	// Y min/max
+	idx[0] = 0.0; idx[1] = static_cast<double>(yMin); idx[2] = 0.0;
+	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
+		double origin[3], spacing[3];
+		m_imageData->GetOrigin(origin);
+		m_imageData->GetSpacing(spacing);
+		physMin[1] = origin[1] + idx[1] * spacing[1];
+	}
+	else {
+		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
+		physMin[1] = physPt[1];
+	}
+	idx[1] = static_cast<double>(yMax);
+	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
+		double origin[3], spacing[3];
+		m_imageData->GetOrigin(origin);
+		m_imageData->GetSpacing(spacing);
+		physMax[1] = origin[1] + idx[1] * spacing[1];
+	}
+	else {
+		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
+		physMax[1] = physPt[1];
+	}
+
+	// Z min/max
+	idx[0] = 0.0; idx[1] = 0.0; idx[2] = static_cast<double>(zMin);
+	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
+		double origin[3], spacing[3];
+		m_imageData->GetOrigin(origin);
+		m_imageData->GetSpacing(spacing);
+		physMin[2] = origin[2] + idx[2] * spacing[2];
+	}
+	else {
+		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
+		physMin[2] = physPt[2];
+	}
+	idx[2] = static_cast<double>(zMax);
+	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
+		double origin[3], spacing[3];
+		m_imageData->GetOrigin(origin);
+		m_imageData->GetSpacing(spacing);
+		physMax[2] = origin[2] + idx[2] * spacing[2];
+	}
+	else {
+		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
+		physMax[2] = physPt[2];
+	}
+
+	// Apply cropping in physical coordinates (what vtkVolumeMapper expects)
 	m_mapper->SetCropping(true);
-	m_mapper->SetCroppingRegionPlanes(xMin, xMax, yMin, yMax, zMin, zMax);
+	m_mapper->SetCroppingRegionPlanes(
+		physMin[0], physMax[0],
+		physMin[1], physMax[1],
+		physMin[2], physMax[2]
+	);
+
 	render();
 }
 

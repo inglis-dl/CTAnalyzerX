@@ -1,6 +1,8 @@
 #pragma once
 #include <QWidget>
 
+#include "ui_WindowLevelController.h"
+
 class QDoubleSpinBox;
 class QCheckBox;
 class QPushButton;
@@ -23,10 +25,9 @@ Q_SIGNALS:
 	void windowLevelCommitted(double window, double level);
 	// request to open volume properties editor
 	void requestVolumePropertyEditor();
+	// request to reset window/level to baseline across views
+	void requestResetWindowLevel();
 
 private:
-	QDoubleSpinBox* m_spinWindow = nullptr;
-	QDoubleSpinBox* m_spinLevel = nullptr;
-	QCheckBox* m_chkInteractive = nullptr;
-	QPushButton* m_btnVolumeProps = nullptr;
+	Ui::WindowLevelController ui;
 };

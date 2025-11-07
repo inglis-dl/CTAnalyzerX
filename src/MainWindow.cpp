@@ -213,35 +213,31 @@ void MainWindow::onActionAbout()
 
 void MainWindow::setupPanelConnections()
 {
-	// Analysis Panel: Run Analysis button and output box
-	auto runButton = ui->btnRunAnalysis;
-	auto outputBox = ui->txtAnalysisOutput;
-
-	if (runButton && outputBox) {
-		connect(runButton, &QPushButton::clicked, this, [=]() {
-			outputBox->append("Running analysis...");
-			// Insert actual analysis logic here
-			outputBox->append("Analysis complete.");
-		});
-	}
-
 	// control the volume cropping planes in the volumeview
 	connect(ui->volumeControlsWidget, &VolumeControlsWidget::croppingRegionChanged,
 		ui->lightboxWidget->getVolumeView(), &VolumeView::setCroppingRegion);
-
-	// update the range sliders when the image extents change
-	connect(ui->lightboxWidget->getVolumeView(), &VolumeView::imageExtentsChanged,
-		ui->volumeControlsWidget, &VolumeControlsWidget::setRangeSliders);
 
 	// toggle volume slice planes
 	connect(ui->volumeControlsWidget, &VolumeControlsWidget::slicePlaneToggle,
 		ui->lightboxWidget->getVolumeView(), &VolumeView::setSlicePlanesVisible);
 
+	// update the range sliders when the image extents change
+	connect(ui->lightboxWidget->getVolumeView(), &VolumeView::imageExtentsChanged,
+		ui->volumeControlsWidget, &VolumeControlsWidget::setRangeSliders);
+
+	// synchronize cropping enabled state when VolumeView resets it (e.g., new image)
+	connect(ui->lightboxWidget->getVolumeView(), &VolumeView::croppingEnabledChanged,
+		ui->volumeControlsWidget, &VolumeControlsWidget::onExternalCroppingChanged);
 
 	// --- Window/Level controller (now owned by LightboxWidget)
 	if (ui->lightboxWidget) {
 		if (auto* wlController = ui->lightboxWidget->windowLevelController()) {
-			if (ui->controlPanelLayout) {
+			// If VolumeControlsWidget exposes an insert helper, use it so the groupBoxWindowLevel
+			// will size itself to the controller. Otherwise fall back to previous behavior.
+			if (ui->volumeControlsWidget) {
+				ui->volumeControlsWidget->insertWindowLevelController(wlController);
+			}
+			else if (ui->controlPanelLayout) {
 				ui->controlPanelLayout->insertWidget(1, wlController); // insert after VolumeControlsWidget
 			}
 			else {

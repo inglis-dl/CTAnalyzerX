@@ -137,6 +137,10 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 			m_propagatingWindowLevel = false;
 		}, Qt::UniqueConnection);
 	}
+
+	// Wire controller reset request to propagate to our child views
+	connect(m_wlController, &WindowLevelController::requestResetWindowLevel,
+			this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
 }
 
 void LightboxWidget::showEvent(QShowEvent* e)
@@ -473,5 +477,18 @@ void LightboxWidget::setLinkedWindowLevel(bool linked)
 		// release the shared property
 		m_sharedImageProperty = nullptr;
 	}
+}
+
+void LightboxWidget::resetWindowLevel()
+{
+	if (m_propagatingWindowLevel) return;
+	m_propagatingWindowLevel = true;
+
+	if (auto* yz = getYZView()) yz->resetWindowLevel();
+	if (auto* xz = getXZView()) xz->resetWindowLevel();
+	if (auto* xy = getXYView()) xy->resetWindowLevel();
+	if (auto* vol = getVolumeView()) vol->resetWindowLevel();
+
+	m_propagatingWindowLevel = false;
 }
 

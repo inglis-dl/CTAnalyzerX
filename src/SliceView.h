@@ -51,6 +51,9 @@ public:
 	// restore an independent imageProperty (fresh copy) if caller wants to un-link
 	void clearSharedImageProperty();
 
+	// Expose resetWindowLevel as public so LightboxWidget can call it
+	void resetWindowLevel() override;
+
 signals:
 	void sliceChanged(int);
 	void interpolationChanged(Interpolation);
@@ -65,9 +68,6 @@ protected:
 	bool eventFilter(QObject* watched, QEvent* event) override;
 
 	void createMenuAndActions();
-
-	// Apply retained baseline WL (native -> mapped) on reset
-	void resetWindowLevel() override;
 
 private:
 	void updateCamera();

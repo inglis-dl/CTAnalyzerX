@@ -48,15 +48,15 @@ public:
 signals:
 	void imageExtentsChanged(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 	void slicePlanesVisibleChanged(bool visible);
+	// Emitted when the effective cropping enabled state changes (e.g. reset to false on new image)
+	void croppingEnabledChanged(bool enabled);
 
 public slots:
 	void setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 	void resetCamera() override;
+	void resetWindowLevel() override; // <-- Moved from protected to public
 
 protected:
-	// Apply retained baseline WL (native -> mapped) for volume rendering too
-	void resetWindowLevel() override;
-
 private:
 	Ui::VolumeView* ui = nullptr;
 

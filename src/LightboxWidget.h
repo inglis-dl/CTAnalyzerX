@@ -45,6 +45,8 @@ protected:
 public slots:
 	void setLinkedWindowLevel(bool linked);
 	bool linkedWindowLevel() const { return m_linkWindowLevel; }
+	// Propagate a reset request to all child image frames (slices + volume)
+	void resetWindowLevel();
 
 signals:
 	// Notify when linked window/level mode toggles
