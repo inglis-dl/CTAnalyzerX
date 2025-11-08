@@ -612,7 +612,11 @@ void VolumeView::resetCamera()
 
 void VolumeView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation)
 {
-	if (m_viewOrientation == orientation) return;
+	const int orientationNow = cameraAlignedOrientation(0.1);
+	if (orientationNow == static_cast<int>(orientation)) {
+		// Already aligned; no change
+		return;
+	}
 
 	m_viewOrientation = orientation;
 

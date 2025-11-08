@@ -73,6 +73,11 @@ public:
 	// The bus uses native domain (original image scalar domain).
 	virtual void setColorWindowLevel(double window, double level) {};
 
+	// Return the canonical orientation when the main camera's view-normal is within
+	// `maxAngleDeg` degrees of a principal axis. Returns one of ViewOrientation values
+	// (VIEW_ORIENTATION_YZ=0, VIEW_ORIENTATION_XZ=1, VIEW_ORIENTATION_XY=2) or -1 if none match.
+	int cameraAlignedOrientation(double maxAngleDeg) const;
+
 	// WL propagation mode
 	void setLinkPropagationMode(LinkPropagationMode mode) {
 		if (m_linkPropagationMode == mode) return;

@@ -361,3 +361,47 @@ std::pair<double, double> ImageFrameWidget::baselineMapped() const
 {
 	return mapWindowLevelToMapped(m_baselineWindowNative, m_baselineLevelNative);
 }
+
+// Return the canonical orientation if the main camera's view-normal is aligned with
+// one of the principal axes within `maxAngleDeg` degrees; otherwise return -1.
+int ImageFrameWidget::cameraAlignedOrientation(double maxAngleDeg) const
+{
+	if (!m_renderer) return -1;
+	vtkCamera* cam = m_renderer->GetActiveCamera();
+	if (!cam) return -1;
+
+	double vpn[3];
+	cam->GetViewPlaneNormal(vpn);
+
+	// normalize (just in case)
+	const double mag = vtkMath::Norm(vpn);
+	if (mag <= 0.0) return -1;
+	vpn[0] /= mag; vpn[1] /= mag; vpn[2] /= mag;
+
+	// canonical axes: X, Y, Z -> map to ViewOrientation (look along X -> YZ, Y -> XZ, Z -> XY)
+	const double axes[3][3] = { {1.0,0.0,0.0}, {0.0,1.0,0.0}, {0.0,0.0,1.0} };
+
+	double bestAngle = 180.0;
+	int bestAxis = -1;
+	for (int i = 0; i < 3; ++i) {
+		double dot = std::fabs(vpn[0] * axes[i][0] + vpn[1] * axes[i][1] + vpn[2] * axes[i][2]);
+		if (dot > 1.0) dot = 1.0;
+		if (dot < -1.0) dot = -1.0;
+		const double angleDeg = std::acos(dot) * (180.0 / vtkMath::Pi());
+		if (angleDeg < bestAngle) {
+			bestAngle = angleDeg;
+			bestAxis = i;
+		}
+	}
+
+	if (bestAxis < 0) return -1;
+	if (bestAngle > maxAngleDeg) return -1;
+
+	// Map axis -> ViewOrientation (look along axis -> the corresponding slice plane)
+	switch (bestAxis) {
+		case 0: return VIEW_ORIENTATION_YZ; // looking along +X => YZ
+		case 1: return VIEW_ORIENTATION_XZ; // looking along +Y => XZ
+		case 2: return VIEW_ORIENTATION_XY; // looking along +Z => XY
+		default: return -1;
+	}
+}
