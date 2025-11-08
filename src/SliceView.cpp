@@ -388,6 +388,10 @@ void SliceView::setImageData(vtkImageData* image) {
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput(image);
 
+	// NOTE: currently the slice mapper reads directly from the shift/scale filter.
+	// TODO: to enable reslice pipeline later attach ImageResliceHelper here so:
+	//       helper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	//       sliceMapper->SetInputConnection(helper->GetOutputPort());
 	// feed the slice mapper directly from the 16-bit shift/scale output
 	sliceMapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 

@@ -17,7 +17,7 @@
 #include <vtkVolume.h>
 #include <vtkVolumeProperty.h>
 #include <vtkImageData.h>
-#include <vtkImagePlaneWidget.h>
+#include <vtkImageSlice.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkColorTransferFunction.h>
 #include <vtkPiecewiseFunction.h>
@@ -27,6 +27,8 @@
 #include <vtkCommand.h>
 #include <vtkEventQtSlotConnect.h>
 #include <vtkImageShiftScale.h>
+#include <vtkImageSliceMapper.h>
+#include <vtkImageProperty.h>
 
 
 VolumeView::VolumeView(QWidget* parent)
@@ -82,26 +84,23 @@ VolumeView::VolumeView(QWidget* parent)
 
 	auto interactor = m_renderWindow->GetInteractor();
 
-	// Plane widgets setup
-	m_yzPlane = vtkSmartPointer<vtkImagePlaneWidget>::New(); // normal X
-	m_xzPlane = vtkSmartPointer<vtkImagePlaneWidget>::New(); // normal Y
-	m_xyPlane = vtkSmartPointer<vtkImagePlaneWidget>::New(); // normal Z
+	// Create orthogonal vtkImageSlice / vtkImageSliceMapper actors for 3D slice-planes mode.
+	m_sliceMapperYZ = vtkSmartPointer<vtkImageSliceMapper>::New();
+	m_sliceMapperXZ = vtkSmartPointer<vtkImageSliceMapper>::New();
+	m_sliceMapperXY = vtkSmartPointer<vtkImageSliceMapper>::New();
 
-	m_yzPlane->SetInteractor(interactor);
-	m_xzPlane->SetInteractor(interactor);
-	m_xyPlane->SetInteractor(interactor);
+	m_imageSliceYZ = vtkSmartPointer<vtkImageSlice>::New();
+	m_imageSliceXZ = vtkSmartPointer<vtkImageSlice>::New();
+	m_imageSliceXY = vtkSmartPointer<vtkImageSlice>::New();
 
-	// Improve plane appearance/quality
-	for (vtkImagePlaneWidget* pw : { m_yzPlane.GetPointer(), m_xzPlane.GetPointer(), m_xyPlane.GetPointer() }) {
-		if (!pw) continue;
-		pw->DisplayTextOff();
-		pw->TextureInterpolateOn();
-		pw->SetResliceInterpolateToLinear();
-	}
-	// Consistent axis colors: X=red, Y=green, Z=blue
-	if (m_yzPlane && m_yzPlane->GetPlaneProperty()) m_yzPlane->GetPlaneProperty()->SetColor(1.0, 0.0, 0.0);
-	if (m_xzPlane && m_xzPlane->GetPlaneProperty()) m_xzPlane->GetPlaneProperty()->SetColor(0.0, 1.0, 0.0);
-	if (m_xyPlane && m_xyPlane->GetPlaneProperty()) m_xyPlane->GetPlaneProperty()->SetColor(0.0, 0.0, 1.0);
+	m_imageSliceYZ->SetMapper(m_sliceMapperYZ);
+	m_imageSliceXZ->SetMapper(m_sliceMapperXZ);
+	m_imageSliceXY->SetMapper(m_sliceMapperXY);
+
+	// Default interpolation for slice actors
+	if (m_imageSliceYZ->GetProperty()) m_imageSliceYZ->GetProperty()->SetInterpolationTypeToLinear();
+	if (m_imageSliceXZ->GetProperty()) m_imageSliceXZ->GetProperty()->SetInterpolationTypeToLinear();
+	if (m_imageSliceXY->GetProperty()) m_imageSliceXY->GetProperty()->SetInterpolationTypeToLinear();
 
 	m_qvtk = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 	if (interactor) {
@@ -195,25 +194,42 @@ void VolumeView::setImageData(vtkImageData* image)
 	m_shiftScaleFilter->SetInputData(m_imageData);
 	m_shiftScaleFilter->Update();
 
-	// Plane widgets take the post-mapped data
-	m_yzPlane->SetInputData(m_shiftScaleFilter->GetOutput());
-	m_xzPlane->SetInputData(m_shiftScaleFilter->GetOutput());
-	m_xyPlane->SetInputData(m_shiftScaleFilter->GetOutput());
+	// TODO: attach ImageResliceHelper here to route post-shift/scale -> reslice -> mapper when integrating reslice workflow.
+	//       e.g. helper->SetInputConnection(m_shiftScaleFilter->GetOutputPort()); mapper->SetInputConnection(helper->GetOutputPort());
+	//
+	// Feed orthogonal vtkImageSlice mappers from the post-shift/scale output so they can be shown in 3D mode.
+	m_sliceMapperYZ->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	m_sliceMapperXZ->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	m_sliceMapperXY->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
-	// Place widgets to data bounds so interactions/rendering are robust
+	// Ensure mapper orientation matches canonical axes (X normal => YZ plane, etc.)
+	m_sliceMapperYZ->SetOrientationToX();
+	m_sliceMapperXZ->SetOrientationToY();
+	m_sliceMapperXY->SetOrientationToZ();
+	//
+	// Place slice actors / mappers to data bounds so rendering is robust.
 	{
 		double b[6] = { 0,0,0,0,0,0 };
 		m_shiftScaleFilter->GetOutput()->GetBounds(b);
-		m_yzPlane->PlaceWidget(b);
-		m_xzPlane->PlaceWidget(b);
-		m_xyPlane->PlaceWidget(b);
+		// imageSlice actors do not require PlaceWidget; ensure mapper extent information is available
+		// by letting the pipeline update (done by SetInputConnection + Update when needed).
 	}
 
 	if (!m_imageInitialized) {
 		m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-		m_yzPlane->SetPlaneOrientationToXAxes();
-		m_xzPlane->SetPlaneOrientationToYAxes();
-		m_xyPlane->SetPlaneOrientationToZAxes();
+
+		//
+		// Add slices to the scene but keep them invisible until slicePlanesVisible is true.
+		// Use AddViewProp so image slices render in the main renderer.
+		if (m_imageSliceYZ && !m_renderer->HasViewProp(m_imageSliceYZ)) m_renderer->AddViewProp(m_imageSliceYZ);
+		if (m_imageSliceXZ && !m_renderer->HasViewProp(m_imageSliceXZ)) m_renderer->AddViewProp(m_imageSliceXZ);
+		if (m_imageSliceXY && !m_renderer->HasViewProp(m_imageSliceXY)) m_renderer->AddViewProp(m_imageSliceXY);
+		//
+		// Initially hide the slice actors (they will be shown when slicePlanesVisible==true)
+		if (m_imageSliceYZ) m_imageSliceYZ->VisibilityOff();
+		if (m_imageSliceXZ) m_imageSliceXZ->VisibilityOff();
+		if (m_imageSliceXY) m_imageSliceXY->VisibilityOff();
+		//
 		m_imageInitialized = true;
 	}
 
@@ -250,9 +266,10 @@ void VolumeView::setImageData(vtkImageData* image)
 
 	int extent[6] = { 0,0,0,0,0,0 };
 	m_imageData->GetExtent(extent);
-	m_yzPlane->SetSliceIndex((extent[0] + extent[1]) / 2);
-	m_xzPlane->SetSliceIndex((extent[2] + extent[3]) / 2);
-	m_xyPlane->SetSliceIndex((extent[4] + extent[5]) / 2);
+	// Update static slice mappers to the center slices
+	if (m_sliceMapperYZ) { m_sliceMapperYZ->SetSliceNumber((extent[0] + extent[1]) / 2); m_sliceMapperYZ->Update(); }
+	if (m_sliceMapperXZ) { m_sliceMapperXZ->SetSliceNumber((extent[2] + extent[3]) / 2); m_sliceMapperXZ->Update(); }
+	if (m_sliceMapperXY) { m_sliceMapperXY->SetSliceNumber((extent[4] + extent[5]) / 2); m_sliceMapperXY->Update(); }
 
 	// Reset cropping to full image extent to avoid applying stale/invalid crop planes
 	if (m_mapper) {
@@ -336,9 +353,10 @@ void VolumeView::updateSlicePlanes(int x, int y, int z)
 	const int cy = std::clamp(y, extent[2], extent[3]);
 	const int cz = std::clamp(z, extent[4], extent[5]);
 
-	m_yzPlane->SetSliceIndex(cx);
-	m_xzPlane->SetSliceIndex(cy);
-	m_xyPlane->SetSliceIndex(cz);
+	// Move orthogonal imageSlice mappers to requested indices so the 3D view shows the same slices.
+	if (m_sliceMapperYZ) { m_sliceMapperYZ->SetSliceNumber(cx); m_sliceMapperYZ->Update(); }
+	if (m_sliceMapperXZ) { m_sliceMapperXZ->SetSliceNumber(cy); m_sliceMapperXZ->Update(); }
+	if (m_sliceMapperXY) { m_sliceMapperXY->SetSliceNumber(cz); m_sliceMapperXY->Update(); }
 	render();
 }
 
@@ -352,19 +370,16 @@ void VolumeView::setSlicePlanesVisible(bool visible)
 		if (m_volume && m_renderer->HasViewProp(m_volume))
 			m_renderer->RemoveVolume(m_volume);
 
-		if (m_yzPlane) m_yzPlane->SetEnabled(true);
-		if (m_xzPlane) m_xzPlane->SetEnabled(true);
-		if (m_xyPlane) m_xyPlane->SetEnabled(true);
-
-		// InteractionOff only AFTER SetEnabled(true) to avoid VTK warnings
-		if (m_yzPlane) m_yzPlane->InteractionOff();
-		if (m_xzPlane) m_xzPlane->InteractionOff();
-		if (m_xyPlane) m_xyPlane->InteractionOff();
+		// Show orthogonal imageSlice actors (static slices inside the 3D view)
+		if (m_imageSliceYZ) m_imageSliceYZ->VisibilityOn();
+		if (m_imageSliceXZ) m_imageSliceXZ->VisibilityOn();
+		if (m_imageSliceXY) m_imageSliceXY->VisibilityOn();
 	}
 	else {
-		if (m_yzPlane) m_yzPlane->SetEnabled(false);
-		if (m_xzPlane) m_xzPlane->SetEnabled(false);
-		if (m_xyPlane) m_xyPlane->SetEnabled(false);
+		// Hide the orthogonal image slice actors
+		if (m_imageSliceYZ) m_imageSliceYZ->VisibilityOff();
+		if (m_imageSliceXZ) m_imageSliceXZ->VisibilityOff();
+		if (m_imageSliceXY) m_imageSliceXY->VisibilityOff();
 
 		if (m_volume && !m_renderer->HasViewProp(m_volume))
 			m_renderer->AddVolume(m_volume);

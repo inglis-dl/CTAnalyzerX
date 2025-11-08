@@ -17,6 +17,8 @@ class vtkRenderWindowInteractor;
 class vtkCommand;
 class vtkObject;
 class vtkCamera;
+class vtkImageSliceMapper;
+class vtkImageSlice;
 class vtkCallbackCommand;
 
 namespace Ui { class VolumeView; }
@@ -71,9 +73,13 @@ private:
 	vtkSmartPointer<vtkPiecewiseFunction>      m_actualScalarOpacity;
 	vtkSmartPointer<vtkPiecewiseFunction>      m_scalarOpacity;
 
-	vtkSmartPointer<vtkImagePlaneWidget> m_yzPlane;
-	vtkSmartPointer<vtkImagePlaneWidget> m_xzPlane;
-	vtkSmartPointer<vtkImagePlaneWidget> m_xyPlane;
+	// Orthogonal slice actors used in 3D "slice planes" mode (replaces vtkImagePlaneWidget usage).
+	vtkSmartPointer<vtkImageSliceMapper> m_sliceMapperYZ;
+	vtkSmartPointer<vtkImageSliceMapper> m_sliceMapperXZ;
+	vtkSmartPointer<vtkImageSliceMapper> m_sliceMapperXY;
+	vtkSmartPointer<vtkImageSlice>       m_imageSliceYZ;
+	vtkSmartPointer<vtkImageSlice>       m_imageSliceXZ;
+	vtkSmartPointer<vtkImageSlice>       m_imageSliceXY;
 
 	vtkSmartPointer<vtkEventQtSlotConnect> m_qvtk;
 
