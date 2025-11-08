@@ -14,7 +14,10 @@ class vtkColorTransferFunction;
 class vtkPiecewiseFunction;
 class vtkInteractorStyleTrackballCamera;
 class vtkRenderWindowInteractor;
-class vtkCommand; // added
+class vtkCommand;
+class vtkObject;
+class vtkCamera;
+class vtkCallbackCommand;
 
 namespace Ui { class VolumeView; }
 
@@ -54,9 +57,8 @@ signals:
 public slots:
 	void setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 	void resetCamera() override;
-	void resetWindowLevel() override; // <-- Moved from protected to public
+	void resetWindowLevel() override;
 
-protected:
 private:
 	Ui::VolumeView* ui = nullptr;
 
@@ -85,5 +87,7 @@ private:
 private slots:
 	// Full-signature observer to optionally abort the event
 	void onInteractorChar(vtkObject* caller, unsigned long eventId, void* clientData, void* callData, vtkCommand* command);
+	void onCameraModified(vtkObject* caller);
+
 };
 

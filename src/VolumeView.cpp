@@ -26,6 +26,8 @@
 #include <vtkProperty.h>
 #include <vtkCommand.h>
 #include <vtkEventQtSlotConnect.h>
+#include <vtkImageShiftScale.h>
+
 
 VolumeView::VolumeView(QWidget* parent)
 	: ImageFrameWidget(parent)
@@ -107,6 +109,9 @@ VolumeView::VolumeView(QWidget* parent)
 		m_qvtk->Connect(interactor, vtkCommand::CharEvent,
 			this, SLOT(onInteractorChar(vtkObject*, unsigned long, void*, void*, vtkCommand*)),
 			nullptr, 1.0f);
+
+		m_qvtk->Connect(m_renderer->GetActiveCamera(), vtkCommand::ModifiedEvent,
+			this, SLOT(onCameraModified(vtkObject*)), nullptr);
 	}
 }
 
@@ -187,25 +192,25 @@ void VolumeView::setImageData(vtkImageData* image)
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput(image);
 
-	shiftScaleFilter->SetInputData(m_imageData);
-	shiftScaleFilter->Update();
+	m_shiftScaleFilter->SetInputData(m_imageData);
+	m_shiftScaleFilter->Update();
 
 	// Plane widgets take the post-mapped data
-	m_yzPlane->SetInputData(shiftScaleFilter->GetOutput());
-	m_xzPlane->SetInputData(shiftScaleFilter->GetOutput());
-	m_xyPlane->SetInputData(shiftScaleFilter->GetOutput());
+	m_yzPlane->SetInputData(m_shiftScaleFilter->GetOutput());
+	m_xzPlane->SetInputData(m_shiftScaleFilter->GetOutput());
+	m_xyPlane->SetInputData(m_shiftScaleFilter->GetOutput());
 
 	// Place widgets to data bounds so interactions/rendering are robust
 	{
 		double b[6] = { 0,0,0,0,0,0 };
-		shiftScaleFilter->GetOutput()->GetBounds(b);
+		m_shiftScaleFilter->GetOutput()->GetBounds(b);
 		m_yzPlane->PlaceWidget(b);
 		m_xzPlane->PlaceWidget(b);
 		m_xyPlane->PlaceWidget(b);
 	}
 
 	if (!m_imageInitialized) {
-		m_mapper->SetInputConnection(shiftScaleFilter->GetOutputPort());
+		m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 		m_yzPlane->SetPlaneOrientationToXAxes();
 		m_xzPlane->SetPlaneOrientationToYAxes();
 		m_xyPlane->SetPlaneOrientationToZAxes();
@@ -763,4 +768,57 @@ void VolumeView::onInteractorChar(vtkObject* caller, unsigned long /*eventId*/, 
 		resetWindowLevel();
 		if (command) command->AbortFlagOn(); // don't let TrackballCamera reset camera on plain 'r'
 	}
+}
+
+void VolumeView::onCameraModified(vtkObject* caller)
+{
+	auto master = vtkCamera::SafeDownCast(caller);
+
+	if (!master || !m_orientationRenderer) return;
+
+	auto slave = m_orientationRenderer->GetActiveCamera();
+	if (!slave) return;
+
+	// Copy direction and up
+	double dop[3]; master->GetDirectionOfProjection(dop);
+	double up[3];  master->GetViewUp(up);
+
+	// Compute center to anchor marker camera (volume center if available)
+	double center[3] = { 0.0, 0.0, 0.0 };
+	if (m_imageData) {
+		double b[6]; m_imageData->GetBounds(b);
+		center[0] = 0.5 * (b[0] + b[1]);
+		center[1] = 0.5 * (b[2] + b[3]);
+		center[2] = 0.5 * (b[4] + b[5]);
+	}
+
+	// Match projection type / view angle
+	if (master->GetParallelProjection()) {
+		slave->ParallelProjectionOn();
+	}
+	else {
+		slave->ParallelProjectionOff();
+		slave->SetViewAngle(master->GetViewAngle());
+	}
+
+	// Choose a stable distance so the small cube is framed reasonably
+	double dist = 1.0;
+	if (m_imageData) {
+		double b[6]; m_imageData->GetBounds(b);
+		const double sx = b[1] - b[0];
+		const double sy = b[3] - b[2];
+		const double sz = b[5] - b[4];
+		const double maxDim = std::max(std::max(sx, sy), sz);
+		dist = std::max(1.5 * maxDim, 1.0);
+	}
+
+	// Position marker camera along -dop so it looks toward the center
+	slave->SetFocalPoint(center);
+	slave->SetPosition(center[0] - dop[0] * dist,
+					   center[1] - dop[1] * dist,
+					   center[2] - dop[2] * dist);
+	slave->SetViewUp(up);
+	slave->OrthogonalizeViewUp();
+
+	render();
 }

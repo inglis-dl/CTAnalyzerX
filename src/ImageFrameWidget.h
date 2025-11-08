@@ -2,11 +2,21 @@
 
 #include "SelectionFrameWidget.h"
 
+#include <QWidget>
+#include <limits>
+
+class vtkImageData;
+class vtkRenderer;
+class vtkGenericOpenGLRenderWindow;
+class vtkRenderWindow;
+class vtkImageShiftScale;
+
+// forward-declare VTK classes used by the orientation marker
+class vtkOrientationMarkerWidget;
+class vtkActor;
+class vtkPropAssembly;
+
 #include <vtkSmartPointer.h>
-#include <vtkRenderer.h>
-#include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkImageData.h>
-#include <vtkImageShiftScale.h>
 
 class ImageFrameWidget : public SelectionFrameWidget
 {
@@ -76,6 +86,9 @@ public:
 	std::pair<double, double> mapWindowLevelToMapped(double windowNative, double levelNative) const;
 	std::pair<double, double> baselineMapped() const;
 
+	// Orientation marker control (wireframe cube + positive-axis halves)
+	void setOrientationMarkerVisible(bool visible);
+	bool orientationMarkerVisible() const { return m_orientationMarkerVisible; }
 
 signals:
 	void viewOrientationChanged(ViewOrientation);
@@ -118,7 +131,7 @@ protected:
 	vtkSmartPointer<vtkImageData>                   m_imageData;
 	vtkSmartPointer<vtkRenderer>                    m_renderer;
 	vtkSmartPointer<vtkGenericOpenGLRenderWindow>   m_renderWindow;
-	vtkSmartPointer<vtkImageShiftScale>             shiftScaleFilter;
+	vtkSmartPointer<vtkImageShiftScale>             m_shiftScaleFilter;
 
 	// Mapping info derived from input
 	int    m_nativeScalarType = -1;
@@ -133,5 +146,16 @@ protected:
 	// Retained baseline WL in native image domain
 	double m_baselineWindowNative = std::numeric_limits<double>::quiet_NaN();
 	double m_baselineLevelNative = std::numeric_limits<double>::quiet_NaN();
+
+	// Orientation marker state (VTK)
+	vtkSmartPointer<vtkOrientationMarkerWidget> m_orientationWidget;
+	vtkSmartPointer<vtkPropAssembly>             m_orientationAssembly; // cube + axes
+	vtkSmartPointer<vtkActor>                    m_orientationCubeActor;
+	// Overlay renderer used to draw a small orientation marker without affecting the main renderer's camera.
+	vtkSmartPointer<vtkRenderer>                 m_orientationRenderer;
+	bool                                         m_orientationMarkerVisible = true;
+
+	// Ensure the marker is created once the interactor is available
+	void ensureOrientationMarkerInitialized();
 };
 

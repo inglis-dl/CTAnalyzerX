@@ -34,6 +34,7 @@
 #include <vtkEventQtSlotConnect.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkCommand.h>
+#include <vtkImageShiftScale.h>
 
 SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	: ImageFrameWidget(parent)
@@ -388,7 +389,7 @@ void SliceView::setImageData(vtkImageData* image) {
 	computeShiftScaleFromInput(image);
 
 	// feed the slice mapper directly from the 16-bit shift/scale output
-	sliceMapper->SetInputConnection(shiftScaleFilter->GetOutputPort());
+	sliceMapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
 	// Ensure mapper orientation matches current view as soon as input exists
 	switch (m_viewOrientation) {
@@ -534,8 +535,9 @@ void SliceView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation
 	}
 
 	// Recompute slice range and camera, then pick a visible slice (center)
-	updateSliceRange();
+
 	updateCamera();
+	updateSliceRange();
 	setSliceIndex((m_minSlice + m_maxSlice) / 2); // also triggers render()
 
 	notifyViewOrientationChanged(); // base helper

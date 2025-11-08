@@ -6,6 +6,17 @@
 #include <vtkCamera.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
+#include <vtkRenderer.h>
+#include <vtkImageData.h>
+#include <vtkImageShiftScale.h>
+#include <vtkMath.h>
+#include <vtkOrientationMarkerWidget.h>
+#include <vtkCubeSource.h>
+#include <vtkLineSource.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkActor.h>
+#include <vtkProperty.h>
+#include <vtkPropAssembly.h>
 
 ImageFrameWidget::ImageFrameWidget(QWidget* parent)
 	: SelectionFrameWidget(parent)
@@ -18,17 +29,139 @@ ImageFrameWidget::ImageFrameWidget(QWidget* parent)
 	// Create the shared render surface
 	m_renderWindow = vtkSmartPointer<vtkGenericOpenGLRenderWindow>::New();
 	m_renderer = vtkSmartPointer<vtkRenderer>::New();
+	// Main renderer is layer 0
+	m_renderWindow->SetNumberOfLayers(2);
 	m_renderWindow->AddRenderer(m_renderer);
+	m_renderer->SetLayer(0);
+
+	// Create an overlay renderer (layer 1) for the orientation marker.
+	m_orientationRenderer = vtkSmartPointer<vtkRenderer>::New();
+	m_orientationRenderer->SetLayer(1);
+	m_orientationRenderer->InteractiveOff();
+	// Default viewport (hidden until we initialize marker); will be placed in a corner later.
+	m_orientationRenderer->SetViewport(0.0, 0.0, 0.0, 0.0);
+	m_renderWindow->AddRenderer(m_orientationRenderer);
 
 	// Reasonable defaults; derived classes may further customize
 	initializeRendererDefaults();
 
-	shiftScaleFilter = vtkSmartPointer<vtkImageShiftScale>::New();
-	shiftScaleFilter->SetOutputScalarTypeToUnsignedShort();
-	shiftScaleFilter->ClampOverflowOn();
+	m_shiftScaleFilter = vtkSmartPointer<vtkImageShiftScale>::New();
+	m_shiftScaleFilter->SetOutputScalarTypeToUnsignedShort();
+	m_shiftScaleFilter->ClampOverflowOn();
+
+	// Orientation marker will be initialized lazily when an interactor is present.
+	m_orientationWidget = nullptr;
+	m_orientationAssembly = nullptr;
+	m_orientationCubeActor = nullptr;
 }
 
 ImageFrameWidget::~ImageFrameWidget() = default;
+
+void ImageFrameWidget::ensureOrientationMarkerInitialized()
+{
+	// If already created, nothing to do.
+	// Use m_orientationCubeActor as the sentinel (we build the cube actor here).
+	if (m_orientationCubeActor) return;
+
+	if (!m_renderWindow) return;
+	auto* iren = m_renderWindow->GetInteractor();
+	if (!iren) return; // interactor not ready yet; defer initialization
+
+	// Build a small wireframe cube centered on origin and three half-axes (positive halves)
+	auto cube = vtkSmartPointer<vtkCubeSource>::New();
+	cube->SetXLength(1.0);
+	cube->SetYLength(1.0);
+	cube->SetZLength(1.0);
+	cube->SetCenter(0.0, 0.0, 0.0);
+
+	auto cubeMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+	cubeMapper->SetInputConnection(cube->GetOutputPort());
+
+	m_orientationCubeActor = vtkSmartPointer<vtkActor>::New();
+	m_orientationCubeActor->SetMapper(cubeMapper);
+	auto prop = m_orientationCubeActor->GetProperty();
+	prop->SetRepresentationToWireframe();
+	prop->SetColor(1.0, 1.0, 1.0);
+	prop->SetLineWidth(1.0);
+	prop->SetLighting(false);
+	prop->SetSpecular(0.0);
+	prop->SetDiffuse(0.0);
+	prop->SetAmbient(1.0);
+	m_orientationCubeActor->PickableOff();
+
+	// scale down so marker doesn't dominate the viewport
+	m_orientationCubeActor->SetScale(0.5, 0.5, 0.5);
+
+	// Create three line actors for positive X (red), Y (green), Z (blue).
+	const double axisLen = 0.6; // visible positive half-length
+	struct AxisSpec { double dx, dy, dz; double r, g, b; };
+	AxisSpec axes[3] = {
+		{ axisLen, 0.0, 0.0, 1.0, 0.0, 0.0 }, // +X red
+		{ 0.0, axisLen, 0.0, 0.0, 1.0, 0.0 }, // +Y green
+		{ 0.0, 0.0, axisLen, 0.0, 0.0, 1.0 }  // +Z blue
+	};
+
+	// We keep an assembly for compatibility but the overlay renderer will host actors directly.
+	auto assembly = vtkSmartPointer<vtkPropAssembly>::New();
+	assembly->AddPart(m_orientationCubeActor);
+
+	for (int i = 0; i < 3; ++i) {
+		auto line = vtkSmartPointer<vtkLineSource>::New();
+		line->SetPoint1(0.0, 0.0, 0.0);
+		line->SetPoint2(axes[i].dx, axes[i].dy, axes[i].dz);
+
+		auto lm = vtkSmartPointer<vtkPolyDataMapper>::New();
+		lm->SetInputConnection(line->GetOutputPort());
+
+		auto actor = vtkSmartPointer<vtkActor>::New();
+		actor->SetMapper(lm);
+		auto prop = actor->GetProperty();
+		prop->SetColor(axes[i].r, axes[i].g, axes[i].b);
+		prop->SetLineWidth(2.0);
+		prop->SetLighting(false);
+		prop->SetSpecular(0.0);
+		prop->SetDiffuse(0.0);
+		prop->SetAmbient(1.0);
+		actor->PickableOff();
+
+		assembly->AddPart(actor);
+	}
+
+	// Store assembly and create orientation widget
+	m_orientationAssembly = assembly;
+
+	// Add the cube + axis actors to the overlay renderer (layer 1).
+	// We iterate the assembly parts and add them individually so we can control the overlay renderer's camera.
+	for (int i = 0; i < m_orientationAssembly->GetParts()->GetNumberOfItems(); ++i) {
+		vtkProp* part = vtkProp::SafeDownCast(m_orientationAssembly->GetParts()->GetItemAsObject(i));
+		if (!part) continue;
+		// If part is an actor, add to overlay renderer
+		if (auto* a = vtkActor::SafeDownCast(part)) {
+			m_orientationRenderer->AddActor(a);
+		}
+	}
+
+	// Place overlay viewport in bottom-right corner by default (small), keep it hidden if flag off.
+	if (m_orientationMarkerVisible) {
+		m_orientationRenderer->SetViewport(0.78, 0.02, 0.98, 0.22);
+	}
+	else {
+		m_orientationRenderer->SetViewport(0.0, 0.0, 0.0, 0.0);
+	}
+
+	// Configure a simple camera for the marker that looks at origin. We'll sync orientation during render().
+	if (m_orientationRenderer) {
+		auto* markerCam = m_orientationRenderer->GetActiveCamera();
+		if (markerCam) {
+			markerCam->ParallelProjectionOn();
+			markerCam->SetFocalPoint(0.0, 0.0, 0.0);
+			markerCam->SetPosition(0.0, 0.0, 3.0); // distance framing the unit cube
+			markerCam->SetViewUp(0.0, 1.0, 0.0);
+			markerCam->OrthogonalizeViewUp();
+			m_orientationRenderer->ResetCamera();
+		}
+	}
+}
 
 void ImageFrameWidget::initializeRendererDefaults()
 {
@@ -46,13 +179,48 @@ void ImageFrameWidget::resetCamera()
 
 void ImageFrameWidget::render()
 {
+	// Ensure orientation marker exists and is attached to the interactor before render.
+	ensureOrientationMarkerInitialized();
+
 	if (auto* rw = getRenderWindow()) {
 		if (auto* grw = vtkGenericOpenGLRenderWindow::SafeDownCast(rw)) {
 			if (!grw->GetReadyForRendering()) {
 				return; // avoid rendering before a current context exists
 			}
 		}
+
+		// Sync orientation marker camera to main camera rotation so the marker reflects the same rotation
+		// while keeping the marker camera focused on origin at a fixed distance. This isolates the marker
+		// camera from the main camera's position and avoids interfering with main-camera resets.
+		if (m_orientationRenderer && m_renderer) {
+			auto* mainCam = m_renderer->GetActiveCamera();
+			auto* markerCam = m_orientationRenderer->GetActiveCamera();
+			if (mainCam && markerCam) {
+				double dop[3]; mainCam->GetDirectionOfProjection(dop);
+				double up[3]; mainCam->GetViewUp(up);
+
+				// Adopt main camera's "up" to keep visual consistency
+				markerCam->SetViewUp(up);
+				// Keep focal point fixed at origin for the small marker
+				markerCam->SetFocalPoint(0.0, 0.0, 0.0);
+				// Position marker camera along the opposite direction-of-projection at a fixed distance
+				const double dist = 3.0;
+				markerCam->SetPosition(-dop[0] * dist, -dop[1] * dist, -dop[2] * dist);
+				markerCam->OrthogonalizeViewUp();
+				m_orientationRenderer->ResetCameraClippingRange();
+			}
+		}
 		rw->Render();
+	}
+}
+
+void ImageFrameWidget::setOrientationMarkerVisible(bool visible)
+{
+	m_orientationMarkerVisible = visible;
+	if (m_orientationRenderer) {
+		// Toggle viewport to show/hide the overlay renderer (simple approach).
+		if (visible) m_orientationRenderer->SetViewport(0.78, 0.02, 0.98, 0.22);
+		else         m_orientationRenderer->SetViewport(0.0, 0.0, 0.0, 0.0);
 	}
 }
 
@@ -61,6 +229,9 @@ void ImageFrameWidget::setViewOrientation(ViewOrientation orient)
 	if (m_viewOrientation == orient) return;
 	m_viewOrientation = orient;
 	emit viewOrientationChanged(m_viewOrientation);
+
+	// Notify derived classes / other users
+	notifyViewOrientationChanged();
 }
 
 void ImageFrameWidget::notifyViewOrientationChanged()
@@ -137,12 +308,12 @@ void ImageFrameWidget::computeShiftScaleFromInput(vtkImageData* image)
 	}
 
 	// Program the shared filter
-	shiftScaleFilter->SetOutputScalarTypeToUnsignedShort();
-	shiftScaleFilter->SetShift(m_scalarShift);
-	shiftScaleFilter->SetScale(m_scalarScale);
+	m_shiftScaleFilter->SetOutputScalarTypeToUnsignedShort();
+	m_shiftScaleFilter->SetShift(m_scalarShift);
+	m_shiftScaleFilter->SetScale(m_scalarScale);
 
-	shiftScaleFilter->SetInputData(m_imageData);
-	shiftScaleFilter->Update();
+	m_shiftScaleFilter->SetInputData(m_imageData);
+	m_shiftScaleFilter->Update();
 }
 
 void ImageFrameWidget::onSelectionChanged(bool selected)
