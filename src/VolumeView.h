@@ -16,10 +16,13 @@ class vtkInteractorStyleTrackballCamera;
 class vtkRenderWindowInteractor;
 class vtkCommand;
 class vtkObject;
+class vtkPolyData;
+class vtkPolyDataMapper;
 class vtkCamera;
 class vtkImageSliceMapper;
 class vtkImageSlice;
 class vtkCallbackCommand;
+class vtkActor;
 
 namespace Ui { class VolumeView; }
 
@@ -39,6 +42,10 @@ public:
 	void setViewOrientation(ViewOrientation orientation) override;
 
 	Q_INVOKABLE void setColorWindowLevel(double window, double level) override;
+
+	// Apply a native-domain window/level to the orthogonal image-slice actors
+	// (used when a SliceView changes WL so the 3D slice actors match the 2D slices).
+	void setSliceWindowLevelNative(double window, double level);
 
 	void updateSlicePlanes(int x, int y, int z);
 
@@ -66,6 +73,10 @@ public slots:
 private:
 	Ui::VolumeView* ui = nullptr;
 
+	vtkSmartPointer<vtkEventQtSlotConnect> m_qvtk;
+	bool m_slicePlanesVisible = false;
+	bool m_shadingEnabled = false;
+
 	vtkSmartPointer<vtkGPUVolumeRayCastMapper> m_mapper;
 	vtkSmartPointer<vtkVolumeProperty>         m_volumeProperty;
 	vtkSmartPointer<vtkVolume>                 m_volume;
@@ -75,6 +86,10 @@ private:
 	vtkSmartPointer<vtkPiecewiseFunction>      m_actualScalarOpacity;
 	vtkSmartPointer<vtkPiecewiseFunction>      m_scalarOpacity;
 
+	void updateMappedOpacityFromActual();
+	void updateMappedColorsFromActual();
+	void initializeDefaultTransferFunctions();
+
 	// Orthogonal slice actors used in 3D "slice planes" mode (replaces vtkImagePlaneWidget usage).
 	vtkSmartPointer<vtkImageSliceMapper> m_sliceMapperYZ;
 	vtkSmartPointer<vtkImageSliceMapper> m_sliceMapperXZ;
@@ -83,19 +98,27 @@ private:
 	vtkSmartPointer<vtkImageSlice>       m_imageSliceXZ;
 	vtkSmartPointer<vtkImageSlice>       m_imageSliceXY;
 
-	vtkSmartPointer<vtkEventQtSlotConnect> m_qvtk;
+	// Outline actors for per-slice bounding rectangles (one per orthogonal slice)
+	vtkSmartPointer<vtkPolyData>         m_outlinePolyYZ;
+	vtkSmartPointer<vtkPolyData>         m_outlinePolyXZ;
+	vtkSmartPointer<vtkPolyData>         m_outlinePolyXY;
 
-	bool m_slicePlanesVisible = false;
-	bool m_shadingEnabled = false;
+	vtkSmartPointer<vtkPolyDataMapper>   m_outlineMapperYZ;
+	vtkSmartPointer<vtkPolyDataMapper>   m_outlineMapperXZ;
+	vtkSmartPointer<vtkPolyDataMapper>   m_outlineMapperXY;
 
-	void updateMappedOpacityFromActual();
-	void updateMappedColorsFromActual();
-	void initializeDefaultTransferFunctions();
+	vtkSmartPointer<vtkActor>            m_outlineActorYZ;
+	vtkSmartPointer<vtkActor>            m_outlineActorXZ;
+	vtkSmartPointer<vtkActor>            m_outlineActorXY;
+
+	// Helpers to create / update per-slice outline geometry
+	void createSliceOutlineActors();
+	void updateSliceOutlineYZ(int cx);
+	void updateSliceOutlineXZ(int cy);
+	void updateSliceOutlineXY(int cz);
 
 private slots:
 	// Full-signature observer to optionally abort the event
 	void onInteractorChar(vtkObject* caller, unsigned long eventId, void* clientData, void* callData, vtkCommand* command);
 	void onCameraModified(vtkObject* caller);
-
 };
-

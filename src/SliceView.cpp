@@ -101,6 +101,7 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 
 	// Initialize slice mapper and image slice
 	sliceMapper = vtkSmartPointer<vtkImageSliceMapper>::New();
+	sliceMapper->StreamingOn();
 	imageSlice = vtkSmartPointer<vtkImageSlice>::New();
 	imageSlice->SetMapper(sliceMapper);
 	imageProperty = imageSlice->GetProperty();

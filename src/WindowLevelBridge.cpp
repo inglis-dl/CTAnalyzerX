@@ -45,7 +45,10 @@ void WindowLevelBridge::onWindowLevelFromSlice(double window, double level)
 	}
 
 	if (m_volumeView) {
+		// Keep volume rendering consistent (drives controller sync)...
 		m_volumeView->setColorWindowLevel(window, level);
+		// ...and also update orthogonal image-slice actors so the 3D slice planes match the 2D views.
+		m_volumeView->setSliceWindowLevelNative(window, level);
 	}
 
 	m_lastWindow = window;
