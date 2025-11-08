@@ -246,6 +246,18 @@ void MainWindow::setupPanelConnections()
 		}
 	}
 
+	// --- keep controls in sync when view mode changes (menu -> checkbox)
+	if (ui->lightboxWidget && ui->volumeControlsWidget) {
+		auto* volView = ui->lightboxWidget->getVolumeView();
+		auto* vcw = ui->volumeControlsWidget;
+		// Ensure checkbox exists before wiring; connect VolumeView signal -> QCheckBox::setChecked
+		if (volView && vcw && vcw->slicePlaneCheckBox()) {
+			connect(volView, &VolumeView::slicePlanesVisibleChanged,
+					vcw->slicePlaneCheckBox(), &QCheckBox::setChecked,
+					Qt::UniqueConnection);
+		}
+	}
+
 	// NOTE: signal wiring between controller <-> bridge <-> views happens inside LightboxWidget.
 }
 

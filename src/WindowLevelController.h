@@ -23,8 +23,6 @@ Q_SIGNALS:
 	void windowLevelChanged(double window, double level);
 	// committed (user finished editing / pressed Enter / clicked apply)
 	void windowLevelCommitted(double window, double level);
-	// request to open volume properties editor
-	void requestVolumePropertyEditor();
 	// request to reset window/level to baseline across views
 	void requestResetWindowLevel();
 

@@ -384,6 +384,10 @@ void VolumeView::setSlicePlanesVisible(bool visible)
 		if (m_volume && !m_renderer->HasViewProp(m_volume))
 			m_renderer->AddVolume(m_volume);
 	}
+
+	// Ensure the title and menu reflect the current mode so external UI (checkbox/menu) stays in sync.
+	setTitle(m_slicePlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
+
 	if (modified)
 		emit slicePlanesVisibleChanged(m_slicePlanesVisible);
 

@@ -72,7 +72,8 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 		if (m_propagatingWindowLevel) return;
 		m_propagatingWindowLevel = true;
 
-		if (m_wlBridge) m_wlBridge->onWindowLevelCommitted(w, l);
+		// call the bridge's changed handler directly (committed semantics treated same)
+		if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
 
 		if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
 		if (auto* xz = getXZView()) xz->setWindowLevelNative(w, l);

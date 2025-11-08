@@ -35,12 +35,6 @@ void WindowLevelBridge::onWindowLevelChanged(double window, double level)
 	m_lastLevel = level;
 }
 
-void WindowLevelBridge::onWindowLevelCommitted(double window, double level)
-{
-	// For now treat committed same as changed (could add presets/undo later)
-	onWindowLevelChanged(window, level);
-}
-
 void WindowLevelBridge::onWindowLevelFromSlice(double window, double level)
 {
 	// Slice-driven WL: update volume only (volume will emit windowLevelChanged -> controller sync)

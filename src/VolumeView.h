@@ -43,7 +43,6 @@ public:
 	void updateSlicePlanes(int x, int y, int z);
 
 	bool slicePlanesVisible() const { return m_slicePlanesVisible; }
-	void setSlicePlanesVisible(bool visible);
 
 	bool shadingEnabled() const { return m_shadingEnabled; }
 	void setShadingEnabled(bool on);
@@ -57,6 +56,9 @@ signals:
 	void croppingEnabledChanged(bool enabled);
 
 public slots:
+	// Expose as a slot so UI widgets (e.g., VolumeControlsWidget) can connect directly
+	void setSlicePlanesVisible(bool visible);
+
 	void setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 	void resetCamera() override;
 	void resetWindowLevel() override;

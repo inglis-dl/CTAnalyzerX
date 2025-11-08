@@ -14,7 +14,6 @@ public:
 public Q_SLOTS:
 	// Called by WindowLevelController (interactive or committed)
 	void onWindowLevelChanged(double window, double level);
-	void onWindowLevelCommitted(double window, double level);
 
 	// Called when a SliceView changes WL via VTK interaction.
 	// Applies WL to the volume view only to drive volume -> controller propagation.
