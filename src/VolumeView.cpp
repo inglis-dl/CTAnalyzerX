@@ -218,12 +218,8 @@ void VolumeView::setImageData(vtkImageData* image)
 	m_sliceMapperXY->SetOrientationToZ();
 	//
 	// Place slice actors / mappers to data bounds so rendering is robust.
-	{
-		double b[6] = { 0,0,0,0,0,0 };
-		m_shiftScaleFilter->GetOutput()->GetBounds(b);
-		// imageSlice actors do not require PlaceWidget; ensure mapper extent information is available
-		// by letting the pipeline update (done by SetInputConnection + Update when needed).
-	}
+	double b[6] = { 0,0,0,0,0,0 };
+	m_shiftScaleFilter->GetOutput()->GetBounds(b);
 
 	double spacing[3] = { 1,1,1 };
 	m_imageData->GetSpacing(spacing);
@@ -362,6 +358,51 @@ void VolumeView::setImageData(vtkImageData* image)
 	emit imageExtentsChanged(extent[0], extent[1], extent[2], extent[3], extent[4], extent[5]);
 
 	setSlicePlanesVisible(m_slicePlanesVisible);
+	render();
+}
+
+void VolumeView::updateData()
+{
+	m_shiftScaleFilter->Update();
+	m_mapper->Update();
+
+	double spacing[3] = { 1,1,1 };
+	m_imageData->GetSpacing(spacing);
+	int extent[6] = { 0,0,0,0,0,0 };
+	m_imageData->GetExtent(extent);
+	double origin[3] = { 0,0,0 };
+	m_imageData->GetOrigin(origin);
+
+	const int cx = (extent[0] + extent[1]) / 2;
+	const int cy = (extent[2] + extent[3]) / 2;
+	const int cz = (extent[4] + extent[5]) / 2;
+	updateSliceOutlineXY(cz);
+	updateSliceOutlineXZ(cy);
+	updateSliceOutlineYZ(cx);
+
+	const double unit = (spacing[0] + spacing[1] + spacing[2]) / 3.0;
+	m_volumeProperty->SetScalarOpacityUnitDistance(unit);
+
+	resetCamera();
+
+	// Update static slice mappers to the center slices
+	if (m_sliceMapperYZ) { m_sliceMapperYZ->SetSliceNumber(cx); m_sliceMapperYZ->Update(); }
+	if (m_sliceMapperXZ) { m_sliceMapperXZ->SetSliceNumber(cy); m_sliceMapperXZ->Update(); }
+	if (m_sliceMapperXY) { m_sliceMapperXY->SetSliceNumber(cz); m_sliceMapperXY->Update(); }
+
+
+	// Reset cropping to full image extent to avoid applying stale/invalid crop planes
+	if (m_mapper) {
+		m_mapper->SetCroppingRegionPlanes(extent[0], extent[1],
+										  extent[2], extent[3],
+										  extent[4], extent[5]);
+		m_mapper->SetCropping(false); // start with cropping off; UI can enable it
+		// Notify UI that cropping has been disabled/reset for the new image
+		emit croppingEnabledChanged(false);
+	}
+
+	emit imageExtentsChanged(extent[0], extent[1], extent[2], extent[3], extent[4], extent[5]);
+
 	render();
 }
 

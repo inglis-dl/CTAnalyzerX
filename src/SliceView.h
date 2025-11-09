@@ -54,6 +54,9 @@ public:
 	// Expose resetWindowLevel as public so LightboxWidget can call it
 	void resetWindowLevel() override;
 
+public slots:
+	void updateData() override;
+
 signals:
 	void sliceChanged(int);
 	void interpolationChanged(Interpolation);

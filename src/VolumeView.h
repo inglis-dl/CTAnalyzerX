@@ -70,6 +70,8 @@ public slots:
 	void resetCamera() override;
 	void resetWindowLevel() override;
 
+	void updateData() override;
+
 private:
 	Ui::VolumeView* ui = nullptr;
 

@@ -460,6 +460,22 @@ void SliceView::setImageData(vtkImageData* image) {
 	setSliceIndex((m_minSlice + m_maxSlice) / 2);
 }
 
+void SliceView::updateData()
+{
+	m_shiftScaleFilter->Update();
+
+	imageSlice->Modified();
+	imageSlice->Update();
+
+	updateSliceRange();
+
+	// Set camera and show a valid slice immediately (center)
+	updateCamera();
+	setSliceIndex((m_minSlice + m_maxSlice) / 2);
+
+	render();
+}
+
 void SliceView::updateCamera() {
 	if (!m_imageData)	return;
 

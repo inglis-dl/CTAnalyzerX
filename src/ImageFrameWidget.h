@@ -95,6 +95,9 @@ public:
 	void setOrientationMarkerVisible(bool visible);
 	bool orientationMarkerVisible() const { return m_orientationMarkerVisible; }
 
+public slots:
+	virtual void updateData() {};
+
 signals:
 	void viewOrientationChanged(ViewOrientation);
 	void interpolationChanged(Interpolation);
