@@ -102,8 +102,10 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	// Initialize slice mapper and image slice
 	sliceMapper = vtkSmartPointer<vtkImageSliceMapper>::New();
 	sliceMapper->StreamingOn();
+
 	imageSlice = vtkSmartPointer<vtkImageSlice>::New();
 	imageSlice->SetMapper(sliceMapper);
+
 	imageProperty = imageSlice->GetProperty();
 	imageProperty->SetInterpolationTypeToLinear();
 	imageSlice->SetProperty(imageProperty);
@@ -111,6 +113,8 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	// Enable automatic camera-facing for the slice
 	sliceMapper->SliceFacesCameraOff();
 	sliceMapper->SliceAtFocalPointOff();
+
+	sliceMapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
 	this->qvtkConnection = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 	this->qvtkConnection->Connect(interactorStyle, vtkCommand::LeftButtonPressEvent,
@@ -387,14 +391,8 @@ void SliceView::setImageData(vtkImageData* image) {
 	m_imageData = image;
 
 	// Compute mapping and connect the shared filter
-	computeShiftScaleFromInput(image);
-
-	// NOTE: currently the slice mapper reads directly from the shift/scale filter.
-	// TODO: to enable reslice pipeline later attach ImageResliceHelper here so:
-	//       helper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-	//       sliceMapper->SetInputConnection(helper->GetOutputPort());
-	// feed the slice mapper directly from the 16-bit shift/scale output
-	sliceMapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	computeShiftScaleFromInput();
+	cacheImageGeometry();
 
 	// Ensure mapper orientation matches current view as soon as input exists
 	switch (m_viewOrientation) {
@@ -453,11 +451,14 @@ void SliceView::setImageData(vtkImageData* image) {
 		}
 	}
 
-	updateSliceRange();
-
 	// Set camera and show a valid slice immediately (center)
 	updateCamera();
-	setSliceIndex((m_minSlice + m_maxSlice) / 2);
+
+	// current slice is set by camera update, so just refresh range and pick center
+	updateSliceRange();
+
+	// set the slice mapper slice
+	setSliceIndex(m_currentSlice);
 }
 
 void SliceView::updateData()
@@ -479,11 +480,6 @@ void SliceView::updateData()
 void SliceView::updateCamera() {
 	if (!m_imageData)	return;
 
-	const double* origin = m_imageData->GetOrigin();
-	const double* spacing = m_imageData->GetSpacing();
-	int extent[6];
-	m_imageData->GetExtent(extent);
-
 	int w = m_viewOrientation;
 	int u = 0;
 	int v = 1;
@@ -496,11 +492,11 @@ void SliceView::updateCamera() {
 
 	// compute the bounds of the first slice of the image for this orientation
 	double bounds[6];
-	bounds[2 * u] = origin[u] + spacing[u] * extent[2 * u];
-	bounds[2 * u + 1] = origin[u] + spacing[u] * extent[2 * u + 1];
-	bounds[2 * v] = origin[v] + spacing[v] * extent[2 * v];
-	bounds[2 * v + 1] = origin[v] + spacing[v] * extent[2 * v + 1];
-	bounds[2 * w] = origin[w] + spacing[w] * extent[2 * w];
+	bounds[2 * u] = m_origin[u] + m_spacing[u] * m_extent[2 * u];
+	bounds[2 * u + 1] = m_origin[u] + m_spacing[u] * m_extent[2 * u + 1];
+	bounds[2 * v] = m_origin[v] + m_spacing[v] * m_extent[2 * v];
+	bounds[2 * v + 1] = m_origin[v] + m_spacing[v] * m_extent[2 * v + 1];
+	bounds[2 * w] = m_origin[w] + m_spacing[w] * m_extent[2 * w];
 	bounds[2 * w + 1] = bounds[2 * w]; // zero thickness in view direction
 
 	double fpt[3];
@@ -510,10 +506,10 @@ void SliceView::updateCamera() {
 	vup[v] = 1.0;  // up is the second in-plane axis
 	vpn[w] = 1.0;  // look along the view-normal axis
 
-	fpt[u] = pos[u] = origin[u] + 0.5 * spacing[u] * (extent[2 * u] + extent[2 * u + 1]);
-	fpt[v] = pos[v] = origin[v] + 0.5 * spacing[v] * (extent[2 * v] + extent[2 * v + 1]);
-	fpt[w] = origin[w] + spacing[w] * (1 == w ? extent[2 * w + 1] : extent[2 * w]);
-	pos[w] = fpt[w] + vpn[w] * spacing[w];
+	fpt[u] = pos[u] = m_origin[u] + 0.5 * m_spacing[u] * (m_extent[2 * u] + m_extent[2 * u + 1]);
+	fpt[v] = pos[v] = m_origin[v] + 0.5 * m_spacing[v] * (m_extent[2 * v] + m_extent[2 * v + 1]);
+	fpt[w] = m_origin[w] + m_spacing[w] * (1 == w ? m_extent[2 * w + 1] : m_extent[2 * w]);
+	pos[w] = fpt[w] + vpn[w] * m_spacing[w];
 
 	auto camera = m_renderer->GetActiveCamera();
 	camera->ParallelProjectionOn(); // ensure 2D projection
@@ -527,7 +523,7 @@ void SliceView::updateCamera() {
 	m_renderer->ResetCameraClippingRange(bounds);
 
 	// Move current slice to the start of the axis (will be centered later)
-	m_currentSlice = static_cast<int>(extent[2 * w]);
+	m_currentSlice = static_cast<int>((m_extent[2 * w] + m_extent[2 * w + 1]) / 2);
 }
 
 void SliceView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation)
@@ -613,15 +609,12 @@ void SliceView::updateSlice() {
 		case 2: u = 0; v = 1; break;
 	}
 
-	const double* origin = m_imageData->GetOrigin();
-	const double* spacing = m_imageData->GetSpacing();
-
 	auto cam = m_renderer->GetActiveCamera();
 	if (cam)
 	{
 		double fpt[3];
 		cam->GetFocalPoint(fpt);
-		fpt[w] = origin[w] + spacing[w] * m_currentSlice;
+		fpt[w] = m_origin[w] + m_spacing[w] * m_currentSlice;
 
 		const double* vpn = cam->GetViewPlaneNormal();
 		const double d = cam->GetDistance();
@@ -663,6 +656,8 @@ void SliceView::setSliceIndex(int index) {
 		m_editSliceIndex->setText(QString::number(m_currentSlice));
 	}
 
+	// updates the slice mapper
+	// updates the camera based on slice position
 	updateSlice();
 
 	emit sliceChanged(m_currentSlice);
