@@ -199,10 +199,8 @@ void VolumeView::setImageData(vtkImageData* image)
 	m_imageData = image;
 
 	// Compute mapping and connect the shared filter
-	computeShiftScaleFromInput(image);
-
-	m_shiftScaleFilter->SetInputData(m_imageData);
-	m_shiftScaleFilter->Update();
+	computeShiftScaleFromInput();
+	cacheImageGeometry();
 
 	// TODO: attach ImageResliceHelper here to route post-shift/scale -> reslice -> mapper when integrating reslice workflow.
 	//       e.g. helper->SetInputConnection(m_shiftScaleFilter->GetOutputPort()); mapper->SetInputConnection(helper->GetOutputPort());
@@ -221,16 +219,9 @@ void VolumeView::setImageData(vtkImageData* image)
 	double b[6] = { 0,0,0,0,0,0 };
 	m_shiftScaleFilter->GetOutput()->GetBounds(b);
 
-	double spacing[3] = { 1,1,1 };
-	m_imageData->GetSpacing(spacing);
-	int extent[6] = { 0,0,0,0,0,0 };
-	m_imageData->GetExtent(extent);
-	double origin[3] = { 0,0,0 };
-	m_imageData->GetOrigin(origin);
-
-	const int cx = (extent[0] + extent[1]) / 2;
-	const int cy = (extent[2] + extent[3]) / 2;
-	const int cz = (extent[4] + extent[5]) / 2;
+	const int cx = (m_extent[0] + m_extent[1]) / 2;
+	const int cy = (m_extent[2] + m_extent[3]) / 2;
+	const int cz = (m_extent[4] + m_extent[5]) / 2;
 
 	if (!m_imageInitialized) {
 		m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
@@ -255,11 +246,11 @@ void VolumeView::setImageData(vtkImageData* image)
 		if (m_outlineActorXZ) m_outlineActorXZ->VisibilityOff();
 		if (m_outlineActorXY) m_outlineActorXY->VisibilityOff();
 
-		const double wz = origin[2] + spacing[2] * static_cast<double>(cz);
-		const double x0 = origin[0] + spacing[0] * extent[0];
-		const double x1 = origin[0] + spacing[0] * extent[1];
-		const double y0 = origin[1] + spacing[1] * extent[2];
-		const double y1 = origin[1] + spacing[1] * extent[3];
+		const double wz = m_origin[2] + m_spacing[2] * static_cast<double>(cz);
+		const double x0 = m_origin[0] + m_spacing[0] * m_extent[0];
+		const double x1 = m_origin[0] + m_spacing[0] * m_extent[1];
+		const double y0 = m_origin[1] + m_spacing[1] * m_extent[2];
+		const double y1 = m_origin[1] + m_spacing[1] * m_extent[3];
 
 		vtkSmartPointer<vtkPoints> ptsXY = vtkSmartPointer<vtkPoints>::New();
 		ptsXY->SetNumberOfPoints(5);
@@ -277,9 +268,9 @@ void VolumeView::setImageData(vtkImageData* image)
 		m_outlinePolyXY->SetLines(lines);
 		m_outlinePolyXY->Modified();
 
-		const double wy = origin[1] + spacing[1] * static_cast<double>(cy);
-		const double z0 = origin[2] + spacing[2] * extent[4];
-		const double z1 = origin[2] + spacing[2] * extent[5];
+		const double wy = m_origin[1] + m_spacing[1] * static_cast<double>(cy);
+		const double z0 = m_origin[2] + m_spacing[2] * m_extent[4];
+		const double z1 = m_origin[2] + m_spacing[2] * m_extent[5];
 
 		vtkSmartPointer<vtkPoints> ptsXZ = vtkSmartPointer<vtkPoints>::New();
 		ptsXZ->SetNumberOfPoints(5);
@@ -293,7 +284,7 @@ void VolumeView::setImageData(vtkImageData* image)
 		m_outlinePolyXZ->SetLines(lines);
 		m_outlinePolyXZ->Modified();
 
-		const double wx = origin[0] + spacing[0] * static_cast<double>(cx);
+		const double wx = m_origin[0] + m_spacing[0] * static_cast<double>(cx);
 
 		vtkSmartPointer<vtkPoints> ptsYZ = vtkSmartPointer<vtkPoints>::New();
 		ptsYZ->SetNumberOfPoints(5);
@@ -332,9 +323,10 @@ void VolumeView::setImageData(vtkImageData* image)
 	const double baseLevel = 0.5 * (ub + lb);
 	setBaselineWindowLevel(baseWindow, baseLevel);
 	setColorWindowLevel(baseWindow, baseLevel); // updates opacity+color and renders
+	setSliceWindowLevelNative(baseWindow, baseLevel);
 
 	// set scalar opacity unit distance to match data spacing
-	const double unit = (spacing[0] + spacing[1] + spacing[2]) / 3.0;
+	const double unit = (m_spacing[0] + m_spacing[1] + m_spacing[2]) / 3.0;
 	m_volumeProperty->SetScalarOpacityUnitDistance(unit);
 
 	resetCamera();
@@ -344,18 +336,21 @@ void VolumeView::setImageData(vtkImageData* image)
 	if (m_sliceMapperXZ) { m_sliceMapperXZ->SetSliceNumber(cy); m_sliceMapperXZ->Update(); }
 	if (m_sliceMapperXY) { m_sliceMapperXY->SetSliceNumber(cz); m_sliceMapperXY->Update(); }
 
+	updateSliceOutlineXY(cz);
+	updateSliceOutlineXZ(cy);
+	updateSliceOutlineYZ(cx);
 
 	// Reset cropping to full image extent to avoid applying stale/invalid crop planes
 	if (m_mapper) {
-		m_mapper->SetCroppingRegionPlanes(extent[0], extent[1],
-										  extent[2], extent[3],
-										  extent[4], extent[5]);
+		m_mapper->SetCroppingRegionPlanes(m_extent[0], m_extent[1],
+										  m_extent[2], m_extent[3],
+										  m_extent[4], m_extent[5]);
 		m_mapper->SetCropping(false); // start with cropping off; UI can enable it
 		// Notify UI that cropping has been disabled/reset for the new image
 		emit croppingEnabledChanged(false);
 	}
 
-	emit imageExtentsChanged(extent[0], extent[1], extent[2], extent[3], extent[4], extent[5]);
+	emit imageExtentsChanged(m_extent[0], m_extent[1], m_extent[2], m_extent[3], m_extent[4], m_extent[5]);
 
 	setSlicePlanesVisible(m_slicePlanesVisible);
 	render();
@@ -465,12 +460,9 @@ void VolumeView::updateSlicePlanes(int x, int y, int z)
 {
 	if (!m_imageInitialized || !m_imageData) return;
 
-	int extent[6] = { 0,0,0,0,0,0 };
-	m_imageData->GetExtent(extent);
-
-	const int cx = std::clamp(x, extent[0], extent[1]);
-	const int cy = std::clamp(y, extent[2], extent[3]);
-	const int cz = std::clamp(z, extent[4], extent[5]);
+	const int cx = std::clamp(x, m_extent[0], m_extent[1]);
+	const int cy = std::clamp(y, m_extent[2], m_extent[3]);
+	const int cz = std::clamp(z, m_extent[4], m_extent[5]);
 
 	// Move orthogonal imageSlice mappers to requested indices so the 3D view shows the same slices.
 	if (m_sliceMapperYZ) { m_sliceMapperYZ->SetSliceNumber(cx); m_sliceMapperYZ->Update(); }
@@ -531,10 +523,6 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 {
 	if (!m_mapper || !m_imageData) return;
 
-	// Clamp indices to extent and ensure lo <= hi and non-degenerate
-	int extent[6] = { 0,0,0,0,0,0 };
-	m_imageData->GetExtent(extent); // {x0,x1,y0,y1,z0,z1}
-
 	auto clampNormalize = [](int& lo, int& hi, int loB, int hiB) {
 		lo = std::clamp(lo, loB, hiB);
 		hi = std::clamp(hi, loB, hiB);
@@ -546,9 +534,9 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 		}
 		};
 
-	clampNormalize(xMin, xMax, extent[0], extent[1]);
-	clampNormalize(yMin, yMax, extent[2], extent[3]);
-	clampNormalize(zMin, zMax, extent[4], extent[5]);
+	clampNormalize(xMin, xMax, m_extent[0], m_extent[1]);
+	clampNormalize(yMin, yMax, m_extent[2], m_extent[3]);
+	clampNormalize(zMin, zMax, m_extent[4], m_extent[5]);
 
 	// Convert voxel (continuous index) -> physical/world coordinates
 	double idx[3], physMin[3], physMax[3], physPt[3];
@@ -557,10 +545,7 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 	idx[0] = static_cast<double>(xMin); idx[1] = 0.0; idx[2] = 0.0;
 	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
 		// fallback to origin + spacing calculation if TransformContinuousIndexToPhysicalPoint is not appropriate
-		double origin[3], spacing[3];
-		m_imageData->GetOrigin(origin);
-		m_imageData->GetSpacing(spacing);
-		physMin[0] = origin[0] + idx[0] * spacing[0];
+		physMin[0] = m_origin[0] + idx[0] * m_spacing[0];
 	}
 	else {
 		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
@@ -568,10 +553,7 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 	}
 	idx[0] = static_cast<double>(xMax);
 	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
-		double origin[3], spacing[3];
-		m_imageData->GetOrigin(origin);
-		m_imageData->GetSpacing(spacing);
-		physMax[0] = origin[0] + idx[0] * spacing[0];
+		physMax[0] = m_origin[0] + idx[0] * m_spacing[0];
 	}
 	else {
 		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
@@ -581,10 +563,7 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 	// Y min/max
 	idx[0] = 0.0; idx[1] = static_cast<double>(yMin); idx[2] = 0.0;
 	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
-		double origin[3], spacing[3];
-		m_imageData->GetOrigin(origin);
-		m_imageData->GetSpacing(spacing);
-		physMin[1] = origin[1] + idx[1] * spacing[1];
+		physMin[1] = m_origin[1] + idx[1] * m_spacing[1];
 	}
 	else {
 		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
@@ -592,10 +571,7 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 	}
 	idx[1] = static_cast<double>(yMax);
 	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
-		double origin[3], spacing[3];
-		m_imageData->GetOrigin(origin);
-		m_imageData->GetSpacing(spacing);
-		physMax[1] = origin[1] + idx[1] * spacing[1];
+		physMax[1] = m_origin[1] + idx[1] * m_spacing[1];
 	}
 	else {
 		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
@@ -605,10 +581,7 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 	// Z min/max
 	idx[0] = 0.0; idx[1] = 0.0; idx[2] = static_cast<double>(zMin);
 	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
-		double origin[3], spacing[3];
-		m_imageData->GetOrigin(origin);
-		m_imageData->GetSpacing(spacing);
-		physMin[2] = origin[2] + idx[2] * spacing[2];
+		physMin[2] = m_origin[2] + idx[2] * m_spacing[2];
 	}
 	else {
 		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
@@ -616,10 +589,7 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 	}
 	idx[2] = static_cast<double>(zMax);
 	if (m_imageData->HasAnyGhostCells() || m_imageData->GetNumberOfPoints() == 0) {
-		double origin[3], spacing[3];
-		m_imageData->GetOrigin(origin);
-		m_imageData->GetSpacing(spacing);
-		physMax[2] = origin[2] + idx[2] * spacing[2];
+		physMax[2] = m_origin[2] + idx[2] * m_spacing[2];
 	}
 	else {
 		m_imageData->TransformContinuousIndexToPhysicalPoint(idx, physPt);
@@ -1073,17 +1043,13 @@ void VolumeView::updateSliceOutlineYZ(int cx)
 {
 	if (!m_imageData || !m_outlinePolyYZ) return;
 
-	int extent[6]; m_imageData->GetExtent(extent);
-	double origin[3]; m_imageData->GetOrigin(origin);
-	double spacing[3]; m_imageData->GetSpacing(spacing);
-
 	// clamp cx
-	cx = std::clamp(cx, extent[0], extent[1]);
-	const double wx = origin[0] + spacing[0] * static_cast<double>(cx);
-	const double y0 = origin[1] + spacing[1] * extent[2];
-	const double y1 = origin[1] + spacing[1] * extent[3];
-	const double z0 = origin[2] + spacing[2] * extent[4];
-	const double z1 = origin[2] + spacing[2] * extent[5];
+	cx = std::clamp(cx, m_extent[0], m_extent[1]);
+	const double wx = m_origin[0] + m_spacing[0] * static_cast<double>(cx);
+	const double y0 = m_origin[1] + m_spacing[1] * m_extent[2];
+	const double y1 = m_origin[1] + m_spacing[1] * m_extent[3];
+	const double z0 = m_origin[2] + m_spacing[2] * m_extent[4];
+	const double z1 = m_origin[2] + m_spacing[2] * m_extent[5];
 
 	// Reuse existing points & lines if present, otherwise create and attach them once.
 	vtkPoints* pts = m_outlinePolyYZ->GetPoints();
@@ -1117,16 +1083,12 @@ void VolumeView::updateSliceOutlineXZ(int cy)
 {
 	if (!m_imageData || !m_outlinePolyXZ) return;
 
-	int extent[6]; m_imageData->GetExtent(extent);
-	double origin[3]; m_imageData->GetOrigin(origin);
-	double spacing[3]; m_imageData->GetSpacing(spacing);
-
-	cy = std::clamp(cy, extent[2], extent[3]);
-	const double wy = origin[1] + spacing[1] * static_cast<double>(cy);
-	const double x0 = origin[0] + spacing[0] * extent[0];
-	const double x1 = origin[0] + spacing[0] * extent[1];
-	const double z0 = origin[2] + spacing[2] * extent[4];
-	const double z1 = origin[2] + spacing[2] * extent[5];
+	cy = std::clamp(cy, m_extent[2], m_extent[3]);
+	const double wy = m_origin[1] + m_spacing[1] * static_cast<double>(cy);
+	const double x0 = m_origin[0] + m_spacing[0] * m_extent[0];
+	const double x1 = m_origin[0] + m_spacing[0] * m_extent[1];
+	const double z0 = m_origin[2] + m_spacing[2] * m_extent[4];
+	const double z1 = m_origin[2] + m_spacing[2] * m_extent[5];
 
 	vtkPoints* pts = m_outlinePolyXZ->GetPoints();
 	if (!pts) {
@@ -1157,16 +1119,12 @@ void VolumeView::updateSliceOutlineXY(int cz)
 {
 	if (!m_imageData || !m_outlinePolyXY) return;
 
-	int extent[6]; m_imageData->GetExtent(extent);
-	double origin[3]; m_imageData->GetOrigin(origin);
-	double spacing[3]; m_imageData->GetSpacing(spacing);
-
-	cz = std::clamp(cz, extent[4], extent[5]);
-	const double wz = origin[2] + spacing[2] * static_cast<double>(cz);
-	const double x0 = origin[0] + spacing[0] * extent[0];
-	const double x1 = origin[0] + spacing[0] * extent[1];
-	const double y0 = origin[1] + spacing[1] * extent[2];
-	const double y1 = origin[1] + spacing[1] * extent[3];
+	cz = std::clamp(cz, m_extent[4], m_extent[5]);
+	const double wz = m_origin[2] + m_spacing[2] * static_cast<double>(cz);
+	const double x0 = m_origin[0] + m_spacing[0] * m_extent[0];
+	const double x1 = m_origin[0] + m_spacing[0] * m_extent[1];
+	const double y0 = m_origin[1] + m_spacing[1] * m_extent[2];
+	const double y1 = m_origin[1] + m_spacing[1] * m_extent[3];
 
 	vtkPoints* pts = m_outlinePolyXY->GetPoints();
 	if (!pts) {

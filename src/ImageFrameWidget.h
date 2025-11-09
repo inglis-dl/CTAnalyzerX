@@ -132,7 +132,7 @@ protected:
 	double m_scalarRangeMax = 1.0;
 	double m_scalarShift = 0.0;  // shift applied by shiftScaleFilter
 	double m_scalarScale = 1.0;  // scale applied by shiftScaleFilter
-	void computeShiftScaleFromInput(vtkImageData* image);
+	void computeShiftScaleFromInput();
 
 	bool m_imageInitialized = false;
 
@@ -150,5 +150,10 @@ protected:
 
 	// Ensure the marker is created once the interactor is available
 	void ensureOrientationMarkerInitialized();
+
+	void cacheImageGeometry();
+	int m_extent[6];
+	double m_spacing[3];
+	double m_origin[3];
 };
 

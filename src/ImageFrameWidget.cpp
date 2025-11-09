@@ -262,11 +262,13 @@ ImageFrameWidget::ViewOrientation ImageFrameWidget::labelToOrientation(const QSt
 	return m_viewOrientation; // no change on unknown label
 }
 
-void ImageFrameWidget::computeShiftScaleFromInput(vtkImageData* image)
+void ImageFrameWidget::computeShiftScaleFromInput()
 {
-	m_nativeScalarType = image->GetScalarType();
+	if (!m_imageData) return;
+
+	m_nativeScalarType = m_imageData->GetScalarType();
 	double scalarRange[2] = { 0, 1 };
-	image->GetScalarRange(scalarRange);
+	m_imageData->GetScalarRange(scalarRange);
 	// Guard against NaN/Inf and inverted ranges
 	const double r0 = std::isfinite(scalarRange[0]) ? scalarRange[0] : 0.0;
 	const double r1 = std::isfinite(scalarRange[1]) ? scalarRange[1] : 1.0;
@@ -311,7 +313,6 @@ void ImageFrameWidget::computeShiftScaleFromInput(vtkImageData* image)
 	m_shiftScaleFilter->SetOutputScalarTypeToUnsignedShort();
 	m_shiftScaleFilter->SetShift(m_scalarShift);
 	m_shiftScaleFilter->SetScale(m_scalarScale);
-
 	m_shiftScaleFilter->SetInputData(m_imageData);
 	m_shiftScaleFilter->Update();
 }
@@ -404,4 +405,12 @@ int ImageFrameWidget::cameraAlignedOrientation(double maxAngleDeg) const
 		case 2: return VIEW_ORIENTATION_XY; // looking along +Z => XY
 		default: return -1;
 	}
+}
+
+void ImageFrameWidget::cacheImageGeometry()
+{
+	if (!m_imageData) return;
+	m_imageData->GetExtent(m_extent);
+	m_imageData->GetSpacing(m_spacing);
+	m_imageData->GetOrigin(m_origin);
 }
