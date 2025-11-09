@@ -46,7 +46,6 @@ void WindowLevelBus::unregisterFrame(ImageFrameWidget* frame)
 void WindowLevelBus::broadcast(ImageFrameWidget* sender, double window, double level)
 {
 	if (!sender) return;
-	if (sender->linkPropagationMode() == ImageFrameWidget::Disabled) return;
 
 	// Collect participants to render: always include sender
 	QVector<ImageFrameWidget*> participants;
@@ -64,9 +63,6 @@ void WindowLevelBus::broadcast(ImageFrameWidget* sender, double window, double l
 		++i;
 
 		if (!target || target == sender) continue;
-
-		// Skip if either has propagation disabled
-		if (target->linkPropagationMode() == ImageFrameWidget::Disabled) continue;
 
 		// Must share the same image
 		if (sender->imageData() == nullptr || target->imageData() == nullptr) continue;

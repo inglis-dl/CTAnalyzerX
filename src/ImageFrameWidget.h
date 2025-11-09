@@ -24,7 +24,6 @@ class ImageFrameWidget : public SelectionFrameWidget
 		// Properties
 		Q_PROPERTY(ViewOrientation viewOrientation READ viewOrientation WRITE setViewOrientation NOTIFY viewOrientationChanged)
 		Q_PROPERTY(Interpolation interpolation READ interpolation WRITE setInterpolation NOTIFY interpolationChanged)
-		Q_PROPERTY(LinkPropagationMode linkPropagationMode READ linkPropagationMode WRITE setLinkPropagationMode NOTIFY linkPropagationModeChanged)
 
 public:
 	enum Interpolation { Nearest, Linear, Cubic };
@@ -32,10 +31,6 @@ public:
 
 		enum ViewOrientation { VIEW_ORIENTATION_YZ = 0, VIEW_ORIENTATION_XZ = 1, VIEW_ORIENTATION_XY = 2 };
 	Q_ENUM(ViewOrientation)
-
-		// Propagation mode for linked WL
-		enum LinkPropagationMode { Disabled, EndOnly, Live };
-	Q_ENUM(LinkPropagationMode)
 
 		explicit ImageFrameWidget(QWidget* parent = nullptr);
 	~ImageFrameWidget() override;
@@ -78,14 +73,6 @@ public:
 	// (VIEW_ORIENTATION_YZ=0, VIEW_ORIENTATION_XZ=1, VIEW_ORIENTATION_XY=2) or -1 if none match.
 	int cameraAlignedOrientation(double maxAngleDeg) const;
 
-	// WL propagation mode
-	void setLinkPropagationMode(LinkPropagationMode mode) {
-		if (m_linkPropagationMode == mode) return;
-		m_linkPropagationMode = mode;
-		emit linkPropagationModeChanged(m_linkPropagationMode);
-	}
-	LinkPropagationMode linkPropagationMode() const { return m_linkPropagationMode; }
-
 	// helpers to convert baseline WL to mapped domain
 	void setBaselineWindowLevel(double windowNative, double levelNative);
 	std::pair<double, double> mapWindowLevelToMapped(double windowNative, double levelNative) const;
@@ -102,7 +89,6 @@ signals:
 	void viewOrientationChanged(ViewOrientation);
 	void interpolationChanged(Interpolation);
 	void windowLevelChanged(double window, double level);
-	void linkPropagationModeChanged(LinkPropagationMode mode);
 
 protected:
 	// SceneFrameWidget override: used by render() and tooling.
@@ -134,7 +120,6 @@ protected:
 
 	ViewOrientation  m_viewOrientation = VIEW_ORIENTATION_XY;
 	Interpolation    m_interpolation = Linear;
-	LinkPropagationMode m_linkPropagationMode = Disabled;
 
 	vtkSmartPointer<vtkImageData>                   m_imageData;
 	vtkSmartPointer<vtkRenderer>                    m_renderer;
