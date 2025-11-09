@@ -5,6 +5,10 @@
 #include "ImageLoader.h"
 #include "WindowLevelController.h"
 #include "WindowLevelBridge.h"
+#include "VolumeRotationWidget.h"
+
+#include <vtkImageData.h>
+#include <vtkImageReslice.h>
 
 #include <QFileDialog>
 #include <QMessageBox>
@@ -103,6 +107,31 @@ MainWindow::MainWindow(QWidget* parent)
 		imageLoader, vtkCommand::ProgressEvent,
 		this, SLOT(onVtkProgressEvent()));
 
+	// Create volume rotation widget and insert into control panel if space exists
+	m_volumeRotationWidget = new VolumeRotationWidget(this);
+	// Try to insert into the control panel layout (if present in UI)
+	if (ui->controlPanelLayout) {
+		ui->controlPanelLayout->addWidget(m_volumeRotationWidget);
+	}
+
+	// Respond to resliceReady emitted by the rotation widget so the lightbox updates
+	// when the widget's internal helper produces a resliced image (use unique connection)
+	connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceReady, this, [this](vtkImageData* img) {
+		if (img && ui->lightboxWidget) {
+			ui->lightboxWidget->setImageData(img);
+		}
+	}, Qt::UniqueConnection);
+
+	// When the user explicitly applies a downsample, notify child ImageFrameWidget instances
+	// so they can re-check their vtkImageData and reconfigure (updateData()).
+	connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceApplied, this, [this]() {
+		if (!ui->lightboxWidget) return;
+		if (auto* yz = ui->lightboxWidget->getYZView()) yz->updateData();
+		if (auto* xz = ui->lightboxWidget->getXZView()) xz->updateData();
+		if (auto* xy = ui->lightboxWidget->getXYView()) xy->updateData();
+		if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
+	}, Qt::UniqueConnection);
+
 	setupPanelConnections();
 
 	loadRecentFiles();
@@ -112,6 +141,7 @@ MainWindow::~MainWindow()
 {
 	saveRecentFiles();
 	delete ui;
+	// m_volumeRotationWidget has parent this and will be deleted automatically
 }
 
 void MainWindow::loadVolume(vtkSmartPointer<vtkImageData> imageData)
@@ -124,6 +154,13 @@ void MainWindow::loadVolume(vtkSmartPointer<vtkImageData> imageData)
 		ui->lightboxWidget->setDefaultImage();
 	}
 	else {
+		// Delegate reslicing to VolumeRotationWidget which owns the reslice helper.
+		if (m_volumeRotationWidget) {
+			m_volumeRotationWidget->SetInputData(imageData);
+			return; // widget will emit resliceReady to update lightbox when available
+		}
+
+		// Fallback: pass original image if rotation widget unavailable
 		ui->lightboxWidget->setImageData(imageData);
 	}
 }

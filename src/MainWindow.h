@@ -6,6 +6,8 @@
 #include <QProgressBar>
 #include <vtkSmartPointer.h>
 
+#include <memory>
+
 namespace Ui {
 	class MainWindow;
 }
@@ -13,6 +15,7 @@ namespace Ui {
 class vtkImageData;
 class ImageLoader;
 class vtkEventQtSlotConnect;
+class VolumeRotationWidget; // forward declare
 
 class MainWindow : public QMainWindow
 {
@@ -55,6 +58,9 @@ private:
 	vtkSmartPointer<ImageLoader> imageLoader = nullptr;
 	QProgressBar* progressBar = nullptr;
 	bool defaultImageLoaded = false;
+
+	// Rotation widget for reslicing the volume
+	VolumeRotationWidget* m_volumeRotationWidget = nullptr;
 };
 
 #endif // MAINWINDOW_H

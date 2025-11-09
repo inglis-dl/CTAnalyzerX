@@ -134,8 +134,8 @@ set(SOURCES
      src/ImageLoader.h
      src/SliceView.cpp
      src/SliceView.h
-     src/ViewFactory.cpp 
-     src/ViewFactory.h
+    # src/ViewFactory.cpp 
+    # src/ViewFactory.h
      src/VolumeView.cpp 
      src/VolumeView.h
      src/VolumeControlsWidget.cpp 
@@ -158,6 +158,10 @@ set(SOURCES
 	 src/WindowLevelController.h
      src/WindowLevelBridge.cpp
      src/WindowLevelBridge.h
+	 src/ImageResliceHelper.cpp
+ 	 src/ImageResliceHelper.h
+	 src/VolumeRotationWidget.cpp
+	 src/VolumeRotationWidget.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early
