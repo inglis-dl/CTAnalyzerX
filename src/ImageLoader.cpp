@@ -11,6 +11,9 @@
 #include <vtkObjectFactory.h>
 #include <vtkScancoCTReader.h>
 #include <vtkSmartPointer.h>
+#include <vtkDICOMReader.h>
+#include <vtkInformation.h>
+#include <vtkStreamingDemandDrivenPipeline.h>
 
 // VTK object factory macro
 vtkStandardNewMacro(ImageLoader);
@@ -38,11 +41,14 @@ void ImageLoader::SetInputPath(const QString& path) {
 		this->type = ImageType::DICOM;
 	}
 	this->Modified();
+	// Invalidate cached reader so it will be recreated with the new path
+	this->cachedReader = nullptr;
 }
 
 void ImageLoader::SetImageType(ImageType type) {
 	this->type = type;
 	this->Modified();
+	this->cachedReader = nullptr;
 }
 
 vtkSmartPointer<vtkImageData> ImageLoader::Load() {
@@ -125,6 +131,126 @@ vtkSmartPointer<vtkImageData> ImageLoader::LoadDICOM() {
 	return reader->GetOutput();
 }
 
+// Ensure a single reader instance is created and configured for current type/path.
+void ImageLoader::EnsureReaderInitialized()
+{
+	if (this->cachedReader)
+	{
+		// already initialized
+		return;
+	}
+
+	if (this->inputPath.isEmpty())
+	{
+		return;
+	}
+
+	QFileInfo info(this->inputPath);
+
+	if (this->type == ImageType::ScancoISQ)
+	{
+		auto r = vtkSmartPointer<vtkScancoCTReader>::New();
+		r->SetFileName(this->inputPath.toUtf8().constData());
+		forwardReaderEvents(r);
+		this->cachedReader = r;
+	}
+	else // DICOM
+	{
+		// Use vtkDICOMDirectory to discover files in the directory and pass them to vtkDICOMReader.
+		QString directoryPath = info.isDir() ? this->inputPath : info.absolutePath();
+
+		vtkNew<vtkDICOMDirectory> dicomDirectory;
+		dicomDirectory->SetDirectoryName(directoryPath.toUtf8().constData());
+		dicomDirectory->RequirePixelDataOn();
+		forwardReaderEvents(dicomDirectory);
+		dicomDirectory->Update();
+
+		int numSeries = dicomDirectory->GetNumberOfSeries();
+		if (numSeries < 1)
+		{
+			std::cerr << "No DICOM image series found in directory!" << std::endl;
+			return;
+		}
+
+		auto dr = vtkSmartPointer<vtkDICOMReader>::New();
+		// Pass the discovered file list to the reader (vtkDICOMReader has SetFileNames, not SetDirectoryName)
+		dr->SetFileNames(dicomDirectory->GetFileNamesForSeries(0));
+		dr->SetMemoryRowOrderToFileNative();
+		forwardReaderEvents(dr);
+		this->cachedReader = dr;
+	}
+}
+
+// Forward WHOLE_EXTENT / SPACING / ORIGIN / DIRECTION from the underlying reader to the pipeline.
+int ImageLoader::RequestInformation(vtkInformation* vtkNotUsed(request),
+	vtkInformationVector** vtkNotUsed(inputVector), vtkInformationVector* outputVector)
+{
+	vtkInformation* outInfo = outputVector->GetInformationObject(0);
+	if (!outInfo)
+		return 0;
+
+	// Ensure a reader exists and that it has populated its output information.
+	this->EnsureReaderInitialized();
+	if (!this->cachedReader)
+		return 1; // nothing to forward
+
+	// Ask the reader to fill its output information (lightweight)
+	this->cachedReader->UpdateInformation();
+
+	vtkInformation* rOut = this->cachedReader->GetOutputInformation(0);
+	if (!rOut)
+		return 1;
+
+	// Copy WHOLE_EXTENT
+	if (rOut->Has(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT()))
+	{
+		int wholeExt[6];
+		rOut->Get(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT(), wholeExt);
+		outInfo->Set(vtkStreamingDemandDrivenPipeline::WHOLE_EXTENT(), wholeExt, 6);
+	}
+
+	// SPACING
+	if (rOut->Has(vtkDataObject::SPACING()))
+	{
+		double spacing[3];
+		rOut->Get(vtkDataObject::SPACING(), spacing);
+		outInfo->Set(vtkDataObject::SPACING(), spacing, 3);
+	}
+
+	// ORIGIN
+	if (rOut->Has(vtkDataObject::ORIGIN()))
+	{
+		double origin[3];
+		rOut->Get(vtkDataObject::ORIGIN(), origin);
+		outInfo->Set(vtkDataObject::ORIGIN(), origin, 3);
+	}
+
+	// DIRECTION (if present)
+	if (rOut->Has(vtkDataObject::DIRECTION()))
+	{
+		double dir[9];
+		rOut->Get(vtkDataObject::DIRECTION(), dir);
+		outInfo->Set(vtkDataObject::DIRECTION(), dir, 9);
+	}
+
+	// Optionally forward scalar type / number of components etc.
+	if (rOut->Has(vtkDataObject::DATA_TYPE_NAME()))
+	{
+		const char* dt = rOut->Get(vtkDataObject::DATA_TYPE_NAME());
+		outInfo->Set(vtkDataObject::DATA_TYPE_NAME(), dt);
+	}
+
+	return 1;
+}
+
+// Tell VTK our output is vtkImageData
+int ImageLoader::FillOutputPortInformation(int port, vtkInformation* info)
+{
+	(void)port;
+	info->Set(vtkDataObject::DATA_TYPE_NAME(), "vtkImageData");
+	return 1;
+}
+
 // VTK pipeline: produce vtkImageData output
 int ImageLoader::RequestData(
 	vtkInformation* vtkNotUsed(request),
@@ -133,25 +259,20 @@ int ImageLoader::RequestData(
 {
 	vtkInformation* outInfo = outputVector->GetInformationObject(0);
 
-	vtkSmartPointer<vtkImageData> image;
-	switch (type) {
-		case ImageType::ScancoISQ:
-		image = LoadScancoISQ();
-		break;
-		case ImageType::DICOM:
-		image = LoadDICOM();
-		break;
-		default:
-		image = nullptr;
-		break;
-	}
-
-	if (!image) {
+	// Ensure a persistent reader exists and is configured
+	this->EnsureReaderInitialized();
+	if (!this->cachedReader)
 		return 0;
-	}
 
-	// Set the output pointer to the loaded image data
-	outInfo->Set(vtkDataObject::DATA_OBJECT(), image);
+	// Execute the reader to produce data (heavy operation)
+	this->cachedReader->Update();
+
+	// Grab produced image and set as this algorithm's output
+	vtkImageData* img = vtkImageData::SafeDownCast(this->cachedReader->GetOutputDataObject(0));
+	if (!img)
+		return 0;
+
+	outInfo->Set(vtkDataObject::DATA_OBJECT(), img);
 	return 1;
 }
 
@@ -179,12 +300,3 @@ bool ImageLoader::CanReadFile(const QString& filePath)
 
 	return false;
 }
-
-
-
-
-
-
-
-
-
