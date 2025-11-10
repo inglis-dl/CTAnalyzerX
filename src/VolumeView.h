@@ -71,6 +71,10 @@ public slots:
 
 	void updateData() override;
 
+	// Preserve / restore transient view state when upstream image content changes
+	void captureDerivedViewState() override;
+	void restoreDerivedViewState() override;
+
 private:
 	Ui::VolumeView* ui = nullptr;
 
@@ -117,6 +121,16 @@ private:
 	void updateSliceOutlineYZ(int cx);
 	void updateSliceOutlineXZ(int cy);
 	void updateSliceOutlineXY(int cz);
+
+	// Saved transient state used by capture/restore hooks
+	vtkSmartPointer<vtkCamera> m_savedCamera;
+	int m_savedSliceX = 0;
+	int m_savedSliceY = 0;
+	int m_savedSliceZ = 0;
+	bool m_savedSlicePlanesVisible = false;
+	vtkSmartPointer<vtkColorTransferFunction> m_savedActualColorTF;
+	vtkSmartPointer<vtkPiecewiseFunction> m_savedActualScalarOpacity;
+	bool m_hasSavedState = false;
 
 private slots:
 	// Full-signature observer to optionally abort the event

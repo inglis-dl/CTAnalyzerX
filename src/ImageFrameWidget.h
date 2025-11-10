@@ -90,6 +90,18 @@ public:
 public slots:
 	virtual void updateData() {};
 
+	// Refresh the rendering endpoint when the upstream image content changed
+	// but the input connection remains the same. Default implementation:
+	//  - captures main camera,
+	//  - calls captureDerivedViewState() (hook for derived classes to save slice/WL),
+	//  - updates m_imageData/pipeline (computeShiftScaleFromInput/cacheImageGeometry),
+	//  - restores camera and calls restoreDerivedViewState(),
+	//  - renders the result.
+	//
+	// Derived classes override captureDerivedViewState()/restoreDerivedViewState()
+	// to preserve view-specific state (current slice, window/level, etc.).
+	virtual void refreshEndpointFromUpstream();
+
 signals:
 	void viewOrientationChanged(ViewOrientation);
 	void interpolationChanged(Interpolation);
@@ -105,6 +117,11 @@ protected:
 	// Camera helpers with safe defaults (shared by derived classes).
 	virtual void resetCamera();
 	virtual void rotateCamera(double degrees) {}
+
+	// Hooks for derived classes to save/restore per-view transient state
+	// (slice number, window/level, mapping state). Default implementations are no-ops.
+	virtual void captureDerivedViewState() {}
+	virtual void restoreDerivedViewState() {}
 
 	// Hook from SelectionFrameWidget to gate VTK interactivity on selection
 	void onSelectionChanged(bool selected) override;

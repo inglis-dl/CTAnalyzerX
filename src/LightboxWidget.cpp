@@ -85,14 +85,25 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 	// Keep controller UI in sync when the active VolumeView emits windowLevelChanged
 	if (auto* vol = getVolumeView()) {
 		connect(vol, &VolumeView::windowLevelChanged, this, [this](double w, double l) {
+			// When a VolumeView resets WL (e.g. user pressed 'r' in Volume mode)
+			// we must propagate that reset to the controller, the bridge (volume),
+			// and all slice views so they stay synchronized.
+			if (m_propagatingWindowLevel) return;
+			m_propagatingWindowLevel = true;
+
+			// Update controller UI
 			if (m_wlController) {
-				// Prevent re-entrancy into our propagation handlers
-				const bool prev = m_propagatingWindowLevel;
-				m_propagatingWindowLevel = true;
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
-				m_propagatingWindowLevel = prev;
 			}
+
+			// Notify bridge (volume side) and all slices (native-domain mapping per slice)
+			if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
+			if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
+			if (auto* xz = getXZView()) xz->setWindowLevelNative(w, l);
+			if (auto* xy = getXYView()) xy->setWindowLevelNative(w, l);
+
+			m_propagatingWindowLevel = false;
 		}, Qt::UniqueConnection);
 	}
 

@@ -523,3 +523,42 @@ void ImageFrameWidget::cacheImageGeometry()
 	m_imageData->GetSpacing(m_spacing);
 	m_imageData->GetOrigin(m_origin);
 }
+
+void ImageFrameWidget::refreshEndpointFromUpstream()
+{
+	// Capture main camera state (deep copy) so we can restore it later.
+	vtkSmartPointer<vtkCamera> savedCam = nullptr;
+	if (m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			savedCam = vtkSmartPointer<vtkCamera>::New();
+			savedCam->DeepCopy(cam);
+		}
+	}
+
+	// Let derived classes capture view-specific state (slice index, WL, etc.)
+	captureDerivedViewState();
+
+	// Refresh pipeline metadata & internal image pointer
+	refreshImageDataFromPipeline();
+	if (m_imageData) {
+		// Recompute shift/scale mapping and update shared filter
+		computeShiftScaleFromInput();
+		if (m_shiftScaleFilter) m_shiftScaleFilter->Update();
+		// Cache extents/spacing/origin for derived views
+		cacheImageGeometry();
+	}
+
+	// Restore camera state if we captured it
+	if (savedCam && m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			cam->DeepCopy(savedCam);
+			m_renderer->ResetCameraClippingRange();
+		}
+	}
+
+	// Let derived classes restore their saved state (slice, WL, etc.)
+	restoreDerivedViewState();
+
+	// Final render
+	render();
+}

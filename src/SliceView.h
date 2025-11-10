@@ -30,6 +30,10 @@ public:
 	explicit SliceView(QWidget* parent = nullptr, ViewOrientation orientation = VIEW_ORIENTATION_XY);
 	~SliceView();
 
+	// Preserve / restore transient view state when upstream image content changes
+	void captureDerivedViewState() override;
+	void restoreDerivedViewState() override;
+
 	void setSliceIndex(int index);
 	int getSliceIndex() const;
 
@@ -80,6 +84,13 @@ private:
 	int m_currentSlice = 0;
 	int m_minSlice = 0;
 	int m_maxSlice = 0;
+
+	// Saved transient state used by capture/restore hooks
+	vtkSmartPointer<vtkCamera> m_savedCamera;
+	int m_savedSliceIndex = 0;
+	double m_savedMappedWindow = std::numeric_limits<double>::quiet_NaN();
+	double m_savedMappedLevel = std::numeric_limits<double>::quiet_NaN();
+	bool m_hasSavedState = false;
 
 	vtkSmartPointer<vtkInteractorStyleImage> interactorStyle;
 	vtkSmartPointer<vtkImageSliceMapper> sliceMapper;

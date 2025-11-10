@@ -447,6 +447,8 @@ void VolumeView::setColorWindowLevel(double window, double level)
 	updateMappedColorsFromActual();
 	m_volumeProperty->SetColor(m_colorTF);
 
+	setSliceWindowLevelNative(window, level);
+
 	render();
 
 	emit windowLevelChanged(window, level);
@@ -1164,3 +1166,85 @@ void VolumeView::updateSliceOutlineXY(int cz)
 	pts->Modified();
 	m_outlinePolyXY->Modified();
 }
+
+void VolumeView::captureDerivedViewState()
+{
+	// Save camera
+	m_savedCamera = nullptr;
+	if (m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			m_savedCamera = vtkSmartPointer<vtkCamera>::New();
+			m_savedCamera->DeepCopy(cam);
+		}
+	}
+
+	// Save current orthogonal slice indices (if mappers exist)
+	if (m_sliceMapperYZ) m_savedSliceX = static_cast<int>(m_sliceMapperYZ->GetSliceNumber());
+	if (m_sliceMapperXZ) m_savedSliceY = static_cast<int>(m_sliceMapperXZ->GetSliceNumber());
+	if (m_sliceMapperXY) m_savedSliceZ = static_cast<int>(m_sliceMapperXY->GetSliceNumber());
+
+	// Save visibility mode
+	m_savedSlicePlanesVisible = m_slicePlanesVisible;
+
+	// Save the "actual" TFs (native-domain WL/opacity). DeepCopy preserves user adjustments.
+	m_savedActualColorTF = vtkSmartPointer<vtkColorTransferFunction>::New();
+	if (m_actualColorTF) m_savedActualColorTF->DeepCopy(m_actualColorTF);
+	else m_savedActualColorTF = nullptr;
+
+	m_savedActualScalarOpacity = vtkSmartPointer<vtkPiecewiseFunction>::New();
+	if (m_actualScalarOpacity) m_savedActualScalarOpacity->DeepCopy(m_actualScalarOpacity);
+	else m_savedActualScalarOpacity = nullptr;
+
+	m_hasSavedState = true;
+}
+
+void VolumeView::restoreDerivedViewState()
+{
+	if (!m_hasSavedState) return;
+
+	// Restore TFs first so mapped TFs rebuild using current shift/scale
+	if (m_savedActualColorTF) {
+		if (!m_actualColorTF) m_actualColorTF = vtkSmartPointer<vtkColorTransferFunction>::New();
+		m_actualColorTF->DeepCopy(m_savedActualColorTF);
+	}
+	if (m_savedActualScalarOpacity) {
+		if (!m_actualScalarOpacity) m_actualScalarOpacity = vtkSmartPointer<vtkPiecewiseFunction>::New();
+		m_actualScalarOpacity->DeepCopy(m_savedActualScalarOpacity);
+	}
+
+	// Recompute mapped TFs using current shift/scale and attach to the volume property
+	updateMappedColorsFromActual();
+	updateMappedOpacityFromActual();
+	if (m_volumeProperty) {
+		m_volumeProperty->SetColor(m_colorTF);
+		m_volumeProperty->SetScalarOpacity(m_scalarOpacity);
+	}
+
+	// Restore slice indices on mappers (ensure mappers updated to avoid invalid ranges)
+	if (m_sliceMapperYZ) { m_sliceMapperYZ->SetSliceNumber(m_savedSliceX); m_sliceMapperYZ->Update(); }
+	if (m_sliceMapperXZ) { m_sliceMapperXZ->SetSliceNumber(m_savedSliceY); m_sliceMapperXZ->Update(); }
+	if (m_sliceMapperXY) { m_sliceMapperXY->SetSliceNumber(m_savedSliceZ); m_sliceMapperXY->Update(); }
+
+	// Update outlines to match restored slice positions
+	updateSliceOutlineXY(m_savedSliceZ);
+	updateSliceOutlineXZ(m_savedSliceY);
+	updateSliceOutlineYZ(m_savedSliceX);
+
+	// Restore slice-planes visibility if needed (this will also call render())
+	setSlicePlanesVisible(m_savedSlicePlanesVisible);
+
+	// Restore camera if captured (camera was also restored by base, ensure clipping)
+	if (m_savedCamera && m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			cam->DeepCopy(m_savedCamera);
+			m_renderer->ResetCameraClippingRange();
+		}
+	}
+
+	// If not already rendered by setSlicePlanesVisible above, ensure final render now.
+	if (!m_renderer) return;
+	render();
+
+	m_hasSavedState = false;
+}
+

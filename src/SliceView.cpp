@@ -764,6 +764,38 @@ void SliceView::resetWindowLevel()
 	render();
 }
 
+void SliceView::updateInteractorWindowLevelBaseline()
+{
+	// Update interactor style baseline to match the current image property WL
+	if (!m_imageData || !imageProperty || !interactorStyle) return;
+
+	interactorStyle->SetDefaultRenderer(m_renderer);
+	interactorStyle->SetCurrentRenderer(m_renderer);
+	interactorStyle->SetCurrentImageNumber(-1);
+	interactorStyle->StartWindowLevel();
+	interactorStyle->EndWindowLevel();
+}
+
+void SliceView::clearSharedImageProperty()
+{
+	// Create a fresh property preserving current mapped-domain WL/level
+	vtkSmartPointer<vtkImageProperty> newProp = vtkSmartPointer<vtkImageProperty>::New();
+
+	if (imageProperty) {
+		newProp->SetColorWindow(imageProperty->GetColorWindow());
+		newProp->SetColorLevel(imageProperty->GetColorLevel());
+		newProp->SetInterpolationType(imageProperty->GetInterpolationType());
+	}
+
+	// Apply the new property to our slice
+	imageSlice->SetProperty(newProp);
+	imageProperty = newProp;
+
+	// Update baseline in interactor style so 'r' restores to this new property
+	updateInteractorWindowLevelBaseline();
+	render();
+}
+
 void SliceView::onResetWindowLevel(vtkObject* /*obj*/)
 {
 	// Handle vtkInteractorStyleImage 'r'/'R' (no modifiers) using our retained baseline
@@ -942,36 +974,62 @@ void SliceView::setSharedImageProperty(vtkImageProperty* sharedProp)
 	render();
 }
 
-// new method: restore an independent imageProperty (fresh copy) if caller wants to un-link
-void SliceView::clearSharedImageProperty()
+void SliceView::captureDerivedViewState()
 {
-	// Create a fresh property preserving current mapped-domain WL/level
-	vtkSmartPointer<vtkImageProperty> newProp = vtkSmartPointer<vtkImageProperty>::New();
-	if (imageProperty) {
-		newProp->SetColorWindow(imageProperty->GetColorWindow());
-		newProp->SetColorLevel(imageProperty->GetColorLevel());
-		newProp->SetInterpolationType(imageProperty->GetInterpolationType());
-	}
-	// Apply the new property to our slice
-	imageSlice->SetProperty(newProp);
-	imageProperty = newProp;
+	// Save current slice index
+	m_savedSliceIndex = m_currentSlice;
 
-	// Update baseline in interactor style so 'r' restores to this new property
-	updateInteractorWindowLevelBaseline();
-	render();
+	// Save camera (deep copy)
+	m_savedCamera = nullptr;
+	if (m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			m_savedCamera = vtkSmartPointer<vtkCamera>::New();
+			m_savedCamera->DeepCopy(cam);
+		}
+	}
+
+	// Save current mapped-domain window/level from the image property (if present)
+	if (imageProperty) {
+		m_savedMappedWindow = imageProperty->GetColorWindow();
+		m_savedMappedLevel = imageProperty->GetColorLevel();
+	}
+	else {
+		m_savedMappedWindow = std::numeric_limits<double>::quiet_NaN();
+		m_savedMappedLevel = std::numeric_limits<double>::quiet_NaN();
+	}
+
+	m_hasSavedState = true;
 }
 
-// helper: ensure vtkInteractorStyleImage internal baseline values reflect imageProperty
-void SliceView::updateInteractorWindowLevelBaseline()
+void SliceView::restoreDerivedViewState()
 {
-	if (!m_renderWindow || !interactorStyle) return;
+	if (!m_hasSavedState) return;
 
-	// ensure style knows about this renderer and image
-	interactorStyle->SetDefaultRenderer(m_renderer);
-	interactorStyle->SetCurrentRenderer(m_renderer);
-	interactorStyle->SetCurrentImageNumber(-1);
+	// Ensure mapper ranges updated before clamping/setting slice index
+	if (sliceMapper) sliceMapper->Update();
+	updateSliceRange();
 
-	// Start/End to capture current imageProperty colors into the style's initial values
-	interactorStyle->StartWindowLevel();
-	interactorStyle->EndWindowLevel();
+	// Restore slice index (will update camera and UI)
+	setSliceIndex(std::clamp(m_savedSliceIndex, m_minSlice, m_maxSlice));
+
+	// Restore mapped WL to the image property and update interactor baseline
+	if (imageProperty && std::isfinite(m_savedMappedWindow) && std::isfinite(m_savedMappedLevel)) {
+		imageProperty->SetColorWindow(m_savedMappedWindow);
+		imageProperty->SetColorLevel(m_savedMappedLevel);
+		updateInteractorWindowLevelBaseline();
+	}
+
+	// Restore camera if we captured one (camera was also restored by base; ensure clipping range)
+	if (m_savedCamera && m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			cam->DeepCopy(m_savedCamera);
+			m_renderer->ResetCameraClippingRange();
+		}
+	}
+
+	// Trigger a render to reflect restored state
+	render();
+
+	// Clear saved flag
+	m_hasSavedState = false;
 }
