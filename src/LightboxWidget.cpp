@@ -162,8 +162,7 @@ void LightboxWidget::setDefaultImage()
 	sinusoid->SetDirection(0.5, -0.5, 1.0 / std::sqrt(2.0));
 	sinusoid->Update();
 
-	vtkImageData* defaultImage = sinusoid->GetOutput();
-	setImageData(defaultImage);
+	setInputConnection(sinusoid->GetOutputPort());
 }
 
 void LightboxWidget::setImageData(vtkImageData* image)
@@ -449,14 +448,6 @@ void LightboxWidget::setLinkedWindowLevel(bool linked)
 		// Create shared property and initialize from one of the views (prefer XY)
 		vtkSmartPointer<vtkImageProperty> shared = vtkSmartPointer<vtkImageProperty>::New();
 
-		// choose a baseline: prefer existing XY view mapped property if available
-		vtkImageProperty* src = nullptr;
-		if (xy && xy->imageData()) {
-			// access current mapped-domain property via the SliceView (helper: imageProperty is internal)
-			// We assume SliceView provides imageProperty access or expose a getter; otherwise sample from getXYView()->...
-			// We'll try reading from xy->imageProperty via a small accessor (if needed, add getter).
-		}
-
 		// Fallback: pick a sensible default
 		shared->SetColorWindow(1000.0);
 		shared->SetColorLevel(500.0);
@@ -491,5 +482,14 @@ void LightboxWidget::resetWindowLevel()
 	if (auto* vol = getVolumeView()) vol->resetWindowLevel();
 
 	m_propagatingWindowLevel = false;
+}
+
+void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port)
+{
+	// Forward to child views if they exist
+	if (ui.YZView) ui.YZView->setInputConnection(port);
+	if (ui.XZView) ui.XZView->setInputConnection(port);
+	if (ui.XYView) ui.XYView->setInputConnection(port);
+	if (ui.volumeView) ui.volumeView->setInputConnection(port);
 }
 

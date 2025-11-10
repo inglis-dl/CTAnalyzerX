@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <vtkAlgorithm.h>
 #include <vtkCamera.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
@@ -17,6 +18,9 @@
 #include <vtkActor.h>
 #include <vtkProperty.h>
 #include <vtkPropAssembly.h>
+#include <vtkAlgorithmOutput.h>
+#include <vtkDataObject.h>
+
 
 ImageFrameWidget::ImageFrameWidget(QWidget* parent)
 	: SelectionFrameWidget(parent)
@@ -56,6 +60,92 @@ ImageFrameWidget::ImageFrameWidget(QWidget* parent)
 }
 
 ImageFrameWidget::~ImageFrameWidget() = default;
+
+void ImageFrameWidget::setImageData(vtkImageData* image)
+{
+	if (!image) return;
+
+	m_shiftScaleFilter->SetInputData(image);
+	m_shiftScaleFilter->Update();
+	m_imageData = image;
+
+	updateData();
+}
+
+void ImageFrameWidget::setInputConnection(vtkAlgorithmOutput* port)
+{
+	// Avoid duplicate wiring: if the shift/scale filter is already connected to the same port,
+	// do nothing. This prevents the "called twice" behavior when multiple owners try to set
+	// the same connection (e.g., MainWindow wiring + child widgets wiring).
+	if (m_shiftScaleFilter) {
+		vtkAlgorithmOutput* cur = m_shiftScaleFilter->GetInputConnection(0, 0);
+		if (cur == port) {
+			// already connected to this exact port -> no-op
+			return;
+		}
+		m_shiftScaleFilter->SetInputConnection(port);
+
+		// Ensure the filter's information and data are up-to-date immediately after rewiring.
+		// This lets downstream mappers (e.g., vtkImageSliceMapper) query extents/slice ranges
+		// reliably during the same call sequence (avoids transient 0/-1 ranges).
+		// UpdateInformation first to refresh meta-data (extent, spacing, scalar type),
+		// then Update() to produce any cached data objects if needed.
+		m_shiftScaleFilter->UpdateInformation();
+		m_shiftScaleFilter->Update();
+	}
+
+	// Cache upstream producer (if any) and refresh m_imageData to reflect upstream.
+	if (port) {
+		vtkAlgorithm* prod = port->GetProducer();
+		m_upstreamProducer = prod;
+	}
+	else {
+		m_upstreamProducer = nullptr;
+	}
+
+	// Ensure m_imageData points to the pre-shift/scale upstream image (if available)
+	refreshImageDataFromPipeline();
+
+	// mark image as initialized and trigger data update/render
+	//m_imageInitialized = (port != nullptr);
+	updateData(); // derived classes override updateData() to pull whatever they need
+}
+
+void ImageFrameWidget::refreshImageDataFromPipeline()
+{
+	// Prefer the actual upstream producer's output (pre-shift/scale).
+	vtkDataObject* inObj = nullptr;
+
+	// 1) If we have an upstream producer cached, ask it for output (ensure produced).
+	if (m_upstreamProducer) {
+		// Ensure the producer has published its information (extent/spacing/scalar type).
+		// UpdateInformation is cheaper and avoids producing full data; it is the correct call
+		// when consumers only need metadata (e.g., extents) to configure mappers/cameras.
+		m_upstreamProducer->UpdateInformation();
+
+		// If necessary, callers may force a full Update() elsewhere when they require the actual data.
+		inObj = m_upstreamProducer->GetOutputDataObject(0);
+	}
+
+	// 2) If there was no upstream producer or it produced no vtkDataObject,
+	//    check whether m_shiftScaleFilter has raw input data (SetInputData path).
+	if (!inObj && m_shiftScaleFilter) {
+		// Ensure the shared shift/scale filter has published its information too.
+		// This helps downstream mappers that read from the filter's output port.
+		m_shiftScaleFilter->UpdateInformation();
+
+		// Prefer the filter's output object if the filter has produced one, otherwise fall back to its input.
+		inObj = m_shiftScaleFilter->GetOutputDataObject(0);
+		if (!inObj) {
+			inObj = m_shiftScaleFilter->GetInputDataObject(0, 0);
+			// clear cached producer since this path means input was provided directly
+			if (inObj) m_upstreamProducer = nullptr;
+		}
+	}
+
+	// 3) Cast to vtkImageData if possible; m_imageData is used elsewhere expecting the upstream image.
+	m_imageData = vtkImageData::SafeDownCast(inObj);
+}
 
 void ImageFrameWidget::ensureOrientationMarkerInitialized()
 {
@@ -262,6 +352,27 @@ ImageFrameWidget::ViewOrientation ImageFrameWidget::labelToOrientation(const QSt
 	return m_viewOrientation; // no change on unknown label
 }
 
+// Helper: obtain the vtkImageData produced by whatever is connected to our shift/scale input.
+// Returns nullptr if there is no upstream connection or the produced data is not vtkImageData.
+vtkImageData* ImageFrameWidget::upstreamInputImage() const
+{
+	if (!m_shiftScaleFilter) return nullptr;
+
+	// Get the first input connection on port 0 (common case)
+	vtkAlgorithmOutput* inPort = m_shiftScaleFilter->GetInputConnection(0, 0);
+	if (!inPort) return nullptr;
+
+	vtkAlgorithm* producer = inPort->GetProducer();
+	if (!producer) return nullptr;
+
+	// Ensure producer has produced its output (may be a source or pipeline element)
+	producer->Update();
+
+	// Get the actual output data object and cast to vtkImageData
+	vtkDataObject* outObj = producer->GetOutputDataObject(0);
+	return vtkImageData::SafeDownCast(outObj);
+}
+
 void ImageFrameWidget::computeShiftScaleFromInput()
 {
 	if (!m_imageData) return;
@@ -310,10 +421,8 @@ void ImageFrameWidget::computeShiftScaleFromInput()
 	}
 
 	// Program the shared filter
-	m_shiftScaleFilter->SetOutputScalarTypeToUnsignedShort();
 	m_shiftScaleFilter->SetShift(m_scalarShift);
 	m_shiftScaleFilter->SetScale(m_scalarScale);
-	m_shiftScaleFilter->SetInputData(m_imageData);
 	m_shiftScaleFilter->Update();
 }
 

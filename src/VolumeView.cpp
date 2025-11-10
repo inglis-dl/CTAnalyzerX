@@ -69,6 +69,7 @@ VolumeView::VolumeView(QWidget* parent)
 	m_mapper = vtkSmartPointer<vtkGPUVolumeRayCastMapper>::New();
 	m_mapper->SetBlendModeToComposite();
 	m_mapper->SetAutoAdjustSampleDistances(1);
+	m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
 	m_volumeProperty = vtkSmartPointer<vtkVolumeProperty>::New();
 	m_volumeProperty->ShadeOff();
@@ -106,9 +107,12 @@ VolumeView::VolumeView(QWidget* parent)
 	m_imageSliceXY->SetMapper(m_sliceMapperXY);
 
 	// Default interpolation for slice actors
-	if (m_imageSliceYZ->GetProperty()) m_imageSliceYZ->GetProperty()->SetInterpolationTypeToLinear();
-	if (m_imageSliceXZ->GetProperty()) m_imageSliceXZ->GetProperty()->SetInterpolationTypeToLinear();
-	if (m_imageSliceXY->GetProperty()) m_imageSliceXY->GetProperty()->SetInterpolationTypeToLinear();
+	auto prop = m_imageSliceYZ->GetProperty();
+	if (prop) prop->SetInterpolationTypeToLinear();
+	prop = m_imageSliceXZ->GetProperty();
+	if (prop) prop->SetInterpolationTypeToLinear();
+	prop = m_imageSliceXY->GetProperty();
+	if (prop) prop->SetInterpolationTypeToLinear();
 
 	createSliceOutlineActors();
 
@@ -122,6 +126,10 @@ VolumeView::VolumeView(QWidget* parent)
 		m_qvtk->Connect(m_renderer->GetActiveCamera(), vtkCommand::ModifiedEvent,
 			this, SLOT(onCameraModified(vtkObject*)), nullptr);
 	}
+
+	m_sliceMapperYZ->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	m_sliceMapperXZ->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	m_sliceMapperXY->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 }
 
 VolumeView::~VolumeView()
@@ -192,24 +200,32 @@ void VolumeView::initializeDefaultTransferFunctions()
 	m_volumeProperty->SetScalarOpacity(m_scalarOpacity);
 }
 
-void VolumeView::setImageData(vtkImageData* image)
+void VolumeView::updateData()
 {
-	if (!image) return;
+	if (!m_imageData) return;
 
-	m_imageData = image;
+	m_shiftScaleFilter->Update();
 
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput();
 	cacheImageGeometry();
 
-	// TODO: attach ImageResliceHelper here to route post-shift/scale -> reslice -> mapper when integrating reslice workflow.
-	//       e.g. helper->SetInputConnection(m_shiftScaleFilter->GetOutputPort()); mapper->SetInputConnection(helper->GetOutputPort());
-	//
-	// Feed orthogonal vtkImageSlice mappers from the post-shift/scale output so they can be shown in 3D mode.
-	m_sliceMapperYZ->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-	m_sliceMapperXZ->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-	m_sliceMapperXY->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-
+	/*
+	qDebug() << "[VolumeView::updateData] m_imageData =" << static_cast<void*>(m_imageData);
+	int dims[3] = { 0,0,0 };
+	if (m_imageData) m_imageData->GetDimensions(dims);
+	qDebug() << "[VolumeView::updateData] dims =" << dims[0] << dims[1] << dims[2];
+	qDebug() << "[VolumeView::updateData] extent =" << m_extent[0] << m_extent[1] << m_extent[2] << m_extent[3] << m_extent[4] << m_extent[5];
+	qDebug() << "[VolumeView::updateData] spacing =" << m_spacing[0] << m_spacing[1] << m_spacing[2];
+	qDebug() << "[VolumeView::updateData] origin =" << m_origin[0] << m_origin[1] << m_origin[2];
+	double bounds[6] = { 0,0,0,0,0,0 };
+	if (m_shiftScaleFilter && m_shiftScaleFilter->GetOutput()) m_shiftScaleFilter->GetOutput()->GetBounds(bounds);
+	qDebug() << "[VolumeView::updateData] shiftScale output bounds =" << bounds[0] << bounds[1] << bounds[2] << bounds[3] << bounds[4] << bounds[5];
+	if (m_sliceMapperYZ) { m_sliceMapperYZ->Update(); qDebug() << "sliceMapperYZ range:" << m_sliceMapperYZ->GetSliceNumberMinValue() << m_sliceMapperYZ->GetSliceNumberMaxValue(); }
+	if (m_sliceMapperXZ) { m_sliceMapperXZ->Update(); qDebug() << "sliceMapperXZ range:" << m_sliceMapperXZ->GetSliceNumberMinValue() << m_sliceMapperXZ->GetSliceNumberMaxValue(); }
+	if (m_sliceMapperXY) { m_sliceMapperXY->Update(); qDebug() << "sliceMapperXY range:" << m_sliceMapperXY->GetSliceNumberMinValue() << m_sliceMapperXY->GetSliceNumberMaxValue(); }
+	qDebug() << "[VolumeView::updateData] m_imageInitialized =" << m_imageInitialized;
+	*/
 	// Ensure mapper orientation matches canonical axes (X normal => YZ plane, etc.)
 	m_sliceMapperYZ->SetOrientationToX();
 	m_sliceMapperXZ->SetOrientationToY();
@@ -224,7 +240,6 @@ void VolumeView::setImageData(vtkImageData* image)
 	const int cz = (m_extent[4] + m_extent[5]) / 2;
 
 	if (!m_imageInitialized) {
-		m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
 		//
 		// Add slices to the scene but keep them invisible until slicePlanesVisible is true.
@@ -354,10 +369,9 @@ void VolumeView::setImageData(vtkImageData* image)
 
 	setSlicePlanesVisible(m_slicePlanesVisible);
 	render();
-}
 
-void VolumeView::updateData()
-{
+
+	/*
 	m_shiftScaleFilter->Update();
 	m_mapper->Update();
 
@@ -399,6 +413,7 @@ void VolumeView::updateData()
 	emit imageExtentsChanged(extent[0], extent[1], extent[2], extent[3], extent[4], extent[5]);
 
 	render();
+	*/
 }
 
 void VolumeView::setColorWindowLevel(double window, double level)

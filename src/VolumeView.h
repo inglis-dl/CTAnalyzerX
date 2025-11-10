@@ -36,7 +36,6 @@ public:
 	explicit VolumeView(QWidget* parent = nullptr);
 	~VolumeView();
 
-	void setImageData(vtkImageData* image) override;
 	void setInterpolation(Interpolation newInterpolation) override;
 
 	void setViewOrientation(ViewOrientation orientation) override;

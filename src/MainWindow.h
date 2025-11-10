@@ -27,7 +27,6 @@ public:
 
 protected:
 	void keyPressEvent(QKeyEvent* event) override;
-	void showEvent(QShowEvent* event) override;
 	void dragEnterEvent(QDragEnterEvent* event) override;
 	void dropEvent(QDropEvent* event) override;
 
@@ -44,7 +43,6 @@ private slots:
 
 private:
 	void setupPanelConnections();
-	void loadVolume(vtkSmartPointer<vtkImageData> imageData);
 	void addToRecentFiles(const QString& filePath);
 	void updateRecentFilesMenu();
 	void loadRecentFiles();
@@ -55,7 +53,7 @@ private:
 	QStringList recentFiles;
 	vtkSmartPointer<vtkImageData> currentImageData;
 	vtkSmartPointer<vtkEventQtSlotConnect> vtkConnections;
-	vtkSmartPointer<ImageLoader> imageLoader = nullptr;
+	vtkSmartPointer<ImageLoader> m_imageLoader = nullptr;
 	QProgressBar* progressBar = nullptr;
 	bool defaultImageLoaded = false;
 

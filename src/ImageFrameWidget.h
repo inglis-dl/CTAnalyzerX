@@ -10,8 +10,9 @@ class vtkRenderer;
 class vtkGenericOpenGLRenderWindow;
 class vtkRenderWindow;
 class vtkImageShiftScale;
-
-// forward-declare VTK classes used by the orientation marker
+class vtkAlgorithmOutput;
+class vtkAlgorithm;
+class vtkDataObject;
 class vtkOrientationMarkerWidget;
 class vtkActor;
 class vtkPropAssembly;
@@ -61,8 +62,12 @@ public:
 	Q_INVOKABLE void setInterpolationToCubic() { setInterpolation(Cubic); };
 
 	// Common image setter: stores the image then calls the derived hook.
-	virtual void setImageData(vtkImageData* image) {};
+	virtual void setImageData(vtkImageData* image);
 	vtkImageData* imageData() const { return m_imageData; }
+
+	// Pipeline-aware setter: attach a producer port to this view's internal pipeline.
+	// Default implementation connects the port to `m_shiftScaleFilter`.
+	virtual void setInputConnection(vtkAlgorithmOutput* port);
 
 	// Abstract hook: views implement with their own pipeline logic
 	// The bus uses native domain (original image scalar domain).
@@ -155,5 +160,17 @@ protected:
 	int m_extent[6];
 	double m_spacing[3];
 	double m_origin[3];
+
+	vtkImageData* upstreamInputImage() const;
+
+private:
+
+	// Keep a reference to the upstream producer so its output port stays valid.
+	vtkSmartPointer<vtkAlgorithm> m_upstreamProducer;
+
+	// Synchronize m_imageData with whatever is connected to m_shiftScaleFilter.
+	// This will set m_imageData to the vtkImageData produced by the upstream producer
+	// or the raw input data object if SetInputData was used.
+	void refreshImageDataFromPipeline();
 };
 

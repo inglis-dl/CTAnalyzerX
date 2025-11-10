@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <QDebug>
 
+#include <vtkAlgorithmOutput.h>
 #include <vtkRenderWindow.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkRenderer.h>
@@ -101,7 +102,7 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 
 	// Initialize slice mapper and image slice
 	sliceMapper = vtkSmartPointer<vtkImageSliceMapper>::New();
-	sliceMapper->StreamingOn();
+	//sliceMapper->StreamingOn();
 
 	imageSlice = vtkSmartPointer<vtkImageSlice>::New();
 	imageSlice->SetMapper(sliceMapper);
@@ -385,10 +386,11 @@ void SliceView::rotateCamera(double degrees)
 	}
 }
 
-void SliceView::setImageData(vtkImageData* image) {
-	if (!image) return;
+void SliceView::updateData()
+{
+	if (!m_imageData) return;
 
-	m_imageData = image;
+	m_shiftScaleFilter->Update();
 
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput();
@@ -434,23 +436,6 @@ void SliceView::setImageData(vtkImageData* image) {
 	imageProperty->SetColorWindow(mappedWindow);
 	imageProperty->SetColorLevel(mappedLevel);
 
-	// Prime the interactor style so 'r' resets to this baseline WL.
-	if (auto* iren = m_renderWindow->GetInteractor()) {
-		if (auto* style = vtkInteractorStyleImage::SafeDownCast(iren->GetInteractorStyle())) {
-			// Ensure the style can find the image and property
-			style->SetDefaultRenderer(m_renderer);
-			style->SetCurrentRenderer(m_renderer);
-
-			// Force the style to (re)scan the renderer's image props so CurrentImageProperty is valid.
-			// Use -1 to mean "last/topmost" like the style's logic expects.
-			style->SetCurrentImageNumber(-1);
-
-			// This captures imageProperty->GetColorWindow/Level() into WindowLevelInitial
-			style->StartWindowLevel();
-			style->EndWindowLevel();
-		}
-	}
-
 	// Set camera and show a valid slice immediately (center)
 	updateCamera();
 
@@ -459,22 +444,15 @@ void SliceView::setImageData(vtkImageData* image) {
 
 	// set the slice mapper slice
 	setSliceIndex(m_currentSlice);
-}
 
-void SliceView::updateData()
-{
-	m_shiftScaleFilter->Update();
-
-	imageSlice->Modified();
-	imageSlice->Update();
-
-	updateSliceRange();
-
-	// Set camera and show a valid slice immediately (center)
-	updateCamera();
-	setSliceIndex((m_minSlice + m_maxSlice) / 2);
-
-	render();
+	/*
+	qDebug() << "[SliceView::updateData] m_imageData =" << static_cast<void*>(m_imageData);
+	qDebug() << "[SliceView::updateData] extent =" << m_extent[0] << m_extent[1] << m_extent[2] << m_extent[3] << m_extent[4] << m_extent[5];
+	qDebug() << "[SliceView::updateData] spacing =" << m_spacing[0] << m_spacing[1] << m_spacing[2];
+	qDebug() << "[SliceView::updateData] origin =" << m_origin[0] << m_origin[1] << m_origin[2];
+	if (sliceMapper) { sliceMapper->Update(); qDebug() << "[SliceView::updateData] mapper range:" << sliceMapper->GetSliceNumberMinValue() << sliceMapper->GetSliceNumberMaxValue(); }
+	qDebug() << "[SliceView::updateData] imageSlice added to renderer?" << (m_renderer && imageSlice ? m_renderer->HasViewProp(imageSlice) : false);
+	*/
 }
 
 void SliceView::updateCamera() {
@@ -565,11 +543,11 @@ void SliceView::updateSliceRange() {
 	if (!sliceMapper || sliceMapper->GetNumberOfInputConnections(0) == 0)
 		return;
 
-	// Make sure information is current so min/max are valid
-	sliceMapper->Update();
-
 	m_minSlice = sliceMapper->GetSliceNumberMinValue();
 	m_maxSlice = sliceMapper->GetSliceNumberMaxValue();
+
+	// Ensure current slice is inside the recovered/valid range
+	m_currentSlice = std::clamp(m_currentSlice, m_minSlice, m_maxSlice);
 
 	ui->sliderSlicePosition->setMinimum(m_minSlice);
 	ui->sliderSlicePosition->setMaximum(m_maxSlice);
@@ -599,7 +577,6 @@ void SliceView::updateSlice() {
 	if (!m_imageData) return;
 
 	sliceMapper->SetSliceNumber(m_currentSlice);
-	sliceMapper->Update();
 
 	int u = 0, v = 1, w = m_viewOrientation;
 	switch (w)

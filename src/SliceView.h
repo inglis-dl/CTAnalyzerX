@@ -30,7 +30,6 @@ public:
 	explicit SliceView(QWidget* parent = nullptr, ViewOrientation orientation = VIEW_ORIENTATION_XY);
 	~SliceView();
 
-	void setImageData(vtkImageData* image) override;
 	void setSliceIndex(int index);
 	int getSliceIndex() const;
 

@@ -91,20 +91,20 @@ MainWindow::MainWindow(QWidget* parent)
 	connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::onActionAbout);
 	connect(ui->actionScreenshot, &QAction::triggered, this, &MainWindow::saveScreenshot);
 
-	imageLoader = vtkSmartPointer<ImageLoader>::New();
+	m_imageLoader = vtkSmartPointer<ImageLoader>::New();
 
 	vtkConnections = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 
 	vtkConnections->Connect(
-	imageLoader, vtkCommand::StartEvent,
+	m_imageLoader, vtkCommand::StartEvent,
 	this, SLOT(onVtkStartEvent()));
 
 	vtkConnections->Connect(
-		imageLoader, vtkCommand::EndEvent,
+		m_imageLoader, vtkCommand::EndEvent,
 		this, SLOT(onVtkEndEvent()));
 
 	vtkConnections->Connect(
-		imageLoader, vtkCommand::ProgressEvent,
+		m_imageLoader, vtkCommand::ProgressEvent,
 		this, SLOT(onVtkProgressEvent()));
 
 	// Create volume rotation widget and insert into control panel if space exists
@@ -114,14 +114,7 @@ MainWindow::MainWindow(QWidget* parent)
 		ui->controlPanelLayout->addWidget(m_volumeRotationWidget);
 	}
 
-	// Respond to resliceReady emitted by the rotation widget so the lightbox updates
-	// when the widget's internal helper produces a resliced image (use unique connection)
-	connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceReady, this, [this](vtkImageData* img) {
-		if (img && ui->lightboxWidget) {
-			ui->lightboxWidget->setImageData(img);
-		}
-	}, Qt::UniqueConnection);
-
+	/*
 	// When the user explicitly applies a downsample, notify child ImageFrameWidget instances
 	// so they can re-check their vtkImageData and reconfigure (updateData()).
 	connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceApplied, this, [this]() {
@@ -131,7 +124,7 @@ MainWindow::MainWindow(QWidget* parent)
 		if (auto* xy = ui->lightboxWidget->getXYView()) xy->updateData();
 		if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
 	}, Qt::UniqueConnection);
-
+	*/
 	setupPanelConnections();
 
 	loadRecentFiles();
@@ -142,27 +135,6 @@ MainWindow::~MainWindow()
 	saveRecentFiles();
 	delete ui;
 	// m_volumeRotationWidget has parent this and will be deleted automatically
-}
-
-void MainWindow::loadVolume(vtkSmartPointer<vtkImageData> imageData)
-{
-	currentImageData = imageData;
-	if (!imageData || imageData->GetDimensions()[0] <= 1 ||
-		imageData->GetDimensions()[1] <= 1 ||
-		imageData->GetDimensions()[2] <= 1) {
-		// If image is invalid, set default image in LightboxWidget
-		ui->lightboxWidget->setDefaultImage();
-	}
-	else {
-		// Delegate reslicing to VolumeRotationWidget which owns the reslice helper.
-		if (m_volumeRotationWidget) {
-			m_volumeRotationWidget->SetInputData(imageData);
-			return; // widget will emit resliceReady to update lightbox when available
-		}
-
-		// Fallback: pass original image if rotation widget unavailable
-		ui->lightboxWidget->setImageData(imageData);
-	}
 }
 
 void MainWindow::onActionOpen()
@@ -294,8 +266,6 @@ void MainWindow::setupPanelConnections()
 					Qt::UniqueConnection);
 		}
 	}
-
-	// NOTE: signal wiring between controller <-> bridge <-> views happens inside LightboxWidget.
 }
 
 void MainWindow::addToRecentFiles(const QString& filePath)
@@ -409,19 +379,19 @@ void MainWindow::openFile(const QString& filePath)
 	// Set image type based on extension
 	QString lower = filePath.toLower();
 	if (lower.endsWith(".isq")) {
-		imageLoader->SetImageType(ImageLoader::ImageType::ScancoISQ);
+		m_imageLoader->SetImageType(ImageLoader::ImageType::ScancoISQ);
 	}
 	else if (lower.endsWith(".dcm") || lower.endsWith(".dicom")) {
-		imageLoader->SetImageType(ImageLoader::ImageType::DICOM);
+		m_imageLoader->SetImageType(ImageLoader::ImageType::DICOM);
 	}
 
-	imageLoader->SetInputPath(filePath);
+	m_imageLoader->SetInputPath(filePath);
 
 	// Try to load the image with detailed error feedback
 	vtkSmartPointer<vtkImageData> vtkImage;
 	try {
-		imageLoader->Update();
-		vtkImage = imageLoader->GetOutput();
+		m_imageLoader->Update();
+		vtkImage = m_imageLoader->GetOutput();
 		if (!vtkImage) {
 			QMessageBox::critical(this, "Unsupported or Invalid File",
 				QString("Failed to load volume. The file may be corrupted, empty, or in an unsupported format.\n\nFile: %1").arg(filePath));
@@ -440,13 +410,44 @@ void MainWindow::openFile(const QString& filePath)
 		return;
 	}
 
-	// Display the loaded image
-	loadVolume(vtkImage);
+	if (vtkImage->GetDimensions()[0] <= 1 ||
+		vtkImage->GetDimensions()[1] <= 1 ||
+		vtkImage->GetDimensions()[2] <= 1) {
+		QMessageBox::critical(this, "Invalid Volume Data",
+			QString("The loaded volume has invalid dimensions and cannot be displayed.\n\nFile: %1").arg(filePath));
 
-	// Update recent files list
-	addToRecentFiles(filePath);
+		ui->lightboxWidget->setDefaultImage();
+		if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
+	}
+	else if (m_volumeRotationWidget) {
 
-	saveRecentFiles();
+		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort());
+		/*
+		// enable operational mode before attaching the pipeline
+		m_volumeRotationWidget->setOperational(true);
+
+		m_volumeRotationWidget->setInputConnection(m_imageLoader->GetOutputPort());
+
+		ui->lightboxWidget->setInputConnection(m_volumeRotationWidget->getOutputPort());
+		*/
+		/*
+		// pipeline mode: ask views to refresh when rotation widget updates the reslice
+		connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceReady, this, [this]() {
+			if (!ui->lightboxWidget) return;
+			if (auto* yz = ui->lightboxWidget->getYZView()) yz->updateData();
+			if (auto* xz = ui->lightboxWidget->getXZView()) xz->updateData();
+			if (auto* xy = ui->lightboxWidget->getXYView()) xy->updateData();
+			if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
+		}, Qt::UniqueConnection);
+		*/
+		// Update recent files list
+		addToRecentFiles(filePath);
+		saveRecentFiles();
+	}
+	else {
+		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort());
+		if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
+	}
 }
 
 void MainWindow::saveScreenshot()
@@ -456,18 +457,6 @@ void MainWindow::saveScreenshot()
 	if (!filePath.isEmpty()) {
 		screenshot.save(filePath);
 		QMessageBox::information(this, "Screenshot Saved", "Saved to:\n" + filePath);
-	}
-}
-
-void MainWindow::showEvent(QShowEvent* event)
-{
-	QMainWindow::showEvent(event);
-
-	if (!defaultImageLoaded) {
-		if (ui->lightboxWidget) {
-			ui->lightboxWidget->setDefaultImage();
-		}
-		defaultImageLoaded = true;
 	}
 }
 
@@ -485,8 +474,8 @@ void MainWindow::onVtkEndEvent()
 
 void MainWindow::onVtkProgressEvent()
 {
-	if (!imageLoader) return;
-	double progress = imageLoader->GetProgress(); // vtkAlgorithm::GetProgress()
+	if (!m_imageLoader) return;
+	double progress = m_imageLoader->GetProgress(); // vtkAlgorithm::GetProgress()
 	progressBar->setValue(static_cast<int>(progress * 100));
 	progressBar->setVisible(true);
 }
