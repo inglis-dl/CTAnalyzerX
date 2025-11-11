@@ -124,9 +124,10 @@ private:
 
 	// Saved transient state used by capture/restore hooks
 	vtkSmartPointer<vtkCamera> m_savedCamera;
-	int m_savedSliceX = 0;
-	int m_savedSliceY = 0;
-	int m_savedSliceZ = 0;
+	// store each orthogonal slice as a 3D world coordinate (point on the plane)
+	double m_savedSliceWorldX[3] = { 0.0, 0.0, 0.0 }; // X-normal plane (YZ) world point
+	double m_savedSliceWorldY[3] = { 0.0, 0.0, 0.0 }; // Y-normal plane (XZ) world point
+	double m_savedSliceWorldZ[3] = { 0.0, 0.0, 0.0 }; // Z-normal plane (XY) world point
 	bool m_savedSlicePlanesVisible = false;
 	vtkSmartPointer<vtkColorTransferFunction> m_savedActualColorTF;
 	vtkSmartPointer<vtkPiecewiseFunction> m_savedActualScalarOpacity;

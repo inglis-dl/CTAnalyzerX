@@ -34,6 +34,8 @@
 #include <vtkPolyDataMapper.h>
 #include <vtkActor.h>
 
+#include <cmath> // added for std::lround
+
 
 VolumeView::VolumeView(QWidget* parent)
 	: ImageFrameWidget(parent)
@@ -1169,7 +1171,10 @@ void VolumeView::updateSliceOutlineXY(int cz)
 
 void VolumeView::captureDerivedViewState()
 {
-	// Save camera
+	// If no image, nothing to capture
+	if (!m_imageData) return;
+
+	// Save camera (deep copy)
 	m_savedCamera = nullptr;
 	if (m_renderer) {
 		if (auto* cam = m_renderer->GetActiveCamera()) {
@@ -1178,15 +1183,45 @@ void VolumeView::captureDerivedViewState()
 		}
 	}
 
-	// Save current orthogonal slice indices (if mappers exist)
-	if (m_sliceMapperYZ) m_savedSliceX = static_cast<int>(m_sliceMapperYZ->GetSliceNumber());
-	if (m_sliceMapperXZ) m_savedSliceY = static_cast<int>(m_sliceMapperXZ->GetSliceNumber());
-	if (m_sliceMapperXY) m_savedSliceZ = static_cast<int>(m_sliceMapperXY->GetSliceNumber());
+	// Compute a robust in-plane center using image bounds
+	double bounds[6]; m_imageData->GetBounds(bounds);
+	const double centerX = 0.5 * (bounds[0] + bounds[1]);
+	const double centerY = 0.5 * (bounds[2] + bounds[3]);
+	const double centerZ = 0.5 * (bounds[4] + bounds[5]);
 
-	// Save visibility mode
+	// Determine integer slice indices (fall back to center index if mapper absent)
+	int ix = (m_sliceMapperYZ) ? static_cast<int>(m_sliceMapperYZ->GetSliceNumber())
+		: static_cast<int>((m_extent[0] + m_extent[1]) / 2);
+	int iy = (m_sliceMapperXZ) ? static_cast<int>(m_sliceMapperXZ->GetSliceNumber())
+		: static_cast<int>((m_extent[2] + m_extent[3]) / 2);
+	int iz = (m_sliceMapperXY) ? static_cast<int>(m_sliceMapperXY->GetSliceNumber())
+		: static_cast<int>((m_extent[4] + m_extent[5]) / 2);
+
+	// Save three world points (one for each orthogonal plane). Use vtkImageData transforms.
+	// X-normal (YZ plane): use ix, centerY/centerZ -> need integer center indices for Y/Z
+	int cyIdx = static_cast<int>(std::lround((centerY - m_origin[1]) / (m_spacing[1] != 0.0 ? m_spacing[1] : 1.0)));
+	int czIdx = static_cast<int>(std::lround((centerZ - m_origin[2]) / (m_spacing[2] != 0.0 ? m_spacing[2] : 1.0)));
+	{
+		int ijk[3] = { ix, cyIdx, czIdx };
+		m_imageData->TransformIndexToPhysicalPoint(ijk, m_savedSliceWorldX);
+	}
+
+	// Y-normal (XZ)
+	int cxIdx = static_cast<int>(std::lround((centerX - m_origin[0]) / (m_spacing[0] != 0.0 ? m_spacing[0] : 1.0)));
+	{
+		int ijk[3] = { cxIdx, iy, czIdx };
+		m_imageData->TransformIndexToPhysicalPoint(ijk, m_savedSliceWorldY);
+	}
+
+	// Z-normal (XY)
+	{
+		int ijk[3] = { cxIdx, cyIdx, iz };
+		m_imageData->TransformIndexToPhysicalPoint(ijk, m_savedSliceWorldZ);
+	}
+
+	// Save visibility mode and TFs
 	m_savedSlicePlanesVisible = m_slicePlanesVisible;
 
-	// Save the "actual" TFs (native-domain WL/opacity). DeepCopy preserves user adjustments.
 	m_savedActualColorTF = vtkSmartPointer<vtkColorTransferFunction>::New();
 	if (m_actualColorTF) m_savedActualColorTF->DeepCopy(m_actualColorTF);
 	else m_savedActualColorTF = nullptr;
@@ -1220,28 +1255,88 @@ void VolumeView::restoreDerivedViewState()
 		m_volumeProperty->SetScalarOpacity(m_scalarOpacity);
 	}
 
-	// Restore slice indices on mappers (ensure mappers updated to avoid invalid ranges)
-	if (m_sliceMapperYZ) { m_sliceMapperYZ->SetSliceNumber(m_savedSliceX); m_sliceMapperYZ->Update(); }
-	if (m_sliceMapperXZ) { m_sliceMapperXZ->SetSliceNumber(m_savedSliceY); m_sliceMapperXZ->Update(); }
-	if (m_sliceMapperXY) { m_sliceMapperXY->SetSliceNumber(m_savedSliceZ); m_sliceMapperXY->Update(); }
+	// Ensure mappers have up-to-date ranges
+	if (m_sliceMapperYZ) m_sliceMapperYZ->Update();
+	if (m_sliceMapperXZ) m_sliceMapperXZ->Update();
+	if (m_sliceMapperXY) m_sliceMapperXY->Update();
+
+	// Convert saved world points -> continuous indices and round to nearest index per axis.
+	auto indexFromWorld = [this](int axis, const double world[3], int minVal, int maxVal) -> int {
+		double cont[3] = { 0.0, 0.0, 0.0 };
+		m_imageData->TransformPhysicalPointToContinuousIndex(world, cont);
+		double sp = (m_spacing[axis] != 0.0) ? m_spacing[axis] : 1.0; // spacing used only for fallback
+		int idx = static_cast<int>(std::lround(cont[axis]));
+		return std::clamp(idx, minVal, maxVal);
+		};
+
+	// X-normal plane -> index along X
+	if (m_sliceMapperYZ) {
+		const int minIdx = m_sliceMapperYZ->GetSliceNumberMinValue();
+		const int maxIdx = m_sliceMapperYZ->GetSliceNumberMaxValue();
+		int ix = indexFromWorld(0, m_savedSliceWorldX, minIdx, maxIdx);
+		m_sliceMapperYZ->SetSliceNumber(ix);
+		m_sliceMapperYZ->Update();
+	}
+	// Y-normal -> Y index
+	if (m_sliceMapperXZ) {
+		const int minIdx = m_sliceMapperXZ->GetSliceNumberMinValue();
+		const int maxIdx = m_sliceMapperXZ->GetSliceNumberMaxValue();
+		int iy = indexFromWorld(1, m_savedSliceWorldY, minIdx, maxIdx);
+		m_sliceMapperXZ->SetSliceNumber(iy);
+		m_sliceMapperXZ->Update();
+	}
+	// Z-normal -> Z index
+	if (m_sliceMapperXY) {
+		const int minIdx = m_sliceMapperXY->GetSliceNumberMinValue();
+		const int maxIdx = m_sliceMapperXY->GetSliceNumberMaxValue();
+		int iz = indexFromWorld(2, m_savedSliceWorldZ, minIdx, maxIdx);
+		m_sliceMapperXY->SetSliceNumber(iz);
+		m_sliceMapperXY->Update();
+	}
 
 	// Update outlines to match restored slice positions
-	updateSliceOutlineXY(m_savedSliceZ);
-	updateSliceOutlineXZ(m_savedSliceY);
-	updateSliceOutlineYZ(m_savedSliceX);
+	if (m_sliceMapperXY) updateSliceOutlineXY(static_cast<int>(m_sliceMapperXY->GetSliceNumber()));
+	if (m_sliceMapperXZ) updateSliceOutlineXZ(static_cast<int>(m_sliceMapperXZ->GetSliceNumber()));
+	if (m_sliceMapperYZ) updateSliceOutlineYZ(static_cast<int>(m_sliceMapperYZ->GetSliceNumber()));
 
 	// Restore slice-planes visibility if needed (this will also call render())
 	setSlicePlanesVisible(m_savedSlicePlanesVisible);
 
-	// Restore camera if captured (camera was also restored by base, ensure clipping)
+	// Restore camera if captured: use saved world intersection constructed from the three saved points.
 	if (m_savedCamera && m_renderer) {
 		if (auto* cam = m_renderer->GetActiveCamera()) {
-			cam->DeepCopy(m_savedCamera);
+			double savedDOP[3]; m_savedCamera->GetDirectionOfProjection(savedDOP);
+			double savedUp[3];  m_savedCamera->GetViewUp(savedUp);
+
+			// Intersection point: compose from saved per-plane points
+			double focal[3] = {
+				m_savedSliceWorldX[0],
+				m_savedSliceWorldY[1],
+				m_savedSliceWorldZ[2]
+			};
+
+			double dist = m_savedCamera->GetDistance();
+			if (!(dist > 0.0)) dist = cam->GetDistance();
+
+			cam->SetFocalPoint(focal);
+			cam->SetPosition(focal[0] - savedDOP[0] * dist,
+							 focal[1] - savedDOP[1] * dist,
+							 focal[2] - savedDOP[2] * dist);
+			cam->SetViewUp(savedUp);
+			if (m_savedCamera->GetParallelProjection()) {
+				cam->ParallelProjectionOn();
+				cam->SetParallelScale(m_savedCamera->GetParallelScale());
+			}
+			else {
+				cam->ParallelProjectionOff();
+				cam->SetViewAngle(m_savedCamera->GetViewAngle());
+			}
+			cam->OrthogonalizeViewUp();
 			m_renderer->ResetCameraClippingRange();
 		}
 	}
 
-	// If not already rendered by setSlicePlanesVisible above, ensure final render now.
+	// Final render
 	if (!m_renderer) return;
 	render();
 

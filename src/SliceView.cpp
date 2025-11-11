@@ -19,6 +19,7 @@
 #include <QMouseEvent>
 #include <QTimer>
 #include <QDebug>
+#include <cmath> // added for std::lround
 
 #include <vtkAlgorithmOutput.h>
 #include <vtkRenderWindow.h>
@@ -976,8 +977,8 @@ void SliceView::setSharedImageProperty(vtkImageProperty* sharedProp)
 
 void SliceView::captureDerivedViewState()
 {
-	// Save current slice index
-	m_savedSliceIndex = m_currentSlice;
+	// If no image, nothing to capture
+	if (!m_imageData) return;
 
 	// Save camera (deep copy)
 	m_savedCamera = nullptr;
@@ -988,7 +989,35 @@ void SliceView::captureDerivedViewState()
 		}
 	}
 
-	// Save current mapped-domain window/level from the image property (if present)
+	// Build a continuous index from the camera focal point (preserve in-plane centering)
+	// and replace the view-normal component with the current slice index so the saved
+	// world point corresponds to the visible slice location.
+	double contIdx[3] = { 0.0, 0.0, 0.0 };
+	if (m_renderer && m_renderer->GetActiveCamera()) {
+		double focal[3];
+		m_renderer->GetActiveCamera()->GetFocalPoint(focal);
+		// Transform physical focal -> continuous index
+		m_imageData->TransformPhysicalPointToContinuousIndex(focal, contIdx);
+	}
+	else {
+		// Fallback: use the center indices of the current extent
+		contIdx[0] = 0.5 * (m_extent[0] + m_extent[1]);
+		contIdx[1] = 0.5 * (m_extent[2] + m_extent[3]);
+		contIdx[2] = 0.5 * (m_extent[4] + m_extent[5]);
+	}
+
+	// Overwrite the view-normal component with the discrete slice index
+	const int w = static_cast<int>(m_viewOrientation);
+	contIdx[w] = static_cast<double>(m_currentSlice);
+
+	// Convert continuous index -> physical/world coordinate and store
+	double savedWorld[3] = { 0.0, 0.0, 0.0 };
+	m_imageData->TransformContinuousIndexToPhysicalPoint(contIdx, savedWorld);
+	m_savedSliceWorld[0] = savedWorld[0];
+	m_savedSliceWorld[1] = savedWorld[1];
+	m_savedSliceWorld[2] = savedWorld[2];
+
+	// Save mapped WL from the image property (if present)
 	if (imageProperty) {
 		m_savedMappedWindow = imageProperty->GetColorWindow();
 		m_savedMappedLevel = imageProperty->GetColorLevel();
@@ -1005,12 +1034,21 @@ void SliceView::restoreDerivedViewState()
 {
 	if (!m_hasSavedState) return;
 
-	// Ensure mapper ranges updated before clamping/setting slice index
+	// Ensure mapper ranges are up-to-date to compute valid min/max slice indices
 	if (sliceMapper) sliceMapper->Update();
 	updateSliceRange();
 
-	// Restore slice index (will update camera and UI)
-	setSliceIndex(std::clamp(m_savedSliceIndex, m_minSlice, m_maxSlice));
+	// Convert saved world point -> continuous index, then round to nearest slice index
+	const int w = static_cast<int>(m_viewOrientation);
+	double contIdx[3] = { 0.0, 0.0, 0.0 };
+	m_imageData->TransformPhysicalPointToContinuousIndex(m_savedSliceWorld, contIdx);
+
+	// Round nearest and clamp
+	int restoredIndex = static_cast<int>(std::lround(contIdx[w]));
+	restoredIndex = std::clamp(restoredIndex, m_minSlice, m_maxSlice);
+
+	// Restore the slice index (this updates camera focal/position properly)
+	setSliceIndex(restoredIndex);
 
 	// Restore mapped WL to the image property and update interactor baseline
 	if (imageProperty && std::isfinite(m_savedMappedWindow) && std::isfinite(m_savedMappedLevel)) {
@@ -1019,10 +1057,28 @@ void SliceView::restoreDerivedViewState()
 		updateInteractorWindowLevelBaseline();
 	}
 
-	// Restore camera if we captured one (camera was also restored by base; ensure clipping range)
+	// Restore camera orientation/roll if we captured it.
+	// Preserve the current focal point (set by setSliceIndex) but adopt the saved
+	// direction-of-projection and view-up so rotation is preserved across geometry changes.
 	if (m_savedCamera && m_renderer) {
 		if (auto* cam = m_renderer->GetActiveCamera()) {
-			cam->DeepCopy(m_savedCamera);
+			double savedDOP[3]; m_savedCamera->GetDirectionOfProjection(savedDOP);
+			double savedUp[3];  m_savedCamera->GetViewUp(savedUp);
+
+			// Keep focal point that setSliceIndex established
+			double curFpt[3]; cam->GetFocalPoint(curFpt);
+
+			// Use saved distance if reasonable, otherwise keep current distance
+			double dist = m_savedCamera->GetDistance();
+			if (!(dist > 0.0)) dist = cam->GetDistance();
+
+			// Position camera along -savedDOP so it looks at the current focal point
+			cam->SetFocalPoint(curFpt);
+			cam->SetPosition(curFpt[0] - savedDOP[0] * dist,
+							 curFpt[1] - savedDOP[1] * dist,
+							 curFpt[2] - savedDOP[2] * dist);
+			cam->SetViewUp(savedUp);
+			cam->OrthogonalizeViewUp();
 			m_renderer->ResetCameraClippingRange();
 		}
 	}

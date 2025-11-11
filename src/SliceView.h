@@ -87,7 +87,8 @@ private:
 
 	// Saved transient state used by capture/restore hooks
 	vtkSmartPointer<vtkCamera> m_savedCamera;
-	int m_savedSliceIndex = 0;
+	// store the saved slice as a 3D world coordinate (physical point)
+	double m_savedSliceWorld[3] = { 0.0, 0.0, 0.0 };
 	double m_savedMappedWindow = std::numeric_limits<double>::quiet_NaN();
 	double m_savedMappedLevel = std::numeric_limits<double>::quiet_NaN();
 	bool m_hasSavedState = false;
