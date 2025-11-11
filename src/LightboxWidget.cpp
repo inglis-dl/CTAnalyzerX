@@ -153,6 +153,16 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 	// Wire controller reset request to propagate to our child views
 	connect(m_wlController, &WindowLevelController::requestResetWindowLevel,
 			this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+
+	if (auto* yz = getYZView()) {
+		connect(yz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	}
+	if (auto* xz = getXZView()) {
+		connect(xz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	}
+	if (auto* xy = getXYView()) {
+		connect(xy, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	}
 }
 
 void LightboxWidget::showEvent(QShowEvent* e)
@@ -173,7 +183,7 @@ void LightboxWidget::setDefaultImage()
 	sinusoid->SetDirection(0.5, -0.5, 1.0 / std::sqrt(2.0));
 	sinusoid->Update();
 
-	setInputConnection(sinusoid->GetOutputPort());
+	setInputConnection(sinusoid->GetOutputPort(), true);
 }
 
 void LightboxWidget::setImageData(vtkImageData* image)
@@ -495,12 +505,12 @@ void LightboxWidget::resetWindowLevel()
 	m_propagatingWindowLevel = false;
 }
 
-void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port)
+void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port, bool newImg)
 {
 	// Forward to child views if they exist
-	if (ui.YZView) ui.YZView->setInputConnection(port);
-	if (ui.XZView) ui.XZView->setInputConnection(port);
-	if (ui.XYView) ui.XYView->setInputConnection(port);
-	if (ui.volumeView) ui.volumeView->setInputConnection(port);
+	if (ui.YZView) ui.YZView->setInputConnection(port, newImg);
+	if (ui.XZView) ui.XZView->setInputConnection(port, newImg);
+	if (ui.XYView) ui.XYView->setInputConnection(port, newImg);
+	if (ui.volumeView) ui.volumeView->setInputConnection(port, newImg);
 }
 

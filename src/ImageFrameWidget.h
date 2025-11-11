@@ -67,7 +67,7 @@ public:
 
 	// Pipeline-aware setter: attach a producer port to this view's internal pipeline.
 	// Default implementation connects the port to `m_shiftScaleFilter`.
-	virtual void setInputConnection(vtkAlgorithmOutput* port);
+	virtual void setInputConnection(vtkAlgorithmOutput* port, bool newImg = true);
 
 	// Abstract hook: views implement with their own pipeline logic
 	// The bus uses native domain (original image scalar domain).

@@ -24,7 +24,7 @@ public:
 	explicit LightboxWidget(QWidget* parent = nullptr);
 
 	void setImageData(vtkImageData* image);
-	void setInputConnection(vtkAlgorithmOutput* port);
+	void setInputConnection(vtkAlgorithmOutput* port, bool newImg = true);
 	void setDefaultImage();
 
 	void setYZSlice(int index);

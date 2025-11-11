@@ -7,9 +7,6 @@
 #include "WindowLevelBridge.h"
 #include "VolumeRotationWidget.h"
 
-#include <vtkImageData.h>
-#include <vtkImageReslice.h>
-
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QSettings>
@@ -28,10 +25,15 @@
 #include <QOffscreenSurface>
 #include <QSurfaceFormat>
 #include <QOpenGLFunctions>
+#include <QDebug>
+#include <QElapsedTimer>
+#include <QThread>
+#include <QCoreApplication>
 
 #include <vtkVersion.h>   // VTK version macros
 #include <vtkEventQtSlotConnect.h>
-
+#include <vtkImageData.h>
+#include <vtkImageReslice.h>
 #include <itkVersion.h>   // ITK version macros
 #include <itkImage.h>
 #include <itkImageSeriesReader.h>
@@ -372,17 +374,28 @@ void MainWindow::openFile(const QString& filePath)
 	// Use ImageLoader::CanReadFile for file type detection and existence
 	if (!ImageLoader::CanReadFile(filePath)) {
 		QMessageBox::warning(this, "Cannot Open File",
-			QString("The selected file cannot be opened. It may not exist, is not readable, or is not a supported type (DICOM or ISQ).\n\nFile: %1").arg(filePath));
+			QString("The selected file cannot be opened. It may not exist, is not readable, or is not a supported type (DICOM, ISQ or NIfTI).\n\nFile: %1").arg(filePath));
 		return;
 	}
 
-	// Set image type based on extension
+	// Set image type based on extension (prefer explicit mapping for files)
 	QString lower = filePath.toLower();
 	if (lower.endsWith(".isq")) {
 		m_imageLoader->SetImageType(ImageLoader::ImageType::ScancoISQ);
 	}
+	else if (lower.endsWith(".nii") || lower.endsWith(".nii.gz")) {
+		m_imageLoader->SetImageType(ImageLoader::ImageType::NIFTI);
+	}
 	else if (lower.endsWith(".dcm") || lower.endsWith(".dicom")) {
 		m_imageLoader->SetImageType(ImageLoader::ImageType::DICOM);
+	}
+	else {
+		// For directories or unknown extensions, fall back to the loader's default behavior.
+		QFileInfo info(filePath);
+		if (info.isDir()) {
+			m_imageLoader->SetImageType(ImageLoader::ImageType::DICOM);
+		}
+		// otherwise leave the ImageLoader::ImageType as-is (it may have been set by CanReadFile probe)
 	}
 
 	m_imageLoader->SetInputPath(filePath);
@@ -421,7 +434,8 @@ void MainWindow::openFile(const QString& filePath)
 	}
 	else if (m_volumeRotationWidget) {
 
-		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort());
+		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort(), true);
+
 		/*
 		// enable operational mode before attaching the pipeline
 		m_volumeRotationWidget->setOperational(true);
@@ -440,12 +454,14 @@ void MainWindow::openFile(const QString& filePath)
 			if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
 		}, Qt::UniqueConnection);
 		*/
+
+
 		// Update recent files list
 		addToRecentFiles(filePath);
 		saveRecentFiles();
 	}
 	else {
-		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort());
+		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort(), true);
 		if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
 	}
 }
@@ -462,22 +478,48 @@ void MainWindow::saveScreenshot()
 
 void MainWindow::onVtkStartEvent()
 {
-	progressBar->setValue(0);
-	progressBar->setVisible(true);
+	// If we're already on the GUI thread update UI directly, otherwise queue it.
+	if (QThread::currentThread() == this->thread()) {
+		showLoaderStart();
+		// Ensure the progress bar is painted immediately while the read is running.
+		progressBar->update();
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	}
+	else {
+		QMetaObject::invokeMethod(this, "showLoaderStart", Qt::QueuedConnection);
+	}
 }
 
 void MainWindow::onVtkEndEvent()
 {
-	progressBar->setValue(100);
-	progressBar->setVisible(false);
+	if (QThread::currentThread() == this->thread()) {
+		showLoaderEnd();
+		progressBar->update();
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	}
+	else {
+		QMetaObject::invokeMethod(this, "showLoaderEnd", Qt::QueuedConnection);
+	}
 }
 
 void MainWindow::onVtkProgressEvent()
 {
 	if (!m_imageLoader) return;
-	double progress = m_imageLoader->GetProgress(); // vtkAlgorithm::GetProgress()
-	progressBar->setValue(static_cast<int>(progress * 100));
-	progressBar->setVisible(true);
+	double p = m_imageLoader->GetProgress();
+	int value = static_cast<int>(std::clamp(p, 0.0, 1.0) * 100.0);
+
+	// If caller is on GUI thread we must update directly (and pump events briefly) because the read
+	// is blocking the event loop. Otherwise use a queued invocation.
+	if (QThread::currentThread() == this->thread()) {
+		// Throttle client-side if needed (keep it responsive), but do immediate update.
+		setLoaderProgress(value);
+		progressBar->update();
+		// brief event pump so the widget repaints while the blocking read continues
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	}
+	else {
+		QMetaObject::invokeMethod(this, "setLoaderProgress", Qt::QueuedConnection, Q_ARG(int, value));
+	}
 }
 
 // Accept drag if it contains a supported file
@@ -511,4 +553,23 @@ void MainWindow::dropEvent(QDropEvent* event)
 		}
 	}
 	event->ignore();
+}
+
+void MainWindow::setLoaderProgress(int percent)
+{
+	progressBar->setValue(percent);
+	progressBar->setVisible(true);
+}
+
+void MainWindow::showLoaderStart()
+{
+	progressBar->setValue(0);
+	progressBar->setVisible(true);
+	progressBar->setEnabled(true);
+}
+
+void MainWindow::showLoaderEnd()
+{
+	progressBar->setValue(100);
+	progressBar->setVisible(false);
 }

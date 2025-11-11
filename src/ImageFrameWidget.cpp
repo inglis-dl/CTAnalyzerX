@@ -72,26 +72,28 @@ void ImageFrameWidget::setImageData(vtkImageData* image)
 	updateData();
 }
 
-void ImageFrameWidget::setInputConnection(vtkAlgorithmOutput* port)
+void ImageFrameWidget::setInputConnection(vtkAlgorithmOutput* port, bool newImg)
 {
 	// Avoid duplicate wiring: if the shift/scale filter is already connected to the same port,
 	// do nothing. This prevents the "called twice" behavior when multiple owners try to set
 	// the same connection (e.g., MainWindow wiring + child widgets wiring).
 	if (m_shiftScaleFilter) {
 		vtkAlgorithmOutput* cur = m_shiftScaleFilter->GetInputConnection(0, 0);
+		// already connected to this exact port -> no-op
 		if (cur == port) {
-			// already connected to this exact port -> no-op
-			return;
+			// legacy: nothing to do
+			if (!newImg)
+				return;
 		}
-		m_shiftScaleFilter->SetInputConnection(port);
+		else
+		{
+			m_shiftScaleFilter->SetInputConnection(port);
+		}
 
-		// Ensure the filter's information and data are up-to-date immediately after rewiring.
-		// This lets downstream mappers (e.g., vtkImageSliceMapper) query extents/slice ranges
-		// reliably during the same call sequence (avoids transient 0/-1 ranges).
-		// UpdateInformation first to refresh meta-data (extent, spacing, scalar type),
-		// then Update() to produce any cached data objects if needed.
-		m_shiftScaleFilter->UpdateInformation();
-		m_shiftScaleFilter->Update();
+		if (newImg) {
+			m_shiftScaleFilter->UpdateInformation();
+			m_shiftScaleFilter->Update();
+		}
 	}
 
 	// Cache upstream producer (if any) and refresh m_imageData to reflect upstream.
@@ -103,7 +105,8 @@ void ImageFrameWidget::setInputConnection(vtkAlgorithmOutput* port)
 		m_upstreamProducer = nullptr;
 	}
 
-	// Ensure m_imageData points to the pre-shift/scale upstream image (if available)
+	m_imageInitialized = !newImg;
+
 	refreshImageDataFromPipeline();
 
 	// mark image as initialized and trigger data update/render

@@ -63,6 +63,9 @@ public slots:
 signals:
 	void sliceChanged(int);
 	void interpolationChanged(Interpolation);
+	// Emitted when the user requests a reset (e.g. presses 'r').  LightboxWidget
+	// or a central controller should perform the coordinated reset on all views.
+	void requestResetWindowLevel();
 
 protected:
 	void resetCamera() override;

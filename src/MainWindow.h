@@ -40,6 +40,9 @@ private slots:
 	void onVtkStartEvent();
 	void onVtkEndEvent();
 	void onVtkProgressEvent();
+	void setLoaderProgress(int percent);
+	void showLoaderStart();
+	void showLoaderEnd();
 
 private:
 	void setupPanelConnections();

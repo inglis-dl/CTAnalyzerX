@@ -391,8 +391,6 @@ void SliceView::updateData()
 {
 	if (!m_imageData) return;
 
-	m_shiftScaleFilter->Update();
-
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput();
 	cacheImageGeometry();
@@ -799,8 +797,10 @@ void SliceView::clearSharedImageProperty()
 
 void SliceView::onResetWindowLevel(vtkObject* /*obj*/)
 {
-	// Handle vtkInteractorStyleImage 'r'/'R' (no modifiers) using our retained baseline
-	this->resetWindowLevel();
+	// The user pressed 'r' in this slice. Emit a request signal so the Lightbox/Controller
+	// can perform a single coordinated reset for all views. This avoids this slice's
+	// programmatic baseline update generating windowLevelChanged and propagating to siblings.
+	emit requestResetWindowLevel();
 }
 
 void SliceView::onInteractorWindowLevel(vtkObject* caller)
