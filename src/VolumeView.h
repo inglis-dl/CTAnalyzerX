@@ -23,13 +23,14 @@ class vtkImageSliceMapper;
 class vtkImageSlice;
 class vtkCallbackCommand;
 class vtkActor;
+class vtkImageOrthoPlanes;
 
 namespace Ui { class VolumeView; }
 
 class VolumeView : public ImageFrameWidget
 {
 	Q_OBJECT
-		Q_PROPERTY(bool slicePlanesVisible READ slicePlanesVisible WRITE setSlicePlanesVisible NOTIFY slicePlanesVisibleChanged)
+		Q_PROPERTY(bool orthoPlanesVisible READ orthoPlanesVisible WRITE setOrthoPlanesVisible NOTIFY orthoPlanesVisibleChanged)
 		Q_PROPERTY(bool shadingEnabled READ shadingEnabled WRITE setShadingEnabled)
 
 public:
@@ -48,7 +49,7 @@ public:
 
 	void updateSlicePlanes(int x, int y, int z);
 
-	bool slicePlanesVisible() const { return m_slicePlanesVisible; }
+	bool orthoPlanesVisible() const { return m_orthoPlanesVisible; }
 
 	bool shadingEnabled() const { return m_shadingEnabled; }
 	void setShadingEnabled(bool on);
@@ -57,13 +58,13 @@ public:
 
 signals:
 	void imageExtentsChanged(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
-	void slicePlanesVisibleChanged(bool visible);
+	void orthoPlanesVisibleChanged(bool visible);
 	// Emitted when the effective cropping enabled state changes (e.g. reset to false on new image)
 	void croppingEnabledChanged(bool enabled);
 
 public slots:
 	// Expose as a slot so UI widgets (e.g., VolumeControlsWidget) can connect directly
-	void setSlicePlanesVisible(bool visible);
+	void setOrthoPlanesVisible(bool visible);
 
 	void setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 	void resetCamera() override;
@@ -79,7 +80,7 @@ private:
 	Ui::VolumeView* ui = nullptr;
 
 	vtkSmartPointer<vtkEventQtSlotConnect> m_qvtk;
-	bool m_slicePlanesVisible = false;
+	bool m_orthoPlanesVisible = false;
 	bool m_shadingEnabled = false;
 
 	vtkSmartPointer<vtkGPUVolumeRayCastMapper> m_mapper;
@@ -95,32 +96,7 @@ private:
 	void updateMappedColorsFromActual();
 	void initializeDefaultTransferFunctions();
 
-	// Orthogonal slice actors used in 3D "slice planes" mode (replaces vtkImagePlaneWidget usage).
-	vtkSmartPointer<vtkImageSliceMapper> m_sliceMapperYZ;
-	vtkSmartPointer<vtkImageSliceMapper> m_sliceMapperXZ;
-	vtkSmartPointer<vtkImageSliceMapper> m_sliceMapperXY;
-	vtkSmartPointer<vtkImageSlice>       m_imageSliceYZ;
-	vtkSmartPointer<vtkImageSlice>       m_imageSliceXZ;
-	vtkSmartPointer<vtkImageSlice>       m_imageSliceXY;
-
-	// Outline actors for per-slice bounding rectangles (one per orthogonal slice)
-	vtkSmartPointer<vtkPolyData>         m_outlinePolyYZ;
-	vtkSmartPointer<vtkPolyData>         m_outlinePolyXZ;
-	vtkSmartPointer<vtkPolyData>         m_outlinePolyXY;
-
-	vtkSmartPointer<vtkPolyDataMapper>   m_outlineMapperYZ;
-	vtkSmartPointer<vtkPolyDataMapper>   m_outlineMapperXZ;
-	vtkSmartPointer<vtkPolyDataMapper>   m_outlineMapperXY;
-
-	vtkSmartPointer<vtkActor>            m_outlineActorYZ;
-	vtkSmartPointer<vtkActor>            m_outlineActorXZ;
-	vtkSmartPointer<vtkActor>            m_outlineActorXY;
-
-	// Helpers to create / update per-slice outline geometry
-	void createSliceOutlineActors();
-	void updateSliceOutlineYZ(int cx);
-	void updateSliceOutlineXZ(int cy);
-	void updateSliceOutlineXY(int cz);
+	vtkSmartPointer<vtkImageOrthoPlanes> m_orthoPlanes;
 
 	// Saved transient state used by capture/restore hooks
 	vtkSmartPointer<vtkCamera> m_savedCamera;
@@ -128,7 +104,7 @@ private:
 	double m_savedSliceWorldX[3] = { 0.0, 0.0, 0.0 }; // X-normal plane (YZ) world point
 	double m_savedSliceWorldY[3] = { 0.0, 0.0, 0.0 }; // Y-normal plane (XZ) world point
 	double m_savedSliceWorldZ[3] = { 0.0, 0.0, 0.0 }; // Z-normal plane (XY) world point
-	bool m_savedSlicePlanesVisible = false;
+	bool m_savedOrthoPlanesVisible = false;
 	vtkSmartPointer<vtkColorTransferFunction> m_savedActualColorTF;
 	vtkSmartPointer<vtkPiecewiseFunction> m_savedActualScalarOpacity;
 	bool m_hasSavedState = false;

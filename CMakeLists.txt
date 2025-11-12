@@ -162,6 +162,8 @@ set(SOURCES
  	 src/ImageResliceHelper.h
 	 src/VolumeRotationWidget.cpp
 	 src/VolumeRotationWidget.h
+     src/vtkImageOrthoPlanes.cpp
+     src/vtkImageOrthoPlanes.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early

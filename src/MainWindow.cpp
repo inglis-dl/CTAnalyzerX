@@ -230,7 +230,7 @@ void MainWindow::setupPanelConnections()
 
 	// toggle volume slice planes
 	connect(ui->volumeControlsWidget, &VolumeControlsWidget::slicePlaneToggle,
-		ui->lightboxWidget->getVolumeView(), &VolumeView::setSlicePlanesVisible);
+		ui->lightboxWidget->getVolumeView(), &VolumeView::setOrthoPlanesVisible);
 
 	// update the range sliders when the image extents change
 	connect(ui->lightboxWidget->getVolumeView(), &VolumeView::imageExtentsChanged,
@@ -263,7 +263,7 @@ void MainWindow::setupPanelConnections()
 		auto* vcw = ui->volumeControlsWidget;
 		// Ensure checkbox exists before wiring; connect VolumeView signal -> QCheckBox::setChecked
 		if (volView && vcw && vcw->slicePlaneCheckBox()) {
-			connect(volView, &VolumeView::slicePlanesVisibleChanged,
+			connect(volView, &VolumeView::orthoPlanesVisibleChanged,
 					vcw->slicePlaneCheckBox(), &QCheckBox::setChecked,
 					Qt::UniqueConnection);
 		}
