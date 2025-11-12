@@ -17,8 +17,6 @@ class QPropertyAnimation;
 
 class LightboxWidget : public QWidget {
 	Q_OBJECT
-		// Expose linked window/level mode to Qt (Designer, bindings, property animations)
-		Q_PROPERTY(bool linkedWindowLevel READ linkedWindowLevel WRITE setLinkedWindowLevel NOTIFY linkedWindowLevelChanged)
 
 public:
 	explicit LightboxWidget(QWidget* parent = nullptr);
@@ -44,14 +42,10 @@ protected:
 	void showEvent(QShowEvent* e) override;
 
 public slots:
-	void setLinkedWindowLevel(bool linked);
-	bool linkedWindowLevel() const { return m_linkWindowLevel; }
 	// Propagate a reset request to all child image frames (slices + volume)
 	void resetWindowLevel();
 
 signals:
-	// Notify when linked window/level mode toggles
-	void linkedWindowLevelChanged(bool linked);
 
 private slots:
 	// Handle maximize/restore requests from child frames
@@ -84,7 +78,7 @@ private:
 	QHash<SelectionFrameWidget*, QRect> m_savedRects; // original rects (for restore)
 	QRect m_savedTargetRect; // original rect of maximized frame relative to this
 
-	bool m_linkWindowLevel = false;
+	// shared image property used by all SliceView instances (always present)
 	vtkSmartPointer<vtkImageProperty> m_sharedImageProperty;
 
 	// Encapsulated Window/Level controller + bridge (owned by LightboxWidget)

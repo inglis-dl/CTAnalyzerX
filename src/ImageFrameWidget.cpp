@@ -378,52 +378,80 @@ vtkImageData* ImageFrameWidget::upstreamInputImage() const
 
 void ImageFrameWidget::computeShiftScaleFromInput()
 {
-	if (!m_imageData) return;
+	if (!m_imageData)
+		return;
 
 	m_nativeScalarType = m_imageData->GetScalarType();
-	double scalarRange[2] = { 0, 1 };
+
+	double scalarRange[2] = { 0.0, 1.0 };
 	m_imageData->GetScalarRange(scalarRange);
+
 	// Guard against NaN/Inf and inverted ranges
 	const double r0 = std::isfinite(scalarRange[0]) ? scalarRange[0] : 0.0;
 	const double r1 = std::isfinite(scalarRange[1]) ? scalarRange[1] : 1.0;
 	m_scalarRangeMin = std::min(r0, r1);
 	m_scalarRangeMax = std::max(r0, r1);
-	const double diff = m_scalarRangeMax - m_scalarRangeMin;
 
-	// Default: keep as unsigned short
+	// Default: no shift, no scale (preserve original numeric distribution)
 	m_scalarShift = 0.0;
 	m_scalarScale = 1.0;
 
-	switch (m_nativeScalarType) {
-		case VTK_UNSIGNED_CHAR:
-		case VTK_UNSIGNED_SHORT:
-		m_scalarShift = 0.0;
+	// Destination numeric limits (unsigned short)
+	const double USHORT_MAX_D = static_cast<double>(std::numeric_limits<unsigned short>::max());
+
+	// If the incoming range is degenerate, keep identity mapping
+	const double diff = m_scalarRangeMax - m_scalarRangeMin;
+	if (!(std::isfinite(diff)) || diff <= 0.0) {
+		m_scalarShift = (m_scalarRangeMin < 0.0) ? -m_scalarRangeMin : 0.0;
 		m_scalarScale = 1.0;
-		break;
-		case VTK_CHAR:
-		case VTK_SIGNED_CHAR:
-		m_scalarShift = 128.0; // map [-128,127] -> [0,255]
+		m_shiftScaleFilter->SetShift(m_scalarShift);
+		m_shiftScaleFilter->SetScale(m_scalarScale);
+		m_shiftScaleFilter->Update();
+		return;
+	}
+
+	// Strategy:
+	// - Only apply a shift if the data contains negative values (so the minimum becomes 0).
+	// - Only apply scaling if, after shifting, values exceed the unsigned-short max.
+	//   Scaling compresses the numeric range to fit; it will never stretch (scale > 1).
+	double shift = 0.0;
+	if (m_scalarRangeMin < 0.0) {
+		// move minimum to zero (preserve relative positions)
+		shift = -m_scalarRangeMin;
+	}
+
+	// After shift, the maximum value to consider is:
+	// - if shift was applied: max' = max + shift  (which equals range)
+	// - if no shift: max' = max
+	double maxAfterShift = m_scalarRangeMax + shift;
+
+	// If data fits within [0, USHORT_MAX] after shifting, keep scale = 1
+	if (maxAfterShift <= USHORT_MAX_D && maxAfterShift >= 0.0) {
+		m_scalarShift = shift;
 		m_scalarScale = 1.0;
-		break;
-		case VTK_SHORT:
-		m_scalarShift = 32768.0; // map [-32768,32767] -> [0,65535]
-		m_scalarScale = 1.0;
-		break;
-		default: {
-			// For larger ranges or floating point: shift negatives, scale up to at most 16-bit range
-			m_scalarShift = (m_scalarRangeMin < 0.0) ? -m_scalarRangeMin : 0.0;
-			if (diff > 0.0) {
-				// Preserve existing behavior: do not amplify if the range is already within 16-bit
-				m_scalarScale = std::min(65535.0 / diff, 1.0);
+	}
+	else {
+		// Need to compress into [0, USHORT_MAX].
+		// Use denominator == maxAfterShift (for shift==0 this is original max;
+		// for shift>0 this is the data span after shift).
+		double denom = maxAfterShift;
+		if (denom <= 0.0 || !std::isfinite(denom)) {
+			// defensive fallback: no scaling, just shift if needed
+			m_scalarShift = shift;
+			m_scalarScale = 1.0;
+		}
+		else {
+			double scale = USHORT_MAX_D / denom;
+			// never stretch: clamp to <= 1.0
+			if (scale > 1.0) {
+				scale = 1.0;
 			}
-			else {
-				m_scalarScale = 1.0;
-			}
-			break;
+			m_scalarShift = shift;
+			m_scalarScale = scale;
 		}
 	}
 
-	// Program the shared filter
+	// Program the shared filter (it already outputs unsigned short)
 	m_shiftScaleFilter->SetShift(m_scalarShift);
 	m_shiftScaleFilter->SetScale(m_scalarScale);
 	m_shiftScaleFilter->Update();

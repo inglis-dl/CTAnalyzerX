@@ -51,9 +51,6 @@ public:
 	// install a shared vtkImageProperty (sharedProp may be the same instance across views)
 	void setSharedImageProperty(vtkImageProperty* sharedProp);
 
-	// restore an independent imageProperty (fresh copy) if caller wants to un-link
-	void clearSharedImageProperty();
-
 	// Expose resetWindowLevel as public so LightboxWidget can call it
 	void resetWindowLevel() override;
 

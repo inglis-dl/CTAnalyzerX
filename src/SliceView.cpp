@@ -14,7 +14,6 @@
 #include <QIntValidator>
 #include <QSignalBlocker>
 #include <QKeyEvent>
-#include <QtGlobal>
 #include <QApplication>
 #include <QMouseEvent>
 #include <QTimer>
@@ -37,6 +36,8 @@
 #include <vtkRenderWindowInteractor.h>
 #include <vtkCommand.h>
 #include <vtkImageShiftScale.h>
+
+#include <QThread>
 
 SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	: ImageFrameWidget(parent)
@@ -435,6 +436,9 @@ void SliceView::updateData()
 	imageProperty->SetColorWindow(mappedWindow);
 	imageProperty->SetColorLevel(mappedLevel);
 
+	// Emit native-domain signal so UI controls reflect the newly loaded image.
+	emit windowLevelChanged(baseWindowNative, baseLevelNative);
+
 	// Set camera and show a valid slice immediately (center)
 	updateCamera();
 
@@ -761,6 +765,15 @@ void SliceView::resetWindowLevel()
 
 	// Refresh display
 	render();
+
+	// Also emit native-domain window/level so controllers/listeners update.
+	// mapped -> native conversion: nativeWindow = mappedWindow / scale;
+	// nativeLevel = (mappedLevel / scale) - shift;
+	if (std::isfinite(m_scalarScale) && m_scalarScale != 0.0) {
+		const double nativeWindow = std::max(windowMapped / m_scalarScale, 1.0);
+		const double nativeLevel = (levelMapped / m_scalarScale) - m_scalarShift;
+		emit windowLevelChanged(nativeWindow, nativeLevel);
+	}
 }
 
 void SliceView::updateInteractorWindowLevelBaseline()
@@ -773,26 +786,6 @@ void SliceView::updateInteractorWindowLevelBaseline()
 	interactorStyle->SetCurrentImageNumber(-1);
 	interactorStyle->StartWindowLevel();
 	interactorStyle->EndWindowLevel();
-}
-
-void SliceView::clearSharedImageProperty()
-{
-	// Create a fresh property preserving current mapped-domain WL/level
-	vtkSmartPointer<vtkImageProperty> newProp = vtkSmartPointer<vtkImageProperty>::New();
-
-	if (imageProperty) {
-		newProp->SetColorWindow(imageProperty->GetColorWindow());
-		newProp->SetColorLevel(imageProperty->GetColorLevel());
-		newProp->SetInterpolationType(imageProperty->GetInterpolationType());
-	}
-
-	// Apply the new property to our slice
-	imageSlice->SetProperty(newProp);
-	imageProperty = newProp;
-
-	// Update baseline in interactor style so 'r' restores to this new property
-	updateInteractorWindowLevelBaseline();
-	render();
 }
 
 void SliceView::onResetWindowLevel(vtkObject* /*obj*/)
@@ -962,17 +955,49 @@ void SliceView::onEditorReturnPressed()
 // new method: install a shared vtkImageProperty (sharedProp may be the same instance across views)
 void SliceView::setSharedImageProperty(vtkImageProperty* sharedProp)
 {
-	if (!sharedProp || !imageSlice) return;
+	if (!sharedProp || !imageSlice)
+		return;
 
-	// Replace our local imageProperty pointer with the shared one
+	// Ensure execution on GUI thread. If we're called from another thread,
+	// re-post the call to the object's thread (queued) and return.
+	if (QThread::currentThread() != this->thread()) {
+		vtkImageProperty* prop = sharedProp;
+		QMetaObject::invokeMethod(
+			this,
+			[this, prop]() { this->setSharedImageProperty(prop); },
+			Qt::QueuedConnection);
+		return;
+	}
+
+	// Idempotent: if this view already uses the requested property, do nothing.
+	vtkImageProperty* safeProp = vtkImageProperty::SafeDownCast(sharedProp);
+	if (imageProperty == safeProp)
+		return;
+
+	// Install the shared property (atomic with respect to this object since we're on GUI thread)
 	imageSlice->SetProperty(sharedProp);
-	imageProperty = vtkImageProperty::SafeDownCast(sharedProp);
+	imageProperty = safeProp;
 
-	// Ensure interactor style baseline picks up the new property values
+	// Update the interactor baseline synchronously (required for WL baseline correctness).
 	updateInteractorWindowLevelBaseline();
 
-	// Re-render to reflect the change immediately
-	render();
+	// Emit native-domain window/level so UI controls reflect the newly installed property.
+	// Convert mapped (vtkImageProperty) -> native domain (inverse of (native + shift) * scale).
+	if (imageProperty) {
+		const double mappedWindow = imageProperty->GetColorWindow();
+		const double mappedLevel = imageProperty->GetColorLevel();
+		const double lowerMapped = mappedLevel - 0.5 * std::fabs(mappedWindow);
+		const double upperMapped = mappedLevel + 0.5 * std::fabs(mappedWindow);
+		const double lowerNative = (lowerMapped / m_scalarScale) - m_scalarShift;
+		const double upperNative = (upperMapped / m_scalarScale) - m_scalarShift;
+		const double nativeWindow = std::max(upperNative - lowerNative, 1.0);
+		const double nativeLevel = 0.5 * (upperNative + lowerNative);
+		emit windowLevelChanged(nativeWindow, nativeLevel);
+	}
+
+	// Defer render to the event loop to avoid nested / re-entrant rendering and ordering races
+	// between multiple views that may also be changing the same property.
+	QTimer::singleShot(0, this, [this]() { this->render(); });
 }
 
 void SliceView::captureDerivedViewState()

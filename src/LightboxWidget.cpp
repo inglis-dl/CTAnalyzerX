@@ -116,6 +116,12 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 			// Update volume via bridge
 			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
 
+			// Update controller UI so spinboxes reflect interactive slice changes
+			if (m_wlController) {
+				m_wlController->setWindow(w);
+				m_wlController->setLevel(l);
+			}
+
 			// Update other slices (slaves)
 			if (auto* xz = getXZView()) { if (xz != yz) xz->setWindowLevelNative(w, l); }
 			if (auto* xy = getXYView()) { if (xy != yz) xy->setWindowLevelNative(w, l); }
@@ -130,6 +136,11 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 
 			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
 
+			if (m_wlController) {
+				m_wlController->setWindow(w);
+				m_wlController->setLevel(l);
+			}
+
 			if (auto* yz = getYZView()) { if (yz != xz) yz->setWindowLevelNative(w, l); }
 			if (auto* xy = getXYView()) { if (xy != xz) xy->setWindowLevelNative(w, l); }
 
@@ -142,6 +153,11 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 			m_propagatingWindowLevel = true;
 
 			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
+
+			if (m_wlController) {
+				m_wlController->setWindow(w);
+				m_wlController->setLevel(l);
+			}
 
 			if (auto* yz = getYZView()) { if (yz != xy) yz->setWindowLevelNative(w, l); }
 			if (auto* xz = getXZView()) { if (xz != xy) xz->setWindowLevelNative(w, l); }
@@ -193,6 +209,14 @@ void LightboxWidget::setImageData(vtkImageData* image)
 	if (ui.XZView) ui.XZView->setImageData(image);
 	if (ui.XYView) ui.XYView->setImageData(image);
 	if (ui.volumeView) ui.volumeView->setImageData(image);
+
+	// Re-install shared image property to ensure all slices use the same vtkImageProperty
+	// (setImageData above may have created per-view imageProperty instances).
+	if (m_sharedImageProperty) {
+		if (ui.YZView) ui.YZView->setSharedImageProperty(m_sharedImageProperty);
+		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
+		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
+	}
 }
 
 void LightboxWidget::setYZSlice(int index)
@@ -455,43 +479,6 @@ void LightboxWidget::onRequestRestore(SelectionFrameWidget* w)
 	startExpandAnimation(m_maximized, QRect(), QRect(), /*toMaximized*/ false);
 }
 
-void LightboxWidget::setLinkedWindowLevel(bool linked)
-{
-	if (m_linkWindowLevel == linked) return;
-	m_linkWindowLevel = linked;
-
-	// Get the three slice views (may be nullptr)
-	SliceView* yz = getYZView();
-	SliceView* xz = getXZView();
-	SliceView* xy = getXYView();
-
-	if (m_linkWindowLevel) {
-		// Create shared property and initialize from one of the views (prefer XY)
-		vtkSmartPointer<vtkImageProperty> shared = vtkSmartPointer<vtkImageProperty>::New();
-
-		// Fallback: pick a sensible default
-		shared->SetColorWindow(1000.0);
-		shared->SetColorLevel(500.0);
-
-		// store the shared property and assign to all slice views
-		m_sharedImageProperty = shared;
-
-		if (yz) { yz->setSharedImageProperty(m_sharedImageProperty); }
-		if (xz) { xz->setSharedImageProperty(m_sharedImageProperty); }
-		if (xy) { xy->setSharedImageProperty(m_sharedImageProperty); }
-	}
-	else {
-		// Unlink: create per-view properties initialized from the current shared property (if any)
-		if (m_sharedImageProperty) {
-			if (yz) { yz->clearSharedImageProperty(); }
-			if (xz) { xz->clearSharedImageProperty(); }
-			if (xy) { xy->clearSharedImageProperty(); }
-		}
-		// release the shared property
-		m_sharedImageProperty = nullptr;
-	}
-}
-
 void LightboxWidget::resetWindowLevel()
 {
 	if (m_propagatingWindowLevel) return;
@@ -512,5 +499,12 @@ void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port, bool newImg)
 	if (ui.XZView) ui.XZView->setInputConnection(port, newImg);
 	if (ui.XYView) ui.XYView->setInputConnection(port, newImg);
 	if (ui.volumeView) ui.volumeView->setInputConnection(port, newImg);
+
+	// Ensure shared property is re-applied after new pipeline/input is connected.
+	if (m_sharedImageProperty) {
+		if (ui.YZView) ui.YZView->setSharedImageProperty(m_sharedImageProperty);
+		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
+		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
+	}
 }
 

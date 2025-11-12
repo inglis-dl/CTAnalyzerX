@@ -6,6 +6,7 @@
 class QDoubleSpinBox;
 class QCheckBox;
 class QPushButton;
+class QTimer;
 
 class WindowLevelController : public QWidget
 {
@@ -18,6 +19,14 @@ public Q_SLOTS:
 	void setWindow(double w);
 	void setLevel(double l);
 
+	// Programmatically toggle interactive mode (updates checkbox)
+	void setInteractive(bool interactive);
+	// Adjust debounce interval used for interactive emissions (ms)
+	void setDebounceInterval(int ms);
+
+	// Query current interactive state
+	bool interactive() const;
+
 Q_SIGNALS:
 	// interactive (fires while user adjusts when InteractiveApply is enabled)
 	void windowLevelChanged(double window, double level);
@@ -26,6 +35,10 @@ Q_SIGNALS:
 	// request to reset window/level to baseline across views
 	void requestResetWindowLevel();
 
+	// notify listeners when interactive toggles
+	void interactiveToggled(bool interactive);
+
 private:
 	Ui::WindowLevelController ui;
+	QTimer* m_debounce = nullptr;
 };
