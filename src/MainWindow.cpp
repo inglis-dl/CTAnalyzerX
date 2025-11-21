@@ -5,6 +5,7 @@
 #include "ImageLoader.h"
 #include "WindowLevelController.h"
 #include "WindowLevelBridge.h"
+#include "VolumeRotationWidget.h"
 
 #include <QFileDialog>
 #include <QMessageBox>
@@ -24,10 +25,15 @@
 #include <QOffscreenSurface>
 #include <QSurfaceFormat>
 #include <QOpenGLFunctions>
+#include <QDebug>
+#include <QElapsedTimer>
+#include <QThread>
+#include <QCoreApplication>
 
 #include <vtkVersion.h>   // VTK version macros
 #include <vtkEventQtSlotConnect.h>
-
+#include <vtkImageData.h>
+#include <vtkImageReslice.h>
 #include <itkVersion.h>   // ITK version macros
 #include <itkImage.h>
 #include <itkImageSeriesReader.h>
@@ -87,22 +93,45 @@ MainWindow::MainWindow(QWidget* parent)
 	connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::onActionAbout);
 	connect(ui->actionScreenshot, &QAction::triggered, this, &MainWindow::saveScreenshot);
 
-	imageLoader = vtkSmartPointer<ImageLoader>::New();
+	m_imageLoader = vtkSmartPointer<ImageLoader>::New();
 
 	vtkConnections = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 
 	vtkConnections->Connect(
-	imageLoader, vtkCommand::StartEvent,
+	m_imageLoader, vtkCommand::StartEvent,
 	this, SLOT(onVtkStartEvent()));
 
 	vtkConnections->Connect(
-		imageLoader, vtkCommand::EndEvent,
+		m_imageLoader, vtkCommand::EndEvent,
 		this, SLOT(onVtkEndEvent()));
 
 	vtkConnections->Connect(
-		imageLoader, vtkCommand::ProgressEvent,
+		m_imageLoader, vtkCommand::ProgressEvent,
 		this, SLOT(onVtkProgressEvent()));
 
+	// Create volume rotation widget
+	m_volumeRotationWidget = new VolumeRotationWidget(this);
+
+	// Prefer inserting the rotation widget into the VolumeControlsWidget group box if present.
+	// Fall back to placing it into the controlPanelLayout (legacy) if VolumeControlsWidget is not available.
+	if (ui->volumeControlsWidget) {
+		ui->volumeControlsWidget->insertVolumeRotationWidget(m_volumeRotationWidget);
+	}
+	else if (ui->controlPanelLayout) {
+		ui->controlPanelLayout->addWidget(m_volumeRotationWidget);
+	}
+
+	/*
+	// When the user explicitly applies a downsample, notify child ImageFrameWidget instances
+	// so they can re-check their vtkImageData and reconfigure (updateData()).
+	connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceApplied, this, [this]() {
+		if (!ui->lightboxWidget) return;
+		if (auto* yz = ui->lightboxWidget->getYZView()) yz->updateData();
+		if (auto* xz = ui->lightboxWidget->getXZView()) xz->updateData();
+		if (auto* xy = ui->lightboxWidget->getXYView()) xy->updateData();
+		if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
+	}, Qt::UniqueConnection);
+	*/
 	setupPanelConnections();
 
 	loadRecentFiles();
@@ -112,20 +141,7 @@ MainWindow::~MainWindow()
 {
 	saveRecentFiles();
 	delete ui;
-}
-
-void MainWindow::loadVolume(vtkSmartPointer<vtkImageData> imageData)
-{
-	currentImageData = imageData;
-	if (!imageData || imageData->GetDimensions()[0] <= 1 ||
-		imageData->GetDimensions()[1] <= 1 ||
-		imageData->GetDimensions()[2] <= 1) {
-		// If image is invalid, set default image in LightboxWidget
-		ui->lightboxWidget->setDefaultImage();
-	}
-	else {
-		ui->lightboxWidget->setImageData(imageData);
-	}
+	// m_volumeRotationWidget has parent this and will be deleted automatically
 }
 
 void MainWindow::onActionOpen()
@@ -219,7 +235,7 @@ void MainWindow::setupPanelConnections()
 
 	// toggle volume slice planes
 	connect(ui->volumeControlsWidget, &VolumeControlsWidget::slicePlaneToggle,
-		ui->lightboxWidget->getVolumeView(), &VolumeView::setSlicePlanesVisible);
+		ui->lightboxWidget->getVolumeView(), &VolumeView::setOrthoPlanesVisible);
 
 	// update the range sliders when the image extents change
 	connect(ui->lightboxWidget->getVolumeView(), &VolumeView::imageExtentsChanged,
@@ -252,13 +268,11 @@ void MainWindow::setupPanelConnections()
 		auto* vcw = ui->volumeControlsWidget;
 		// Ensure checkbox exists before wiring; connect VolumeView signal -> QCheckBox::setChecked
 		if (volView && vcw && vcw->slicePlaneCheckBox()) {
-			connect(volView, &VolumeView::slicePlanesVisibleChanged,
+			connect(volView, &VolumeView::orthoPlanesVisibleChanged,
 					vcw->slicePlaneCheckBox(), &QCheckBox::setChecked,
 					Qt::UniqueConnection);
 		}
 	}
-
-	// NOTE: signal wiring between controller <-> bridge <-> views happens inside LightboxWidget.
 }
 
 void MainWindow::addToRecentFiles(const QString& filePath)
@@ -365,26 +379,37 @@ void MainWindow::openFile(const QString& filePath)
 	// Use ImageLoader::CanReadFile for file type detection and existence
 	if (!ImageLoader::CanReadFile(filePath)) {
 		QMessageBox::warning(this, "Cannot Open File",
-			QString("The selected file cannot be opened. It may not exist, is not readable, or is not a supported type (DICOM or ISQ).\n\nFile: %1").arg(filePath));
+			QString("The selected file cannot be opened. It may not exist, is not readable, or is not a supported type (DICOM, ISQ or NIfTI).\n\nFile: %1").arg(filePath));
 		return;
 	}
 
-	// Set image type based on extension
+	// Set image type based on extension (prefer explicit mapping for files)
 	QString lower = filePath.toLower();
 	if (lower.endsWith(".isq")) {
-		imageLoader->SetImageType(ImageLoader::ImageType::ScancoISQ);
+		m_imageLoader->SetImageType(ImageLoader::ImageType::ScancoISQ);
+	}
+	else if (lower.endsWith(".nii") || lower.endsWith(".nii.gz")) {
+		m_imageLoader->SetImageType(ImageLoader::ImageType::NIFTI);
 	}
 	else if (lower.endsWith(".dcm") || lower.endsWith(".dicom")) {
-		imageLoader->SetImageType(ImageLoader::ImageType::DICOM);
+		m_imageLoader->SetImageType(ImageLoader::ImageType::DICOM);
+	}
+	else {
+		// For directories or unknown extensions, fall back to the loader's default behavior.
+		QFileInfo info(filePath);
+		if (info.isDir()) {
+			m_imageLoader->SetImageType(ImageLoader::ImageType::DICOM);
+		}
+		// otherwise leave the ImageLoader::ImageType as-is (it may have been set by CanReadFile probe)
 	}
 
-	imageLoader->SetInputPath(filePath);
+	m_imageLoader->SetInputPath(filePath);
 
 	// Try to load the image with detailed error feedback
 	vtkSmartPointer<vtkImageData> vtkImage;
 	try {
-		imageLoader->Update();
-		vtkImage = imageLoader->GetOutput();
+		m_imageLoader->Update();
+		vtkImage = m_imageLoader->GetOutput();
 		if (!vtkImage) {
 			QMessageBox::critical(this, "Unsupported or Invalid File",
 				QString("Failed to load volume. The file may be corrupted, empty, or in an unsupported format.\n\nFile: %1").arg(filePath));
@@ -403,13 +428,47 @@ void MainWindow::openFile(const QString& filePath)
 		return;
 	}
 
-	// Display the loaded image
-	loadVolume(vtkImage);
+	if (vtkImage->GetDimensions()[0] <= 1 ||
+		vtkImage->GetDimensions()[1] <= 1 ||
+		vtkImage->GetDimensions()[2] <= 1) {
+		QMessageBox::critical(this, "Invalid Volume Data",
+			QString("The loaded volume has invalid dimensions and cannot be displayed.\n\nFile: %1").arg(filePath));
 
-	// Update recent files list
-	addToRecentFiles(filePath);
+		ui->lightboxWidget->setDefaultImage();
+		if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
+	}
+	else if (m_volumeRotationWidget) {
 
-	saveRecentFiles();
+		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort(), true);
+
+		/*
+		// enable operational mode before attaching the pipeline
+		m_volumeRotationWidget->setOperational(true);
+
+		m_volumeRotationWidget->setInputConnection(m_imageLoader->GetOutputPort());
+
+		ui->lightboxWidget->setInputConnection(m_volumeRotationWidget->getOutputPort());
+		*/
+		/*
+		// pipeline mode: ask views to refresh when rotation widget updates the reslice
+		connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceReady, this, [this]() {
+			if (!ui->lightboxWidget) return;
+			if (auto* yz = ui->lightboxWidget->getYZView()) yz->updateData();
+			if (auto* xz = ui->lightboxWidget->getXZView()) xz->updateData();
+			if (auto* xy = ui->lightboxWidget->getXYView()) xy->updateData();
+			if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
+		}, Qt::UniqueConnection);
+		*/
+
+
+		// Update recent files list
+		addToRecentFiles(filePath);
+		saveRecentFiles();
+	}
+	else {
+		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort(), true);
+		if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
+	}
 }
 
 void MainWindow::saveScreenshot()
@@ -422,36 +481,50 @@ void MainWindow::saveScreenshot()
 	}
 }
 
-void MainWindow::showEvent(QShowEvent* event)
-{
-	QMainWindow::showEvent(event);
-
-	if (!defaultImageLoaded) {
-		if (ui->lightboxWidget) {
-			ui->lightboxWidget->setDefaultImage();
-		}
-		defaultImageLoaded = true;
-	}
-}
-
 void MainWindow::onVtkStartEvent()
 {
-	progressBar->setValue(0);
-	progressBar->setVisible(true);
+	// If we're already on the GUI thread update UI directly, otherwise queue it.
+	if (QThread::currentThread() == this->thread()) {
+		showLoaderStart();
+		// Ensure the progress bar is painted immediately while the read is running.
+		progressBar->update();
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	}
+	else {
+		QMetaObject::invokeMethod(this, "showLoaderStart", Qt::QueuedConnection);
+	}
 }
 
 void MainWindow::onVtkEndEvent()
 {
-	progressBar->setValue(100);
-	progressBar->setVisible(false);
+	if (QThread::currentThread() == this->thread()) {
+		showLoaderEnd();
+		progressBar->update();
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	}
+	else {
+		QMetaObject::invokeMethod(this, "showLoaderEnd", Qt::QueuedConnection);
+	}
 }
 
 void MainWindow::onVtkProgressEvent()
 {
-	if (!imageLoader) return;
-	double progress = imageLoader->GetProgress(); // vtkAlgorithm::GetProgress()
-	progressBar->setValue(static_cast<int>(progress * 100));
-	progressBar->setVisible(true);
+	if (!m_imageLoader) return;
+	double p = m_imageLoader->GetProgress();
+	int value = static_cast<int>(std::clamp(p, 0.0, 1.0) * 100.0);
+
+	// If caller is on GUI thread we must update directly (and pump events briefly) because the read
+	// is blocking the event loop. Otherwise use a queued invocation.
+	if (QThread::currentThread() == this->thread()) {
+		// Throttle client-side if needed (keep it responsive), but do immediate update.
+		setLoaderProgress(value);
+		progressBar->update();
+		// brief event pump so the widget repaints while the blocking read continues
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	}
+	else {
+		QMetaObject::invokeMethod(this, "setLoaderProgress", Qt::QueuedConnection, Q_ARG(int, value));
+	}
 }
 
 // Accept drag if it contains a supported file
@@ -485,4 +558,23 @@ void MainWindow::dropEvent(QDropEvent* event)
 		}
 	}
 	event->ignore();
+}
+
+void MainWindow::setLoaderProgress(int percent)
+{
+	progressBar->setValue(percent);
+	progressBar->setVisible(true);
+}
+
+void MainWindow::showLoaderStart()
+{
+	progressBar->setValue(0);
+	progressBar->setVisible(true);
+	progressBar->setEnabled(true);
+}
+
+void MainWindow::showLoaderEnd()
+{
+	progressBar->setValue(100);
+	progressBar->setVisible(false);
 }

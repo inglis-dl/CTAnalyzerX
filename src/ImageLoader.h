@@ -10,7 +10,8 @@ class ImageLoader : public vtkImageAlgorithm {
 public:
 	enum class ImageType {
 		ScancoISQ,
-		DICOM
+		DICOM,
+		NIFTI
 	};
 
 	static ImageLoader* New();
@@ -54,6 +55,13 @@ private:
 
 	vtkSmartPointer<vtkImageData> LoadScancoISQ();
 	vtkSmartPointer<vtkImageData> LoadDICOM();
+	vtkSmartPointer<vtkImageData> LoadNIfTI();
+
+	// Cached reader instance used for both RequestInformation and RequestData
+	vtkSmartPointer<vtkImageAlgorithm> cachedReader;
+
+	// Ensure cachedReader exists and is configured for current path/type
+	void EnsureReaderInitialized();
 
 	// Cached reader instance used for both RequestInformation and RequestData
 	vtkSmartPointer<vtkImageAlgorithm> cachedReader;

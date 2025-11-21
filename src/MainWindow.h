@@ -6,6 +6,8 @@
 #include <QProgressBar>
 #include <vtkSmartPointer.h>
 
+#include <memory>
+
 namespace Ui {
 	class MainWindow;
 }
@@ -13,6 +15,7 @@ namespace Ui {
 class vtkImageData;
 class ImageLoader;
 class vtkEventQtSlotConnect;
+class VolumeRotationWidget; // forward declare
 
 class MainWindow : public QMainWindow
 {
@@ -24,7 +27,6 @@ public:
 
 protected:
 	void keyPressEvent(QKeyEvent* event) override;
-	void showEvent(QShowEvent* event) override;
 	void dragEnterEvent(QDragEnterEvent* event) override;
 	void dropEvent(QDropEvent* event) override;
 
@@ -38,10 +40,12 @@ private slots:
 	void onVtkStartEvent();
 	void onVtkEndEvent();
 	void onVtkProgressEvent();
+	void setLoaderProgress(int percent);
+	void showLoaderStart();
+	void showLoaderEnd();
 
 private:
 	void setupPanelConnections();
-	void loadVolume(vtkSmartPointer<vtkImageData> imageData);
 	void addToRecentFiles(const QString& filePath);
 	void updateRecentFilesMenu();
 	void loadRecentFiles();
@@ -52,9 +56,12 @@ private:
 	QStringList recentFiles;
 	vtkSmartPointer<vtkImageData> currentImageData;
 	vtkSmartPointer<vtkEventQtSlotConnect> vtkConnections;
-	vtkSmartPointer<ImageLoader> imageLoader = nullptr;
+	vtkSmartPointer<ImageLoader> m_imageLoader = nullptr;
 	QProgressBar* progressBar = nullptr;
 	bool defaultImageLoaded = false;
+
+	// Rotation widget for reslicing the volume
+	VolumeRotationWidget* m_volumeRotationWidget = nullptr;
 };
 
 #endif // MAINWINDOW_H

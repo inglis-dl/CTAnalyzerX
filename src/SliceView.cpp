@@ -14,12 +14,13 @@
 #include <QIntValidator>
 #include <QSignalBlocker>
 #include <QKeyEvent>
-#include <QtGlobal>
 #include <QApplication>
 #include <QMouseEvent>
 #include <QTimer>
 #include <QDebug>
+#include <cmath> // added for std::lround
 
+#include <vtkAlgorithmOutput.h>
 #include <vtkRenderWindow.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkRenderer.h>
@@ -35,6 +36,8 @@
 #include <vtkRenderWindowInteractor.h>
 #include <vtkCommand.h>
 #include <vtkImageShiftScale.h>
+
+#include <QThread>
 
 SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	: ImageFrameWidget(parent)
@@ -101,7 +104,7 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 
 	// Initialize slice mapper and image slice
 	sliceMapper = vtkSmartPointer<vtkImageSliceMapper>::New();
-	sliceMapper->StreamingOn();
+	//sliceMapper->StreamingOn();
 
 	imageSlice = vtkSmartPointer<vtkImageSlice>::New();
 	imageSlice->SetMapper(sliceMapper);
@@ -385,10 +388,9 @@ void SliceView::rotateCamera(double degrees)
 	}
 }
 
-void SliceView::setImageData(vtkImageData* image) {
-	if (!image) return;
-
-	m_imageData = image;
+void SliceView::updateData()
+{
+	if (!m_imageData) return;
 
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput();
@@ -434,22 +436,8 @@ void SliceView::setImageData(vtkImageData* image) {
 	imageProperty->SetColorWindow(mappedWindow);
 	imageProperty->SetColorLevel(mappedLevel);
 
-	// Prime the interactor style so 'r' resets to this baseline WL.
-	if (auto* iren = m_renderWindow->GetInteractor()) {
-		if (auto* style = vtkInteractorStyleImage::SafeDownCast(iren->GetInteractorStyle())) {
-			// Ensure the style can find the image and property
-			style->SetDefaultRenderer(m_renderer);
-			style->SetCurrentRenderer(m_renderer);
-
-			// Force the style to (re)scan the renderer's image props so CurrentImageProperty is valid.
-			// Use -1 to mean "last/topmost" like the style's logic expects.
-			style->SetCurrentImageNumber(-1);
-
-			// This captures imageProperty->GetColorWindow/Level() into WindowLevelInitial
-			style->StartWindowLevel();
-			style->EndWindowLevel();
-		}
-	}
+	// Emit native-domain signal so UI controls reflect the newly loaded image.
+	emit windowLevelChanged(baseWindowNative, baseLevelNative);
 
 	// Set camera and show a valid slice immediately (center)
 	updateCamera();
@@ -459,22 +447,15 @@ void SliceView::setImageData(vtkImageData* image) {
 
 	// set the slice mapper slice
 	setSliceIndex(m_currentSlice);
-}
 
-void SliceView::updateData()
-{
-	m_shiftScaleFilter->Update();
-
-	imageSlice->Modified();
-	imageSlice->Update();
-
-	updateSliceRange();
-
-	// Set camera and show a valid slice immediately (center)
-	updateCamera();
-	setSliceIndex((m_minSlice + m_maxSlice) / 2);
-
-	render();
+	/*
+	qDebug() << "[SliceView::updateData] m_imageData =" << static_cast<void*>(m_imageData);
+	qDebug() << "[SliceView::updateData] extent =" << m_extent[0] << m_extent[1] << m_extent[2] << m_extent[3] << m_extent[4] << m_extent[5];
+	qDebug() << "[SliceView::updateData] spacing =" << m_spacing[0] << m_spacing[1] << m_spacing[2];
+	qDebug() << "[SliceView::updateData] origin =" << m_origin[0] << m_origin[1] << m_origin[2];
+	if (sliceMapper) { sliceMapper->Update(); qDebug() << "[SliceView::updateData] mapper range:" << sliceMapper->GetSliceNumberMinValue() << sliceMapper->GetSliceNumberMaxValue(); }
+	qDebug() << "[SliceView::updateData] imageSlice added to renderer?" << (m_renderer && imageSlice ? m_renderer->HasViewProp(imageSlice) : false);
+	*/
 }
 
 void SliceView::updateCamera() {
@@ -565,11 +546,11 @@ void SliceView::updateSliceRange() {
 	if (!sliceMapper || sliceMapper->GetNumberOfInputConnections(0) == 0)
 		return;
 
-	// Make sure information is current so min/max are valid
-	sliceMapper->Update();
-
 	m_minSlice = sliceMapper->GetSliceNumberMinValue();
 	m_maxSlice = sliceMapper->GetSliceNumberMaxValue();
+
+	// Ensure current slice is inside the recovered/valid range
+	m_currentSlice = std::clamp(m_currentSlice, m_minSlice, m_maxSlice);
 
 	ui->sliderSlicePosition->setMinimum(m_minSlice);
 	ui->sliderSlicePosition->setMaximum(m_maxSlice);
@@ -599,7 +580,6 @@ void SliceView::updateSlice() {
 	if (!m_imageData) return;
 
 	sliceMapper->SetSliceNumber(m_currentSlice);
-	sliceMapper->Update();
 
 	int u = 0, v = 1, w = m_viewOrientation;
 	switch (w)
@@ -785,12 +765,35 @@ void SliceView::resetWindowLevel()
 
 	// Refresh display
 	render();
+
+	// Also emit native-domain window/level so controllers/listeners update.
+	// mapped -> native conversion: nativeWindow = mappedWindow / scale;
+	// nativeLevel = (mappedLevel / scale) - shift;
+	if (std::isfinite(m_scalarScale) && m_scalarScale != 0.0) {
+		const double nativeWindow = std::max(windowMapped / m_scalarScale, 1.0);
+		const double nativeLevel = (levelMapped / m_scalarScale) - m_scalarShift;
+		emit windowLevelChanged(nativeWindow, nativeLevel);
+	}
+}
+
+void SliceView::updateInteractorWindowLevelBaseline()
+{
+	// Update interactor style baseline to match the current image property WL
+	if (!m_imageData || !imageProperty || !interactorStyle) return;
+
+	interactorStyle->SetDefaultRenderer(m_renderer);
+	interactorStyle->SetCurrentRenderer(m_renderer);
+	interactorStyle->SetCurrentImageNumber(-1);
+	interactorStyle->StartWindowLevel();
+	interactorStyle->EndWindowLevel();
 }
 
 void SliceView::onResetWindowLevel(vtkObject* /*obj*/)
 {
-	// Handle vtkInteractorStyleImage 'r'/'R' (no modifiers) using our retained baseline
-	this->resetWindowLevel();
+	// The user pressed 'r' in this slice. Emit a request signal so the Lightbox/Controller
+	// can perform a single coordinated reset for all views. This avoids this slice's
+	// programmatic baseline update generating windowLevelChanged and propagating to siblings.
+	emit requestResetWindowLevel();
 }
 
 void SliceView::onInteractorWindowLevel(vtkObject* caller)
@@ -952,49 +955,162 @@ void SliceView::onEditorReturnPressed()
 // new method: install a shared vtkImageProperty (sharedProp may be the same instance across views)
 void SliceView::setSharedImageProperty(vtkImageProperty* sharedProp)
 {
-	if (!sharedProp || !imageSlice) return;
+	if (!sharedProp || !imageSlice)
+		return;
 
-	// Replace our local imageProperty pointer with the shared one
-	imageSlice->SetProperty(sharedProp);
-	imageProperty = vtkImageProperty::SafeDownCast(sharedProp);
-
-	// Ensure interactor style baseline picks up the new property values
-	updateInteractorWindowLevelBaseline();
-
-	// Re-render to reflect the change immediately
-	render();
-}
-
-// new method: restore an independent imageProperty (fresh copy) if caller wants to un-link
-void SliceView::clearSharedImageProperty()
-{
-	// Create a fresh property preserving current mapped-domain WL/level
-	vtkSmartPointer<vtkImageProperty> newProp = vtkSmartPointer<vtkImageProperty>::New();
-	if (imageProperty) {
-		newProp->SetColorWindow(imageProperty->GetColorWindow());
-		newProp->SetColorLevel(imageProperty->GetColorLevel());
-		newProp->SetInterpolationType(imageProperty->GetInterpolationType());
+	// Ensure execution on GUI thread. If we're called from another thread,
+	// re-post the call to the object's thread (queued) and return.
+	if (QThread::currentThread() != this->thread()) {
+		vtkImageProperty* prop = sharedProp;
+		QMetaObject::invokeMethod(
+			this,
+			[this, prop]() { this->setSharedImageProperty(prop); },
+			Qt::QueuedConnection);
+		return;
 	}
-	// Apply the new property to our slice
-	imageSlice->SetProperty(newProp);
-	imageProperty = newProp;
 
-	// Update baseline in interactor style so 'r' restores to this new property
+	// Idempotent: if this view already uses the requested property, do nothing.
+	vtkImageProperty* safeProp = vtkImageProperty::SafeDownCast(sharedProp);
+	if (imageProperty == safeProp)
+		return;
+
+	// Install the shared property (atomic with respect to this object since we're on GUI thread)
+	imageSlice->SetProperty(sharedProp);
+	imageProperty = safeProp;
+
+	// Update the interactor baseline synchronously (required for WL baseline correctness).
 	updateInteractorWindowLevelBaseline();
-	render();
+
+	// Emit native-domain window/level so UI controls reflect the newly installed property.
+	// Convert mapped (vtkImageProperty) -> native domain (inverse of (native + shift) * scale).
+	if (imageProperty) {
+		const double mappedWindow = imageProperty->GetColorWindow();
+		const double mappedLevel = imageProperty->GetColorLevel();
+		const double lowerMapped = mappedLevel - 0.5 * std::fabs(mappedWindow);
+		const double upperMapped = mappedLevel + 0.5 * std::fabs(mappedWindow);
+		const double lowerNative = (lowerMapped / m_scalarScale) - m_scalarShift;
+		const double upperNative = (upperMapped / m_scalarScale) - m_scalarShift;
+		const double nativeWindow = std::max(upperNative - lowerNative, 1.0);
+		const double nativeLevel = 0.5 * (upperNative + lowerNative);
+		emit windowLevelChanged(nativeWindow, nativeLevel);
+	}
+
+	// Defer render to the event loop to avoid nested / re-entrant rendering and ordering races
+	// between multiple views that may also be changing the same property.
+	QTimer::singleShot(0, this, [this]() { this->render(); });
 }
 
-// helper: ensure vtkInteractorStyleImage internal baseline values reflect imageProperty
-void SliceView::updateInteractorWindowLevelBaseline()
+void SliceView::captureDerivedViewState()
 {
-	if (!m_renderWindow || !interactorStyle) return;
+	// If no image, nothing to capture
+	if (!m_imageData) return;
 
-	// ensure style knows about this renderer and image
-	interactorStyle->SetDefaultRenderer(m_renderer);
-	interactorStyle->SetCurrentRenderer(m_renderer);
-	interactorStyle->SetCurrentImageNumber(-1);
+	// Save camera (deep copy)
+	m_savedCamera = nullptr;
+	if (m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			m_savedCamera = vtkSmartPointer<vtkCamera>::New();
+			m_savedCamera->DeepCopy(cam);
+		}
+	}
 
-	// Start/End to capture current imageProperty colors into the style's initial values
-	interactorStyle->StartWindowLevel();
-	interactorStyle->EndWindowLevel();
+	// Build a continuous index from the camera focal point (preserve in-plane centering)
+	// and replace the view-normal component with the current slice index so the saved
+	// world point corresponds to the visible slice location.
+	double contIdx[3] = { 0.0, 0.0, 0.0 };
+	if (m_renderer && m_renderer->GetActiveCamera()) {
+		double focal[3];
+		m_renderer->GetActiveCamera()->GetFocalPoint(focal);
+		// Transform physical focal -> continuous index
+		m_imageData->TransformPhysicalPointToContinuousIndex(focal, contIdx);
+	}
+	else {
+		// Fallback: use the center indices of the current extent
+		contIdx[0] = 0.5 * (m_extent[0] + m_extent[1]);
+		contIdx[1] = 0.5 * (m_extent[2] + m_extent[3]);
+		contIdx[2] = 0.5 * (m_extent[4] + m_extent[5]);
+	}
+
+	// Overwrite the view-normal component with the discrete slice index
+	const int w = static_cast<int>(m_viewOrientation);
+	contIdx[w] = static_cast<double>(m_currentSlice);
+
+	// Convert continuous index -> physical/world coordinate and store
+	double savedWorld[3] = { 0.0, 0.0, 0.0 };
+	m_imageData->TransformContinuousIndexToPhysicalPoint(contIdx, savedWorld);
+	m_savedSliceWorld[0] = savedWorld[0];
+	m_savedSliceWorld[1] = savedWorld[1];
+	m_savedSliceWorld[2] = savedWorld[2];
+
+	// Save mapped WL from the image property (if present)
+	if (imageProperty) {
+		m_savedMappedWindow = imageProperty->GetColorWindow();
+		m_savedMappedLevel = imageProperty->GetColorLevel();
+	}
+	else {
+		m_savedMappedWindow = std::numeric_limits<double>::quiet_NaN();
+		m_savedMappedLevel = std::numeric_limits<double>::quiet_NaN();
+	}
+
+	m_hasSavedState = true;
+}
+
+void SliceView::restoreDerivedViewState()
+{
+	if (!m_hasSavedState) return;
+
+	// Ensure mapper ranges are up-to-date to compute valid min/max slice indices
+	if (sliceMapper) sliceMapper->Update();
+	updateSliceRange();
+
+	// Convert saved world point -> continuous index, then round to nearest slice index
+	const int w = static_cast<int>(m_viewOrientation);
+	double contIdx[3] = { 0.0, 0.0, 0.0 };
+	m_imageData->TransformPhysicalPointToContinuousIndex(m_savedSliceWorld, contIdx);
+
+	// Round nearest and clamp
+	int restoredIndex = static_cast<int>(std::lround(contIdx[w]));
+	restoredIndex = std::clamp(restoredIndex, m_minSlice, m_maxSlice);
+
+	// Restore the slice index (this updates camera focal/position properly)
+	setSliceIndex(restoredIndex);
+
+	// Restore mapped WL to the image property and update interactor baseline
+	if (imageProperty && std::isfinite(m_savedMappedWindow) && std::isfinite(m_savedMappedLevel)) {
+		imageProperty->SetColorWindow(m_savedMappedWindow);
+		imageProperty->SetColorLevel(m_savedMappedLevel);
+		updateInteractorWindowLevelBaseline();
+	}
+
+	// Restore camera orientation/roll if we captured it.
+	// Preserve the current focal point (set by setSliceIndex) but adopt the saved
+	// direction-of-projection and view-up so rotation is preserved across geometry changes.
+	if (m_savedCamera && m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			double savedDOP[3]; m_savedCamera->GetDirectionOfProjection(savedDOP);
+			double savedUp[3];  m_savedCamera->GetViewUp(savedUp);
+
+			// Keep focal point that setSliceIndex established
+			double curFpt[3]; cam->GetFocalPoint(curFpt);
+
+			// Use saved distance if reasonable, otherwise keep current distance
+			double dist = m_savedCamera->GetDistance();
+			if (!(dist > 0.0)) dist = cam->GetDistance();
+
+			// Position camera along -savedDOP so it looks at the current focal point
+			cam->SetFocalPoint(curFpt);
+			cam->SetPosition(curFpt[0] - savedDOP[0] * dist,
+							 curFpt[1] - savedDOP[1] * dist,
+							 curFpt[2] - savedDOP[2] * dist);
+			cam->SetViewUp(savedUp);
+			cam->OrthogonalizeViewUp();
+			m_renderer->ResetCameraClippingRange();
+		}
+	}
+
+	// Trigger a render to reflect restored state
+	render();
+
+	// Clear saved flag
+	m_hasSavedState = false;
 }

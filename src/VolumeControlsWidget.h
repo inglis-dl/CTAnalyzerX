@@ -27,6 +27,13 @@ public:
 	QCheckBox* slicePlaneCheckBox() const { return ui.slicePlaneCheckBox; }
 	QPushButton* resetButton() const { return ui.btnReset; }
 
+	// Insert an external WindowLevel controller into the dedicated group box.
+	// Controller is NOT owned by VolumeControlsWidget (it will have a parent set here).
+	// This method adjusts size policies so the groupbox fits the controller's fixed height.
+	void insertWindowLevelController(QWidget* controller);
+
+	void insertVolumeRotationWidget(QWidget* rotationWidget);
+
 public slots:
 	void setRangeSliders(int yzMin, int yzMax, int xzMin, int xzMax, int xyMin, int xyMax);
 	// Called from external owner (VolumeView/MainWindow) to synchronize cropping enabled state.
@@ -44,12 +51,6 @@ private slots:
 	void updateXYLabel(int min, int max);
 	// Enable/disable cropping controls when the cropping checkbox toggles
 	void onCroppingToggled(bool checked);
-
-public:
-	// Insert an external WindowLevel controller into the dedicated group box.
-	// Controller is NOT owned by VolumeControlsWidget (it will have a parent set here).
-	// This method adjusts size policies so the groupbox fits the controller's fixed height.
-	void insertWindowLevelController(QWidget* controller);
 
 private:
 	Ui::VolumeControlsWidget ui;

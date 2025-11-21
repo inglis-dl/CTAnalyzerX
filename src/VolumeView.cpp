@@ -1,6 +1,7 @@
 #include "VolumeView.h"
 #include "ui_VolumeView.h"
 #include "MenuButton.h"
+#include "vtkImageOrthoPlanes.h"
 
 #include <QAction>
 #include <QMenu>
@@ -29,10 +30,11 @@
 #include <vtkImageShiftScale.h>
 #include <vtkImageSliceMapper.h>
 #include <vtkImageProperty.h>
-
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkActor.h>
+
+#include <cmath> // added for std::lround
 
 
 VolumeView::VolumeView(QWidget* parent)
@@ -69,6 +71,7 @@ VolumeView::VolumeView(QWidget* parent)
 	m_mapper = vtkSmartPointer<vtkGPUVolumeRayCastMapper>::New();
 	m_mapper->SetBlendModeToComposite();
 	m_mapper->SetAutoAdjustSampleDistances(1);
+	m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
 	m_volumeProperty = vtkSmartPointer<vtkVolumeProperty>::New();
 	m_volumeProperty->ShadeOff();
@@ -88,30 +91,6 @@ VolumeView::VolumeView(QWidget* parent)
 
 	auto interactor = m_renderWindow->GetInteractor();
 
-	// Create orthogonal vtkImageSlice / vtkImageSliceMapper actors for 3D slice-planes mode.
-	m_sliceMapperYZ = vtkSmartPointer<vtkImageSliceMapper>::New();
-	m_sliceMapperXZ = vtkSmartPointer<vtkImageSliceMapper>::New();
-	m_sliceMapperXY = vtkSmartPointer<vtkImageSliceMapper>::New();
-
-	m_sliceMapperYZ->StreamingOn();
-	m_sliceMapperXZ->StreamingOn();
-	m_sliceMapperXY->StreamingOn();
-
-	m_imageSliceYZ = vtkSmartPointer<vtkImageSlice>::New();
-	m_imageSliceXZ = vtkSmartPointer<vtkImageSlice>::New();
-	m_imageSliceXY = vtkSmartPointer<vtkImageSlice>::New();
-
-	m_imageSliceYZ->SetMapper(m_sliceMapperYZ);
-	m_imageSliceXZ->SetMapper(m_sliceMapperXZ);
-	m_imageSliceXY->SetMapper(m_sliceMapperXY);
-
-	// Default interpolation for slice actors
-	if (m_imageSliceYZ->GetProperty()) m_imageSliceYZ->GetProperty()->SetInterpolationTypeToLinear();
-	if (m_imageSliceXZ->GetProperty()) m_imageSliceXZ->GetProperty()->SetInterpolationTypeToLinear();
-	if (m_imageSliceXY->GetProperty()) m_imageSliceXY->GetProperty()->SetInterpolationTypeToLinear();
-
-	createSliceOutlineActors();
-
 	m_qvtk = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 	if (interactor) {
 		// Use full-signature slot so we can abort plain 'r'/'R'
@@ -121,6 +100,35 @@ VolumeView::VolumeView(QWidget* parent)
 
 		m_qvtk->Connect(m_renderer->GetActiveCamera(), vtkCommand::ModifiedEvent,
 			this, SLOT(onCameraModified(vtkObject*)), nullptr);
+	}
+
+	// inside VolumeView::VolumeView after creating m_imageSliceXY / m_sliceMappers
+	m_orthoPlanes = vtkSmartPointer<vtkImageOrthoPlanes>::New();
+	if (m_shiftScaleFilter) {
+		m_orthoPlanes->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	}
+	// keep ortho planes hidden initially (will be toggled via setOrthoPlanesVisible)
+	m_orthoPlanes->SetPlaneVisibility(false, false, false);
+
+	// ensure it's present in renderer so it participates in bounds/rendering
+	if (m_renderer && !m_renderer->HasViewProp(m_orthoPlanes)) {
+		m_renderer->AddViewProp(m_orthoPlanes);
+	}
+
+	// at end of createSliceOutlineActors(), after XY/XZ/YZ props are prepared
+	if (m_orthoPlanes) {
+		vtkActor* ax = m_orthoPlanes->GetOutlineActorX(); // X: YZ plane
+		vtkActor* ay = m_orthoPlanes->GetOutlineActorY(); // Y: XZ plane
+		vtkActor* az = m_orthoPlanes->GetOutlineActorZ(); // Z: XY plane
+		if (ax) {
+			ax->GetProperty()->SetColor(1.0, 0.0, 0.0);
+		}
+		if (ay) {
+			ay->GetProperty()->SetColor(0.0, 1.0, 0.0);
+		}
+		if (az) {
+			az->GetProperty()->SetColor(0.0, 0.0, 1.0);
+		}
 	}
 }
 
@@ -149,23 +157,23 @@ void VolumeView::createMenuAndActions()
 			if (item == QLatin1String("XY") || item == QLatin1String("YZ") || item == QLatin1String("XZ")) {
 				const ViewOrientation orient = labelToOrientation(item);
 				setViewOrientation(orient);
-				setTitle(m_slicePlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
+				setTitle(m_orthoPlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
 				return;
 			}
 
 			if (item == QLatin1String("Volume")) {
 				// Toggle to 3D volume rendering
-				setSlicePlanesVisible(false);
+				setOrthoPlanesVisible(false);
 			}
 			else if (item == QLatin1String("Slice Planes")) {
 				// Toggle to slice planes view
-				setSlicePlanesVisible(true);
+				setOrthoPlanesVisible(true);
 			}
 			else if (item == QLatin1String("Reset Camera")) {
 				resetCamera();
 			}
 			// Always restore the title to the current mode after any command
-			setTitle(m_slicePlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
+			setTitle(m_orthoPlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
 		});
 	}
 }
@@ -192,28 +200,16 @@ void VolumeView::initializeDefaultTransferFunctions()
 	m_volumeProperty->SetScalarOpacity(m_scalarOpacity);
 }
 
-void VolumeView::setImageData(vtkImageData* image)
+void VolumeView::updateData()
 {
-	if (!image) return;
+	if (!m_imageData) return;
 
-	m_imageData = image;
+	m_shiftScaleFilter->Update();
 
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput();
 	cacheImageGeometry();
 
-	// TODO: attach ImageResliceHelper here to route post-shift/scale -> reslice -> mapper when integrating reslice workflow.
-	//       e.g. helper->SetInputConnection(m_shiftScaleFilter->GetOutputPort()); mapper->SetInputConnection(helper->GetOutputPort());
-	//
-	// Feed orthogonal vtkImageSlice mappers from the post-shift/scale output so they can be shown in 3D mode.
-	m_sliceMapperYZ->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-	m_sliceMapperXZ->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-	m_sliceMapperXY->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-
-	// Ensure mapper orientation matches canonical axes (X normal => YZ plane, etc.)
-	m_sliceMapperYZ->SetOrientationToX();
-	m_sliceMapperXZ->SetOrientationToY();
-	m_sliceMapperXY->SetOrientationToZ();
 	//
 	// Place slice actors / mappers to data bounds so rendering is robust.
 	double b[6] = { 0,0,0,0,0,0 };
@@ -224,79 +220,20 @@ void VolumeView::setImageData(vtkImageData* image)
 	const int cz = (m_extent[4] + m_extent[5]) / 2;
 
 	if (!m_imageInitialized) {
-		m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-
-		//
-		// Add slices to the scene but keep them invisible until slicePlanesVisible is true.
-		// Use AddViewProp so image slices render in the main renderer.
-		if (m_imageSliceYZ && !m_renderer->HasViewProp(m_imageSliceYZ)) m_renderer->AddViewProp(m_imageSliceYZ);
-		if (m_imageSliceXZ && !m_renderer->HasViewProp(m_imageSliceXZ)) m_renderer->AddViewProp(m_imageSliceXZ);
-		if (m_imageSliceXY && !m_renderer->HasViewProp(m_imageSliceXY)) m_renderer->AddViewProp(m_imageSliceXY);
-		//
-		// Initially hide the slice actors (they will be shown when slicePlanesVisible==true)
-		if (m_imageSliceYZ) m_imageSliceYZ->VisibilityOff();
-		if (m_imageSliceXZ) m_imageSliceXZ->VisibilityOff();
-		if (m_imageSliceXY) m_imageSliceXY->VisibilityOff();
-
-		// add the outline actors to the scene
-		if (m_outlineActorYZ && !m_renderer->HasViewProp(m_outlineActorYZ)) m_renderer->AddViewProp(m_outlineActorYZ);
-		if (m_outlineActorXZ && !m_renderer->HasViewProp(m_outlineActorXZ)) m_renderer->AddViewProp(m_outlineActorXZ);
-		if (m_outlineActorXY && !m_renderer->HasViewProp(m_outlineActorXY)) m_renderer->AddViewProp(m_outlineActorXY);
-		if (m_outlineActorYZ) m_outlineActorYZ->VisibilityOff();
-		if (m_outlineActorXZ) m_outlineActorXZ->VisibilityOff();
-		if (m_outlineActorXY) m_outlineActorXY->VisibilityOff();
-
-		const double wz = m_origin[2] + m_spacing[2] * static_cast<double>(cz);
-		const double x0 = m_origin[0] + m_spacing[0] * m_extent[0];
-		const double x1 = m_origin[0] + m_spacing[0] * m_extent[1];
-		const double y0 = m_origin[1] + m_spacing[1] * m_extent[2];
-		const double y1 = m_origin[1] + m_spacing[1] * m_extent[3];
-
-		vtkSmartPointer<vtkPoints> ptsXY = vtkSmartPointer<vtkPoints>::New();
-		ptsXY->SetNumberOfPoints(5);
-		ptsXY->SetPoint(0, x0, y0, wz);
-		ptsXY->SetPoint(1, x1, y0, wz);
-		ptsXY->SetPoint(2, x1, y1, wz);
-		ptsXY->SetPoint(3, x0, y1, wz);
-		ptsXY->SetPoint(4, x0, y0, wz);
-
-		vtkSmartPointer<vtkCellArray> lines = vtkSmartPointer<vtkCellArray>::New();
-		vtkIdType ids[5] = { 0,1,2,3,4 };
-		lines->InsertNextCell(5, ids);
-
-		m_outlinePolyXY->SetPoints(ptsXY);
-		m_outlinePolyXY->SetLines(lines);
-		m_outlinePolyXY->Modified();
-
-		const double wy = m_origin[1] + m_spacing[1] * static_cast<double>(cy);
-		const double z0 = m_origin[2] + m_spacing[2] * m_extent[4];
-		const double z1 = m_origin[2] + m_spacing[2] * m_extent[5];
-
-		vtkSmartPointer<vtkPoints> ptsXZ = vtkSmartPointer<vtkPoints>::New();
-		ptsXZ->SetNumberOfPoints(5);
-		ptsXZ->SetPoint(0, x0, wy, z0);
-		ptsXZ->SetPoint(1, x1, wy, z0);
-		ptsXZ->SetPoint(2, x1, wy, z1);
-		ptsXZ->SetPoint(3, x0, wy, z1);
-		ptsXZ->SetPoint(4, x0, wy, z0);
-
-		m_outlinePolyXZ->SetPoints(ptsXZ);
-		m_outlinePolyXZ->SetLines(lines);
-		m_outlinePolyXZ->Modified();
-
-		const double wx = m_origin[0] + m_spacing[0] * static_cast<double>(cx);
-
-		vtkSmartPointer<vtkPoints> ptsYZ = vtkSmartPointer<vtkPoints>::New();
-		ptsYZ->SetNumberOfPoints(5);
-		ptsYZ->SetPoint(0, wx, y0, z0);
-		ptsYZ->SetPoint(1, wx, y1, z0);
-		ptsYZ->SetPoint(2, wx, y1, z1);
-		ptsYZ->SetPoint(3, wx, y0, z1);
-		ptsYZ->SetPoint(4, wx, y0, z0); // close
-
-		m_outlinePolyYZ->SetPoints(ptsYZ);
-		m_outlinePolyYZ->SetLines(lines);
-		m_outlinePolyYZ->Modified();
+		if (m_orthoPlanes) {
+			// Ensure the ortho-planes source is wired to the shared shifted/scaled image
+			m_orthoPlanes->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+			// Initialize to center slices
+			m_orthoPlanes->SetSliceNumbers(cx, cy, cz);
+			// match interpolation setting
+			switch (m_interpolation) {
+				case Nearest: m_orthoPlanes->SetInterpolationToNearest(); break;
+				default:      m_orthoPlanes->SetInterpolationToLinear();  break;
+			}
+			m_orthoPlanes->Update();
+			// ensure initial visibility matches current mode
+			m_orthoPlanes->SetPlaneVisibility(m_orthoPlanesVisible, m_orthoPlanesVisible, m_orthoPlanesVisible);
+		}
 
 		m_imageInitialized = true;
 	}
@@ -331,14 +268,11 @@ void VolumeView::setImageData(vtkImageData* image)
 
 	resetCamera();
 
-	// Update static slice mappers to the center slices
-	if (m_sliceMapperYZ) { m_sliceMapperYZ->SetSliceNumber(cx); m_sliceMapperYZ->Update(); }
-	if (m_sliceMapperXZ) { m_sliceMapperXZ->SetSliceNumber(cy); m_sliceMapperXZ->Update(); }
-	if (m_sliceMapperXY) { m_sliceMapperXY->SetSliceNumber(cz); m_sliceMapperXY->Update(); }
-
-	updateSliceOutlineXY(cz);
-	updateSliceOutlineXZ(cy);
-	updateSliceOutlineYZ(cx);
+	// Use vtkImageOrthoPlanes (preferred) to set the center slices; legacy per-mapper code removed.
+	if (m_orthoPlanes) {
+		m_orthoPlanes->SetSliceNumbers(cx, cy, cz);
+		m_orthoPlanes->Update();
+	}
 
 	// Reset cropping to full image extent to avoid applying stale/invalid crop planes
 	if (m_mapper) {
@@ -352,52 +286,7 @@ void VolumeView::setImageData(vtkImageData* image)
 
 	emit imageExtentsChanged(m_extent[0], m_extent[1], m_extent[2], m_extent[3], m_extent[4], m_extent[5]);
 
-	setSlicePlanesVisible(m_slicePlanesVisible);
-	render();
-}
-
-void VolumeView::updateData()
-{
-	m_shiftScaleFilter->Update();
-	m_mapper->Update();
-
-	double spacing[3] = { 1,1,1 };
-	m_imageData->GetSpacing(spacing);
-	int extent[6] = { 0,0,0,0,0,0 };
-	m_imageData->GetExtent(extent);
-	double origin[3] = { 0,0,0 };
-	m_imageData->GetOrigin(origin);
-
-	const int cx = (extent[0] + extent[1]) / 2;
-	const int cy = (extent[2] + extent[3]) / 2;
-	const int cz = (extent[4] + extent[5]) / 2;
-	updateSliceOutlineXY(cz);
-	updateSliceOutlineXZ(cy);
-	updateSliceOutlineYZ(cx);
-
-	const double unit = (spacing[0] + spacing[1] + spacing[2]) / 3.0;
-	m_volumeProperty->SetScalarOpacityUnitDistance(unit);
-
-	resetCamera();
-
-	// Update static slice mappers to the center slices
-	if (m_sliceMapperYZ) { m_sliceMapperYZ->SetSliceNumber(cx); m_sliceMapperYZ->Update(); }
-	if (m_sliceMapperXZ) { m_sliceMapperXZ->SetSliceNumber(cy); m_sliceMapperXZ->Update(); }
-	if (m_sliceMapperXY) { m_sliceMapperXY->SetSliceNumber(cz); m_sliceMapperXY->Update(); }
-
-
-	// Reset cropping to full image extent to avoid applying stale/invalid crop planes
-	if (m_mapper) {
-		m_mapper->SetCroppingRegionPlanes(extent[0], extent[1],
-										  extent[2], extent[3],
-										  extent[4], extent[5]);
-		m_mapper->SetCropping(false); // start with cropping off; UI can enable it
-		// Notify UI that cropping has been disabled/reset for the new image
-		emit croppingEnabledChanged(false);
-	}
-
-	emit imageExtentsChanged(extent[0], extent[1], extent[2], extent[3], extent[4], extent[5]);
-
+	setOrthoPlanesVisible(m_orthoPlanesVisible);
 	render();
 }
 
@@ -432,6 +321,8 @@ void VolumeView::setColorWindowLevel(double window, double level)
 	updateMappedColorsFromActual();
 	m_volumeProperty->SetColor(m_colorTF);
 
+	setSliceWindowLevelNative(window, level);
+
 	render();
 
 	emit windowLevelChanged(window, level);
@@ -446,10 +337,12 @@ void VolumeView::setInterpolation(Interpolation newInterpolation)
 	switch (m_interpolation) {
 		case Nearest:
 		m_volumeProperty->SetInterpolationTypeToNearest();
+		m_orthoPlanes->SetInterpolationToNearest(); // match volume property
 		break;
 		case Linear:
 		case Cubic: // VTK volume property doesn't provide cubic; fall back to linear
 		m_volumeProperty->SetInterpolationTypeToLinear();
+		m_orthoPlanes->SetInterpolationToLinear(); // match volume property
 		break;
 	}
 	render();
@@ -458,63 +351,44 @@ void VolumeView::setInterpolation(Interpolation newInterpolation)
 
 void VolumeView::updateSlicePlanes(int x, int y, int z)
 {
-	if (!m_imageInitialized || !m_imageData) return;
+	if (!m_imageInitialized || !m_imageData || !m_orthoPlanes) return;
 
 	const int cx = std::clamp(x, m_extent[0], m_extent[1]);
 	const int cy = std::clamp(y, m_extent[2], m_extent[3]);
 	const int cz = std::clamp(z, m_extent[4], m_extent[5]);
 
-	// Move orthogonal imageSlice mappers to requested indices so the 3D view shows the same slices.
-	if (m_sliceMapperYZ) { m_sliceMapperYZ->SetSliceNumber(cx); m_sliceMapperYZ->Update(); }
-	if (m_sliceMapperXZ) { m_sliceMapperXZ->SetSliceNumber(cy); m_sliceMapperXZ->Update(); }
-	if (m_sliceMapperXY) { m_sliceMapperXY->SetSliceNumber(cz); m_sliceMapperXY->Update(); }
+	// If using vtkImageOrthoPlanes prefer it
+	m_orthoPlanes->SetSliceNumbers(cx, cy, cz);
+	m_orthoPlanes->Update(); // recompute outlines & bounds
 
-	if (m_outlineActorXY) { updateSliceOutlineXY(cz); }
-	if (m_outlineActorXZ) { updateSliceOutlineXZ(cy); }
-	if (m_outlineActorYZ) { updateSliceOutlineYZ(cx); }
-
-	render();
+	if (m_orthoPlanesVisible)
+		render();
 }
 
-void VolumeView::setSlicePlanesVisible(bool visible)
+void VolumeView::setOrthoPlanesVisible(bool visible)
 {
-	const bool modified = (m_slicePlanesVisible != visible);
-	m_slicePlanesVisible = visible;
+	const bool modified = (m_orthoPlanesVisible != visible);
+	m_orthoPlanesVisible = visible;
 
 	// Mutually exclusive: show either volume or planes, not both
 	if (visible) {
 		if (m_volume && m_renderer->HasViewProp(m_volume))
 			m_renderer->RemoveVolume(m_volume);
-
-		// Show orthogonal imageSlice actors (static slices inside the 3D view)
-		if (m_imageSliceYZ) m_imageSliceYZ->VisibilityOn();
-		if (m_imageSliceXZ) m_imageSliceXZ->VisibilityOn();
-		if (m_imageSliceXY) m_imageSliceXY->VisibilityOn();
-
-		if (m_outlineActorYZ) m_outlineActorYZ->VisibilityOn();
-		if (m_outlineActorXZ) m_outlineActorXZ->VisibilityOn();
-		if (m_outlineActorXY) m_outlineActorXY->VisibilityOn();
-
 	}
 	else {
-		// Hide the orthogonal image slice actors
-		if (m_imageSliceYZ) m_imageSliceYZ->VisibilityOff();
-		if (m_imageSliceXZ) m_imageSliceXZ->VisibilityOff();
-		if (m_imageSliceXY) m_imageSliceXY->VisibilityOff();
-
-		if (m_outlineActorYZ) m_outlineActorYZ->VisibilityOff();
-		if (m_outlineActorXZ) m_outlineActorXZ->VisibilityOff();
-		if (m_outlineActorXY) m_outlineActorXY->VisibilityOff();
-
 		if (m_volume && !m_renderer->HasViewProp(m_volume))
 			m_renderer->AddVolume(m_volume);
 	}
 
+	if (m_orthoPlanes) {
+		m_orthoPlanes->SetPlaneVisibility(visible);
+	}
+
 	// Ensure the title and menu reflect the current mode so external UI (checkbox/menu) stays in sync.
-	setTitle(m_slicePlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
+	setTitle(m_orthoPlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
 
 	if (modified)
-		emit slicePlanesVisibleChanged(m_slicePlanesVisible);
+		emit orthoPlanesVisibleChanged(m_orthoPlanesVisible);
 
 	render();
 }
@@ -952,200 +826,167 @@ void VolumeView::onCameraModified(vtkObject* caller)
 // Apply native-domain WL to the orthogonal image slice actors (mapped domain)
 void VolumeView::setSliceWindowLevelNative(double window, double level)
 {
-	// Guard
-	if (!m_imageData) return;
+	if (!m_imageData || !m_orthoPlanes) return;
 
-	// Compute native lower/upper and map using shift/scale (same mapping as SliceView)
-	const double lowerNative = level - 0.5 * std::fabs(window);
-	const double upperNative = level + 0.5 * std::fabs(window);
-	const double lowerMapped = (lowerNative + m_scalarShift) * m_scalarScale;
-	const double upperMapped = (upperNative + m_scalarShift) * m_scalarScale;
-	const double mappedWindow = std::max(upperMapped - lowerMapped, 1.0);
-	const double mappedLevel = 0.5 * (upperMapped + lowerMapped);
-
-	// Apply to each orthogonal image slice actor's property (if present)
-	if (m_imageSliceYZ && m_imageSliceYZ->GetProperty()) {
-		m_imageSliceYZ->GetProperty()->SetColorWindow(mappedWindow);
-		m_imageSliceYZ->GetProperty()->SetColorLevel(mappedLevel);
-	}
-	if (m_imageSliceXZ && m_imageSliceXZ->GetProperty()) {
-		m_imageSliceXZ->GetProperty()->SetColorWindow(mappedWindow);
-		m_imageSliceXZ->GetProperty()->SetColorLevel(mappedLevel);
-	}
-	if (m_imageSliceXY && m_imageSliceXY->GetProperty()) {
-		m_imageSliceXY->GetProperty()->SetColorWindow(mappedWindow);
-		m_imageSliceXY->GetProperty()->SetColorLevel(mappedLevel);
-	}
-
-	// Render to reflect the change
+	m_orthoPlanes->SetWindowLevelNative(window, level, m_scalarShift, m_scalarScale);
 	render();
 }
 
-void VolumeView::createSliceOutlineActors()
+void VolumeView::captureDerivedViewState()
 {
-	// YZ outline
-	m_outlinePolyYZ = vtkSmartPointer<vtkPolyData>::New();
-	m_outlineMapperYZ = vtkSmartPointer<vtkPolyDataMapper>::New();
-	m_outlineMapperYZ->SetInputData(m_outlinePolyYZ);
-	m_outlineActorYZ = vtkSmartPointer<vtkActor>::New();
-	m_outlineActorYZ->SetMapper(m_outlineMapperYZ);
+	// If no image, nothing to capture
+	if (!m_imageData) return;
 
-	auto yzProp = m_outlineActorYZ->GetProperty();
-	yzProp->SetRepresentationToWireframe();
-	yzProp->SetColor(1.0, 0.0, 0.0); // red
-	yzProp->SetLineWidth(2.0);
-	yzProp->SetLighting(false);
-	yzProp->SetSpecular(0.0);
-	yzProp->SetDiffuse(0.0);
-	yzProp->SetAmbient(1.0);
+	// Save camera (deep copy)
+	m_savedCamera = nullptr;
+	if (m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			m_savedCamera = vtkSmartPointer<vtkCamera>::New();
+			m_savedCamera->DeepCopy(cam);
+		}
+	}
 
-	m_outlineActorYZ->PickableOff();
-	if (m_renderer && !m_renderer->HasViewProp(m_outlineActorYZ))
-		m_renderer->AddActor(m_outlineActorYZ);
+	// Compute a robust in-plane center using image bounds
+	double bounds[6]; m_imageData->GetBounds(bounds);
+	const double centerX = 0.5 * (bounds[0] + bounds[1]);
+	const double centerY = 0.5 * (bounds[2] + bounds[3]);
+	const double centerZ = 0.5 * (bounds[4] + bounds[5]);
 
-	m_outlineActorYZ->VisibilityOff();
+	int ix = 0, iy = 0, iz = 0;
+	if (m_orthoPlanes) {
+		int centerIdx[3] = { 0, 0, 0 };
+		m_orthoPlanes->GetSliceNumbers(centerIdx);
+		ix = centerIdx[0];
+		iy = centerIdx[1];
+		iz = centerIdx[2];
+	}
 
-	// XZ outline
-	m_outlinePolyXZ = vtkSmartPointer<vtkPolyData>::New();
-	m_outlineMapperXZ = vtkSmartPointer<vtkPolyDataMapper>::New();
-	m_outlineMapperXZ->SetInputData(m_outlinePolyXZ);
-	m_outlineActorXZ = vtkSmartPointer<vtkActor>::New();
-	m_outlineActorXZ->SetMapper(m_outlineMapperXZ);
+	// Save three world points (one for each orthogonal plane). Use vtkImageData transforms.
+	// X-normal (YZ plane): use ix, centerY/centerZ -> need integer center indices for Y/Z
+	int cyIdx = static_cast<int>(std::lround((centerY - m_origin[1]) / (m_spacing[1] != 0.0 ? m_spacing[1] : 1.0)));
+	int czIdx = static_cast<int>(std::lround((centerZ - m_origin[2]) / (m_spacing[2] != 0.0 ? m_spacing[2] : 1.0)));
+	{
+		int ijk[3] = { ix, cyIdx, czIdx };
+		m_imageData->TransformIndexToPhysicalPoint(ijk, m_savedSliceWorldX);
+	}
 
-	auto xzProp = m_outlineActorXZ->GetProperty();
-	xzProp->DeepCopy(yzProp); // copy style from YZ
-	xzProp->SetColor(0.0, 1.0, 0.0); // green
+	// Y-normal (XZ)
+	int cxIdx = static_cast<int>(std::lround((centerX - m_origin[0]) / (m_spacing[0] != 0.0 ? m_spacing[0] : 1.0)));
+	{
+		int ijk[3] = { cxIdx, iy, czIdx };
+		m_imageData->TransformIndexToPhysicalPoint(ijk, m_savedSliceWorldY);
+	}
 
-	m_outlineActorXZ->PickableOff();
-	if (m_renderer && !m_renderer->HasViewProp(m_outlineActorXZ))
-		m_renderer->AddActor(m_outlineActorXZ);
-	m_outlineActorXZ->VisibilityOff();
+	// Z-normal (XY)
+	{
+		int ijk[3] = { cxIdx, cyIdx, iz };
+		m_imageData->TransformIndexToPhysicalPoint(ijk, m_savedSliceWorldZ);
+	}
 
-	// XY outline
-	m_outlinePolyXY = vtkSmartPointer<vtkPolyData>::New();
-	m_outlineMapperXY = vtkSmartPointer<vtkPolyDataMapper>::New();
-	m_outlineMapperXY->SetInputData(m_outlinePolyXY);
-	m_outlineActorXY = vtkSmartPointer<vtkActor>::New();
-	m_outlineActorXY->SetMapper(m_outlineMapperXY);
+	// Save visibility mode and TFs
+	m_savedOrthoPlanesVisible = m_orthoPlanesVisible;
 
-	auto xyProp = m_outlineActorXY->GetProperty();
-	xyProp->DeepCopy(yzProp); // copy style from YZ
-	xyProp->SetColor(0.0, 0.0, 1.0); // blue
+	m_savedActualColorTF = vtkSmartPointer<vtkColorTransferFunction>::New();
+	if (m_actualColorTF) m_savedActualColorTF->DeepCopy(m_actualColorTF);
+	else m_savedActualColorTF = nullptr;
 
-	m_outlineActorXY->PickableOff();
-	if (m_renderer && !m_renderer->HasViewProp(m_outlineActorXY))
-		m_renderer->AddActor(m_outlineActorXY);
-	m_outlineActorXY->VisibilityOff();
+	m_savedActualScalarOpacity = vtkSmartPointer<vtkPiecewiseFunction>::New();
+	if (m_actualScalarOpacity) m_savedActualScalarOpacity->DeepCopy(m_actualScalarOpacity);
+	else m_savedActualScalarOpacity = nullptr;
+
+	m_hasSavedState = true;
 }
 
-// Build/update a 2D rectangular polyline in world coordinates for X-normal plane (YZ) at slice index cx.
-void VolumeView::updateSliceOutlineYZ(int cx)
+void VolumeView::restoreDerivedViewState()
 {
-	if (!m_imageData || !m_outlinePolyYZ) return;
+	if (!m_hasSavedState) return;
 
-	// clamp cx
-	cx = std::clamp(cx, m_extent[0], m_extent[1]);
-	const double wx = m_origin[0] + m_spacing[0] * static_cast<double>(cx);
-	const double y0 = m_origin[1] + m_spacing[1] * m_extent[2];
-	const double y1 = m_origin[1] + m_spacing[1] * m_extent[3];
-	const double z0 = m_origin[2] + m_spacing[2] * m_extent[4];
-	const double z1 = m_origin[2] + m_spacing[2] * m_extent[5];
-
-	// Reuse existing points & lines if present, otherwise create and attach them once.
-	vtkPoints* pts = m_outlinePolyYZ->GetPoints();
-	if (!pts) {
-		vtkSmartPointer<vtkPoints> ptsNew = vtkSmartPointer<vtkPoints>::New();
-		ptsNew->SetNumberOfPoints(5);
-		m_outlinePolyYZ->SetPoints(ptsNew);
-		pts = m_outlinePolyYZ->GetPoints();
+	// Restore TFs first so mapped TFs rebuild using current shift/scale
+	if (m_savedActualColorTF) {
+		if (!m_actualColorTF) m_actualColorTF = vtkSmartPointer<vtkColorTransferFunction>::New();
+		m_actualColorTF->DeepCopy(m_savedActualColorTF);
 	}
-	// Ensure there is a line cell array (create once)
-	if (!m_outlinePolyYZ->GetLines() || m_outlinePolyYZ->GetNumberOfCells() == 0) {
-		vtkSmartPointer<vtkCellArray> lines = vtkSmartPointer<vtkCellArray>::New();
-		vtkIdType ids[5] = { 0,1,2,3,4 };
-		lines->InsertNextCell(5, ids);
-		m_outlinePolyYZ->SetLines(lines);
+	if (m_savedActualScalarOpacity) {
+		if (!m_actualScalarOpacity) m_actualScalarOpacity = vtkSmartPointer<vtkPiecewiseFunction>::New();
+		m_actualScalarOpacity->DeepCopy(m_savedActualScalarOpacity);
 	}
 
-	// Update points in-place to avoid reallocations
-	pts->SetPoint(0, wx, y0, z0);
-	pts->SetPoint(1, wx, y1, z0);
-	pts->SetPoint(2, wx, y1, z1);
-	pts->SetPoint(3, wx, y0, z1);
-	pts->SetPoint(4, wx, y0, z0); // close
+	// Recompute mapped TFs using current shift/scale and attach to the volume property
+	updateMappedColorsFromActual();
+	updateMappedOpacityFromActual();
+	if (m_volumeProperty) {
+		m_volumeProperty->SetColor(m_colorTF);
+		m_volumeProperty->SetScalarOpacity(m_scalarOpacity);
+	}
 
-	pts->Modified();
-	m_outlinePolyYZ->Modified();
+	// Ensure ortho-planes (or mappers) have up-to-date ranges
+	if (m_orthoPlanes) {
+		m_orthoPlanes->Update();
+	}
+
+	// Convert saved world points -> continuous indices and round to nearest index per axis.
+	auto indexFromWorld = [this](int axis, const double world[3], int minVal, int maxVal) -> int {
+		double cont[3] = { 0.0, 0.0, 0.0 };
+		m_imageData->TransformPhysicalPointToContinuousIndex(world, cont);
+		int idx = static_cast<int>(std::lround(cont[axis]));
+		return std::clamp(idx, minVal, maxVal);
+		};
+
+	// Prefer vtkImageOrthoPlanes for restoring slice numbers; fall back to extents if ortho not present.
+	if (m_orthoPlanes) {
+		const int minX = m_extent[0], maxX = m_extent[1];
+		const int minY = m_extent[2], maxY = m_extent[3];
+		const int minZ = m_extent[4], maxZ = m_extent[5];
+
+		int ix = indexFromWorld(0, m_savedSliceWorldX, minX, maxX);
+		int iy = indexFromWorld(1, m_savedSliceWorldY, minY, maxY);
+		int iz = indexFromWorld(2, m_savedSliceWorldZ, minZ, maxZ);
+
+		m_orthoPlanes->SetSliceNumbers(ix, iy, iz);
+		m_orthoPlanes->Update();
+	}
+
+	// Restore slice-planes visibility if needed (this will also call render())
+	setOrthoPlanesVisible(m_savedOrthoPlanesVisible);
+
+	// Restore camera if captured: use saved world intersection constructed from the three saved points.
+	if (m_savedCamera && m_renderer) {
+		if (auto* cam = m_renderer->GetActiveCamera()) {
+			double savedDOP[3]; m_savedCamera->GetDirectionOfProjection(savedDOP);
+			double savedUp[3];  m_savedCamera->GetViewUp(savedUp);
+
+			// Intersection point: compose from saved per-plane points
+			double focal[3] = {
+				m_savedSliceWorldX[0],
+				m_savedSliceWorldY[1],
+				m_savedSliceWorldZ[2]
+			};
+
+			double dist = m_savedCamera->GetDistance();
+			if (!(dist > 0.0)) dist = cam->GetDistance();
+
+			cam->SetFocalPoint(focal);
+			cam->SetPosition(focal[0] - savedDOP[0] * dist,
+							 focal[1] - savedDOP[1] * dist,
+							 focal[2] - savedDOP[2] * dist);
+			cam->SetViewUp(savedUp);
+			if (m_savedCamera->GetParallelProjection()) {
+				cam->ParallelProjectionOn();
+				cam->SetParallelScale(m_savedCamera->GetParallelScale());
+			}
+			else {
+				cam->ParallelProjectionOff();
+				cam->SetViewAngle(m_savedCamera->GetViewAngle());
+			}
+			cam->OrthogonalizeViewUp();
+			m_renderer->ResetCameraClippingRange();
+		}
+	}
+
+	// Final render
+	if (!m_renderer) return;
+	render();
+
+	m_hasSavedState = false;
 }
 
-// Build/update rectangle for Y-normal plane (XZ) at slice index cy.
-void VolumeView::updateSliceOutlineXZ(int cy)
-{
-	if (!m_imageData || !m_outlinePolyXZ) return;
-
-	cy = std::clamp(cy, m_extent[2], m_extent[3]);
-	const double wy = m_origin[1] + m_spacing[1] * static_cast<double>(cy);
-	const double x0 = m_origin[0] + m_spacing[0] * m_extent[0];
-	const double x1 = m_origin[0] + m_spacing[0] * m_extent[1];
-	const double z0 = m_origin[2] + m_spacing[2] * m_extent[4];
-	const double z1 = m_origin[2] + m_spacing[2] * m_extent[5];
-
-	vtkPoints* pts = m_outlinePolyXZ->GetPoints();
-	if (!pts) {
-		vtkSmartPointer<vtkPoints> ptsNew = vtkSmartPointer<vtkPoints>::New();
-		ptsNew->SetNumberOfPoints(5);
-		m_outlinePolyXZ->SetPoints(ptsNew);
-		pts = m_outlinePolyXZ->GetPoints();
-	}
-	if (!m_outlinePolyXZ->GetLines() || m_outlinePolyXZ->GetNumberOfCells() == 0) {
-		vtkSmartPointer<vtkCellArray> lines = vtkSmartPointer<vtkCellArray>::New();
-		vtkIdType ids[5] = { 0,1,2,3,4 };
-		lines->InsertNextCell(5, ids);
-		m_outlinePolyXZ->SetLines(lines);
-	}
-
-	pts->SetPoint(0, x0, wy, z0);
-	pts->SetPoint(1, x1, wy, z0);
-	pts->SetPoint(2, x1, wy, z1);
-	pts->SetPoint(3, x0, wy, z1);
-	pts->SetPoint(4, x0, wy, z0);
-
-	pts->Modified();
-	m_outlinePolyXZ->Modified();
-}
-
-// Build/update rectangle for Z-normal plane (XY) at slice index cz.
-void VolumeView::updateSliceOutlineXY(int cz)
-{
-	if (!m_imageData || !m_outlinePolyXY) return;
-
-	cz = std::clamp(cz, m_extent[4], m_extent[5]);
-	const double wz = m_origin[2] + m_spacing[2] * static_cast<double>(cz);
-	const double x0 = m_origin[0] + m_spacing[0] * m_extent[0];
-	const double x1 = m_origin[0] + m_spacing[0] * m_extent[1];
-	const double y0 = m_origin[1] + m_spacing[1] * m_extent[2];
-	const double y1 = m_origin[1] + m_spacing[1] * m_extent[3];
-
-	vtkPoints* pts = m_outlinePolyXY->GetPoints();
-	if (!pts) {
-		vtkSmartPointer<vtkPoints> ptsNew = vtkSmartPointer<vtkPoints>::New();
-		ptsNew->SetNumberOfPoints(5);
-		m_outlinePolyXY->SetPoints(ptsNew);
-		pts = m_outlinePolyXY->GetPoints();
-	}
-	if (!m_outlinePolyXY->GetLines() || m_outlinePolyXY->GetNumberOfCells() == 0) {
-		vtkSmartPointer<vtkCellArray> lines = vtkSmartPointer<vtkCellArray>::New();
-		vtkIdType ids[5] = { 0,1,2,3,4 };
-		lines->InsertNextCell(5, ids);
-		m_outlinePolyXY->SetLines(lines);
-	}
-
-	pts->SetPoint(0, x0, y0, wz);
-	pts->SetPoint(1, x1, y0, wz);
-	pts->SetPoint(2, x1, y1, wz);
-	pts->SetPoint(3, x0, y1, wz);
-	pts->SetPoint(4, x0, y0, wz);
-
-	pts->Modified();
-	m_outlinePolyXY->Modified();
-}

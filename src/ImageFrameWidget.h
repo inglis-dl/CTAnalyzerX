@@ -10,8 +10,9 @@ class vtkRenderer;
 class vtkGenericOpenGLRenderWindow;
 class vtkRenderWindow;
 class vtkImageShiftScale;
-
-// forward-declare VTK classes used by the orientation marker
+class vtkAlgorithmOutput;
+class vtkAlgorithm;
+class vtkDataObject;
 class vtkOrientationMarkerWidget;
 class vtkActor;
 class vtkPropAssembly;
@@ -24,7 +25,6 @@ class ImageFrameWidget : public SelectionFrameWidget
 		// Properties
 		Q_PROPERTY(ViewOrientation viewOrientation READ viewOrientation WRITE setViewOrientation NOTIFY viewOrientationChanged)
 		Q_PROPERTY(Interpolation interpolation READ interpolation WRITE setInterpolation NOTIFY interpolationChanged)
-		Q_PROPERTY(LinkPropagationMode linkPropagationMode READ linkPropagationMode WRITE setLinkPropagationMode NOTIFY linkPropagationModeChanged)
 
 public:
 	enum Interpolation { Nearest, Linear, Cubic };
@@ -32,10 +32,6 @@ public:
 
 		enum ViewOrientation { VIEW_ORIENTATION_YZ = 0, VIEW_ORIENTATION_XZ = 1, VIEW_ORIENTATION_XY = 2 };
 	Q_ENUM(ViewOrientation)
-
-		// Propagation mode for linked WL
-		enum LinkPropagationMode { Disabled, EndOnly, Live };
-	Q_ENUM(LinkPropagationMode)
 
 		explicit ImageFrameWidget(QWidget* parent = nullptr);
 	~ImageFrameWidget() override;
@@ -66,8 +62,12 @@ public:
 	Q_INVOKABLE void setInterpolationToCubic() { setInterpolation(Cubic); };
 
 	// Common image setter: stores the image then calls the derived hook.
-	virtual void setImageData(vtkImageData* image) {};
+	virtual void setImageData(vtkImageData* image);
 	vtkImageData* imageData() const { return m_imageData; }
+
+	// Pipeline-aware setter: attach a producer port to this view's internal pipeline.
+	// Default implementation connects the port to `m_shiftScaleFilter`.
+	virtual void setInputConnection(vtkAlgorithmOutput* port, bool newImg = true);
 
 	// Abstract hook: views implement with their own pipeline logic
 	// The bus uses native domain (original image scalar domain).
@@ -77,14 +77,6 @@ public:
 	// `maxAngleDeg` degrees of a principal axis. Returns one of ViewOrientation values
 	// (VIEW_ORIENTATION_YZ=0, VIEW_ORIENTATION_XZ=1, VIEW_ORIENTATION_XY=2) or -1 if none match.
 	int cameraAlignedOrientation(double maxAngleDeg) const;
-
-	// WL propagation mode
-	void setLinkPropagationMode(LinkPropagationMode mode) {
-		if (m_linkPropagationMode == mode) return;
-		m_linkPropagationMode = mode;
-		emit linkPropagationModeChanged(m_linkPropagationMode);
-	}
-	LinkPropagationMode linkPropagationMode() const { return m_linkPropagationMode; }
 
 	// helpers to convert baseline WL to mapped domain
 	void setBaselineWindowLevel(double windowNative, double levelNative);
@@ -98,11 +90,22 @@ public:
 public slots:
 	virtual void updateData() {};
 
+	// Refresh the rendering endpoint when the upstream image content changed
+	// but the input connection remains the same. Default implementation:
+	//  - captures main camera,
+	//  - calls captureDerivedViewState() (hook for derived classes to save slice/WL),
+	//  - updates m_imageData/pipeline (computeShiftScaleFromInput/cacheImageGeometry),
+	//  - restores camera and calls restoreDerivedViewState(),
+	//  - renders the result.
+	//
+	// Derived classes override captureDerivedViewState()/restoreDerivedViewState()
+	// to preserve view-specific state (current slice, window/level, etc.).
+	virtual void refreshEndpointFromUpstream();
+
 signals:
 	void viewOrientationChanged(ViewOrientation);
 	void interpolationChanged(Interpolation);
 	void windowLevelChanged(double window, double level);
-	void linkPropagationModeChanged(LinkPropagationMode mode);
 
 protected:
 	// SceneFrameWidget override: used by render() and tooling.
@@ -114,6 +117,11 @@ protected:
 	// Camera helpers with safe defaults (shared by derived classes).
 	virtual void resetCamera();
 	virtual void rotateCamera(double degrees) {}
+
+	// Hooks for derived classes to save/restore per-view transient state
+	// (slice number, window/level, mapping state). Default implementations are no-ops.
+	virtual void captureDerivedViewState() {}
+	virtual void restoreDerivedViewState() {}
 
 	// Hook from SelectionFrameWidget to gate VTK interactivity on selection
 	void onSelectionChanged(bool selected) override;
@@ -134,7 +142,6 @@ protected:
 
 	ViewOrientation  m_viewOrientation = VIEW_ORIENTATION_XY;
 	Interpolation    m_interpolation = Linear;
-	LinkPropagationMode m_linkPropagationMode = Disabled;
 
 	vtkSmartPointer<vtkImageData>                   m_imageData;
 	vtkSmartPointer<vtkRenderer>                    m_renderer;
@@ -170,5 +177,17 @@ protected:
 	int m_extent[6];
 	double m_spacing[3];
 	double m_origin[3];
+
+	vtkImageData* upstreamInputImage() const;
+
+private:
+
+	// Keep a reference to the upstream producer so its output port stays valid.
+	vtkSmartPointer<vtkAlgorithm> m_upstreamProducer;
+
+	// Synchronize m_imageData with whatever is connected to m_shiftScaleFilter.
+	// This will set m_imageData to the vtkImageData produced by the upstream producer
+	// or the raw input data object if SetInputData was used.
+	void refreshImageDataFromPipeline();
 };
 

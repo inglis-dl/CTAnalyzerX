@@ -30,7 +30,10 @@ public:
 	explicit SliceView(QWidget* parent = nullptr, ViewOrientation orientation = VIEW_ORIENTATION_XY);
 	~SliceView();
 
-	void setImageData(vtkImageData* image) override;
+	// Preserve / restore transient view state when upstream image content changes
+	void captureDerivedViewState() override;
+	void restoreDerivedViewState() override;
+
 	void setSliceIndex(int index);
 	int getSliceIndex() const;
 
@@ -48,9 +51,6 @@ public:
 	// install a shared vtkImageProperty (sharedProp may be the same instance across views)
 	void setSharedImageProperty(vtkImageProperty* sharedProp);
 
-	// restore an independent imageProperty (fresh copy) if caller wants to un-link
-	void clearSharedImageProperty();
-
 	// Expose resetWindowLevel as public so LightboxWidget can call it
 	void resetWindowLevel() override;
 
@@ -60,6 +60,9 @@ public slots:
 signals:
 	void sliceChanged(int);
 	void interpolationChanged(Interpolation);
+	// Emitted when the user requests a reset (e.g. presses 'r').  LightboxWidget
+	// or a central controller should perform the coordinated reset on all views.
+	void requestResetWindowLevel();
 
 protected:
 	void resetCamera() override;
@@ -81,6 +84,14 @@ private:
 	int m_currentSlice = 0;
 	int m_minSlice = 0;
 	int m_maxSlice = 0;
+
+	// Saved transient state used by capture/restore hooks
+	vtkSmartPointer<vtkCamera> m_savedCamera;
+	// store the saved slice as a 3D world coordinate (physical point)
+	double m_savedSliceWorld[3] = { 0.0, 0.0, 0.0 };
+	double m_savedMappedWindow = std::numeric_limits<double>::quiet_NaN();
+	double m_savedMappedLevel = std::numeric_limits<double>::quiet_NaN();
+	bool m_hasSavedState = false;
 
 	vtkSmartPointer<vtkInteractorStyleImage> interactorStyle;
 	vtkSmartPointer<vtkImageSliceMapper> sliceMapper;

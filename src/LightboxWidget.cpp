@@ -85,14 +85,25 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 	// Keep controller UI in sync when the active VolumeView emits windowLevelChanged
 	if (auto* vol = getVolumeView()) {
 		connect(vol, &VolumeView::windowLevelChanged, this, [this](double w, double l) {
+			// When a VolumeView resets WL (e.g. user pressed 'r' in Volume mode)
+			// we must propagate that reset to the controller, the bridge (volume),
+			// and all slice views so they stay synchronized.
+			if (m_propagatingWindowLevel) return;
+			m_propagatingWindowLevel = true;
+
+			// Update controller UI
 			if (m_wlController) {
-				// Prevent re-entrancy into our propagation handlers
-				const bool prev = m_propagatingWindowLevel;
-				m_propagatingWindowLevel = true;
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
-				m_propagatingWindowLevel = prev;
 			}
+
+			// Notify bridge (volume side) and all slices (native-domain mapping per slice)
+			if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
+			if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
+			if (auto* xz = getXZView()) xz->setWindowLevelNative(w, l);
+			if (auto* xy = getXYView()) xy->setWindowLevelNative(w, l);
+
+			m_propagatingWindowLevel = false;
 		}, Qt::UniqueConnection);
 	}
 
@@ -104,6 +115,12 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 
 			// Update volume via bridge
 			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
+
+			// Update controller UI so spinboxes reflect interactive slice changes
+			if (m_wlController) {
+				m_wlController->setWindow(w);
+				m_wlController->setLevel(l);
+			}
 
 			// Update other slices (slaves)
 			if (auto* xz = getXZView()) { if (xz != yz) xz->setWindowLevelNative(w, l); }
@@ -119,6 +136,11 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 
 			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
 
+			if (m_wlController) {
+				m_wlController->setWindow(w);
+				m_wlController->setLevel(l);
+			}
+
 			if (auto* yz = getYZView()) { if (yz != xz) yz->setWindowLevelNative(w, l); }
 			if (auto* xy = getXYView()) { if (xy != xz) xy->setWindowLevelNative(w, l); }
 
@@ -132,6 +154,11 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 
 			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
 
+			if (m_wlController) {
+				m_wlController->setWindow(w);
+				m_wlController->setLevel(l);
+			}
+
 			if (auto* yz = getYZView()) { if (yz != xy) yz->setWindowLevelNative(w, l); }
 			if (auto* xz = getXZView()) { if (xz != xy) xz->setWindowLevelNative(w, l); }
 
@@ -142,6 +169,16 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 	// Wire controller reset request to propagate to our child views
 	connect(m_wlController, &WindowLevelController::requestResetWindowLevel,
 			this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+
+	if (auto* yz = getYZView()) {
+		connect(yz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	}
+	if (auto* xz = getXZView()) {
+		connect(xz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	}
+	if (auto* xy = getXYView()) {
+		connect(xy, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	}
 }
 
 void LightboxWidget::showEvent(QShowEvent* e)
@@ -162,8 +199,7 @@ void LightboxWidget::setDefaultImage()
 	sinusoid->SetDirection(0.5, -0.5, 1.0 / std::sqrt(2.0));
 	sinusoid->Update();
 
-	vtkImageData* defaultImage = sinusoid->GetOutput();
-	setImageData(defaultImage);
+	setInputConnection(sinusoid->GetOutputPort(), true);
 }
 
 void LightboxWidget::setImageData(vtkImageData* image)
@@ -173,6 +209,14 @@ void LightboxWidget::setImageData(vtkImageData* image)
 	if (ui.XZView) ui.XZView->setImageData(image);
 	if (ui.XYView) ui.XYView->setImageData(image);
 	if (ui.volumeView) ui.volumeView->setImageData(image);
+
+	// Re-install shared image property to ensure all slices use the same vtkImageProperty
+	// (setImageData above may have created per-view imageProperty instances).
+	if (m_sharedImageProperty) {
+		if (ui.YZView) ui.YZView->setSharedImageProperty(m_sharedImageProperty);
+		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
+		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
+	}
 }
 
 void LightboxWidget::setYZSlice(int index)
@@ -435,51 +479,6 @@ void LightboxWidget::onRequestRestore(SelectionFrameWidget* w)
 	startExpandAnimation(m_maximized, QRect(), QRect(), /*toMaximized*/ false);
 }
 
-void LightboxWidget::setLinkedWindowLevel(bool linked)
-{
-	if (m_linkWindowLevel == linked) return;
-	m_linkWindowLevel = linked;
-
-	// Get the three slice views (may be nullptr)
-	SliceView* yz = getYZView();
-	SliceView* xz = getXZView();
-	SliceView* xy = getXYView();
-
-	if (m_linkWindowLevel) {
-		// Create shared property and initialize from one of the views (prefer XY)
-		vtkSmartPointer<vtkImageProperty> shared = vtkSmartPointer<vtkImageProperty>::New();
-
-		// choose a baseline: prefer existing XY view mapped property if available
-		vtkImageProperty* src = nullptr;
-		if (xy && xy->imageData()) {
-			// access current mapped-domain property via the SliceView (helper: imageProperty is internal)
-			// We assume SliceView provides imageProperty access or expose a getter; otherwise sample from getXYView()->...
-			// We'll try reading from xy->imageProperty via a small accessor (if needed, add getter).
-		}
-
-		// Fallback: pick a sensible default
-		shared->SetColorWindow(1000.0);
-		shared->SetColorLevel(500.0);
-
-		// store the shared property and assign to all slice views
-		m_sharedImageProperty = shared;
-
-		if (yz) { yz->setSharedImageProperty(m_sharedImageProperty); }
-		if (xz) { xz->setSharedImageProperty(m_sharedImageProperty); }
-		if (xy) { xy->setSharedImageProperty(m_sharedImageProperty); }
-	}
-	else {
-		// Unlink: create per-view properties initialized from the current shared property (if any)
-		if (m_sharedImageProperty) {
-			if (yz) { yz->clearSharedImageProperty(); }
-			if (xz) { xz->clearSharedImageProperty(); }
-			if (xy) { xy->clearSharedImageProperty(); }
-		}
-		// release the shared property
-		m_sharedImageProperty = nullptr;
-	}
-}
-
 void LightboxWidget::resetWindowLevel()
 {
 	if (m_propagatingWindowLevel) return;
@@ -491,5 +490,21 @@ void LightboxWidget::resetWindowLevel()
 	if (auto* vol = getVolumeView()) vol->resetWindowLevel();
 
 	m_propagatingWindowLevel = false;
+}
+
+void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port, bool newImg)
+{
+	// Forward to child views if they exist
+	if (ui.YZView) ui.YZView->setInputConnection(port, newImg);
+	if (ui.XZView) ui.XZView->setInputConnection(port, newImg);
+	if (ui.XYView) ui.XYView->setInputConnection(port, newImg);
+	if (ui.volumeView) ui.volumeView->setInputConnection(port, newImg);
+
+	// Ensure shared property is re-applied after new pipeline/input is connected.
+	if (m_sharedImageProperty) {
+		if (ui.YZView) ui.YZView->setSharedImageProperty(m_sharedImageProperty);
+		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
+		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
+	}
 }
 

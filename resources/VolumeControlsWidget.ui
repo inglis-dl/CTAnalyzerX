@@ -299,7 +299,7 @@
     </widget>
    </item>
    <item>
-    <widget class="CollapsibleGroupBox" name="groupBoxFiducials">
+    <widget class="CollapsibleGroupBox" name="groupBoxRotation">
      <property name="sizePolicy">
       <sizepolicy hsizetype="Preferred" vsizetype="Maximum">
        <horstretch>0</horstretch>
@@ -307,23 +307,12 @@
       </sizepolicy>
      </property>
      <property name="title">
-      <string>Fiducial Markers</string>
+      <string>Rotation</string>
      </property>
      <property name="checkable">
       <bool>true</bool>
      </property>
-     <layout class="QVBoxLayout" name="fiducialsLayout">
-      <item>
-       <widget class="QPushButton" name="btnPlaceFiducials">
-        <property name="text">
-         <string>Place Fiducials</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLabel" name="labelFiducialInfo"/>
-      </item>
-     </layout>
+     <layout class="QVBoxLayout" name="rotationLayout"/>
     </widget>
    </item>
    <item>

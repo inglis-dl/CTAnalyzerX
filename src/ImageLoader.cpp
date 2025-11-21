@@ -11,9 +11,9 @@
 #include <vtkObjectFactory.h>
 #include <vtkScancoCTReader.h>
 #include <vtkSmartPointer.h>
-#include <vtkDICOMReader.h>
-#include <vtkInformation.h>
 #include <vtkStreamingDemandDrivenPipeline.h>
+#include <vtkNIFTIImageReader.h> // added for NIfTI support
+#include <vtkCallbackCommand.h>
 
 // VTK object factory macro
 vtkStandardNewMacro(ImageLoader);
@@ -36,6 +36,10 @@ void ImageLoader::SetInputPath(const QString& path) {
 	else if (path.endsWith(".isq", Qt::CaseInsensitive)) {
 		this->type = ImageType::ScancoISQ;
 	}
+	else if (path.endsWith(".nii.gz", Qt::CaseInsensitive) || path.endsWith(".nii", Qt::CaseInsensitive)) {
+		// NIfTI single-file volumes (.nii or compressed .nii.gz)
+		this->type = ImageType::NIFTI;
+	}
 	else {
 		// Default or unknown, fallback to DICOM
 		this->type = ImageType::DICOM;
@@ -57,6 +61,8 @@ vtkSmartPointer<vtkImageData> ImageLoader::Load() {
 		return LoadScancoISQ();
 		case ImageType::DICOM:
 		return LoadDICOM();
+		case ImageType::NIFTI:
+		return LoadNIfTI();
 		default:
 		return nullptr;
 	}
@@ -65,12 +71,23 @@ vtkSmartPointer<vtkImageData> ImageLoader::Load() {
 // Helper: Forward VTK events from a reader to this ImageLoader
 void ImageLoader::forwardReaderEvents(vtkObject* reader)
 {
-	// Forward StartEvent, ProgressEvent, EndEvent
-	for (unsigned long eventId : {vtkCommand::StartEvent, vtkCommand::ProgressEvent, vtkCommand::EndEvent}) {
+	// Forward StartEvent and EndEvent using the event forwarder (preserves source->this propagation).
+	for (unsigned long eventId : {vtkCommand::StartEvent, vtkCommand::EndEvent}) {
 		vtkSmartPointer<vtkEventForwarderCommand> forwarder = vtkSmartPointer<vtkEventForwarderCommand>::New();
 		forwarder->SetTarget(this);
 		reader->AddObserver(eventId, forwarder);
 	}
+
+	// For ProgressEvent we need to capture the callData (double*) and store it into
+	// ImageLoader::lastProgress. Use a vtkCallbackCommand bound to the static onReaderEvent
+	// so ImageLoader can update its lastProgress and re-emit the event.
+	vtkSmartPointer<vtkCallbackCommand> progressCb = vtkSmartPointer<vtkCallbackCommand>::New();
+	progressCb->SetClientData(this);
+	progressCb->SetCallback([](vtkObject* caller, unsigned long eventId, void* clientData, void* callData) {
+		// delegate to the existing static helper so behavior is consistent
+		ImageLoader::onReaderEvent(caller, eventId, clientData, callData);
+	});
+	reader->AddObserver(vtkCommand::ProgressEvent, progressCb);
 }
 
 // Static callback for VTK events, forwards to instance method
@@ -131,6 +148,18 @@ vtkSmartPointer<vtkImageData> ImageLoader::LoadDICOM() {
 	return reader->GetOutput();
 }
 
+vtkSmartPointer<vtkImageData> ImageLoader::LoadNIfTI()
+{
+	if (inputPath.isEmpty())
+		return nullptr;
+
+	auto reader = vtkSmartPointer<vtkNIFTIImageReader>::New();
+	reader->SetFileName(inputPath.toUtf8().constData());
+	forwardReaderEvents(reader);
+	reader->Update();
+	return reader->GetOutput();
+}
+
 // Ensure a single reader instance is created and configured for current type/path.
 void ImageLoader::EnsureReaderInitialized()
 {
@@ -153,6 +182,13 @@ void ImageLoader::EnsureReaderInitialized()
 		r->SetFileName(this->inputPath.toUtf8().constData());
 		forwardReaderEvents(r);
 		this->cachedReader = r;
+	}
+	else if (this->type == ImageType::NIFTI)
+	{
+		auto nr = vtkSmartPointer<vtkNIFTIImageReader>::New();
+		nr->SetFileName(this->inputPath.toUtf8().constData());
+		forwardReaderEvents(nr);
+		this->cachedReader = nr;
 	}
 	else // DICOM
 	{
@@ -291,6 +327,15 @@ bool ImageLoader::CanReadFile(const QString& filePath)
 		auto scancoReader = vtkSmartPointer<vtkScancoCTReader>::New();
 		if (scancoReader->CanReadFile(cfile) == 1)
 			return true;
+	}
+
+	// Check for NIfTI (single-file .nii or compressed .nii.gz)
+	if (lower.endsWith(".nii.gz") || lower.endsWith(".nii")) {
+		// use reader probe for stricter detection
+		auto niftiProbe = vtkSmartPointer<vtkNIFTIImageReader>::New();
+		if (niftiProbe->CanReadFile(cfile) == 1)
+			return true;
+		// fall through to false otherwise
 	}
 
 	// Check for DICOM by extension (could be extended with a DICOM reader check)
