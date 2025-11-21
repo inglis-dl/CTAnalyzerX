@@ -3,10 +3,7 @@
 #include <QWidget>
 #include <memory>
 
-class QDoubleSpinBox;
-class QCheckBox;
-class QPushButton;
-class QComboBox;
+#include "ui_VolumeRotationWidget.h"
 
 class vtkImageData;
 class vtkAlgorithmOutput;
@@ -42,15 +39,14 @@ public:
 
 	// Flattened/reslice control APIs (previously on ImageResliceHelper).
 	// These let external code control output grid / downsample without exposing internals.
-	void SetDownsampleFactor(int factor); // alias to setDownsampleFactor (keeps parity with helper)
-	void SetOutputSpacing(const double sp[3]);
-	void SetOutputOrigin(const double org[3]);
-	void SetOutputExtent(const int extent[6]);
-	void ResetOutputGridToInput();
+	void setOutputSpacing(const double sp[3]);
+	void setOutputOrigin(const double org[3]);
+	void setOutputExtent(const int extent[6]);
+	void resetOutputGridToInput();
 	// Force the internal reslice to recompute (calls internal Update).
-	void Update();
+	void update();
 	// Convenience: access the internal reslice filter (rarely needed).
-	vtkImageReslice* GetReslice();
+	vtkImageReslice* getReslice();
 
 	// Enable/disable operational behavior. When false the widget:
 	// - ignores incoming pipeline/data,
@@ -89,11 +85,6 @@ private:
 	// recompute reslice given current m_resliceTransform + output grid
 	void updateReslice(bool finished);
 
-	QDoubleSpinBox* m_yaw = nullptr;
-	QDoubleSpinBox* m_pitch = nullptr;
-	QDoubleSpinBox* m_roll = nullptr;
-	QCheckBox* m_live = nullptr;
-	QPushButton* m_reset = nullptr;
 	bool m_inProgrammaticUpdate = false;
 
 	// Flattened reslice internals (formerly in ImageResliceHelper)
@@ -110,9 +101,6 @@ private:
 	// downsample factor used by reslice computation (integer >= 1)
 	int m_resliceDownsample = 1;
 
-	// Downsample UI
-	QComboBox* m_downsampleCombo = nullptr;
-	QPushButton* m_applyDownsample = nullptr;
 	int m_downsampleFactor = 1;
 
 	// pending UI-controlled values (only applied when user clicks Apply)
@@ -139,4 +127,7 @@ private:
 
 	// recompute output spacing/extent based on input + downsample
 	void computeOutputGridFromInput();
+
+private:
+	Ui::VolumeRotationWidget ui;
 };

@@ -17,58 +17,38 @@
 VolumeRotationWidget::VolumeRotationWidget(QWidget* parent)
 	: QWidget(parent)
 {
-	auto* form = new QFormLayout();
+	ui.setupUi(this);
 
-	m_yaw = new QDoubleSpinBox(this);
-	m_yaw->setRange(-360.0, 360.0);
-	m_yaw->setSingleStep(1.0);
-	m_yaw->setDecimals(2);
-	form->addRow(tr("Yaw (Z)"), m_yaw);
+	ui.m_yaw->setRange(-360.0, 360.0);
+	ui.m_yaw->setSingleStep(1.0);
+	ui.m_yaw->setDecimals(2);
 
-	m_pitch = new QDoubleSpinBox(this);
-	m_pitch->setRange(-360.0, 360.0);
-	m_pitch->setSingleStep(1.0);
-	m_pitch->setDecimals(2);
-	form->addRow(tr("Pitch (X)"), m_pitch);
+	ui.m_pitch->setRange(-360.0, 360.0);
+	ui.m_pitch->setSingleStep(1.0);
+	ui.m_pitch->setDecimals(2);
 
-	m_roll = new QDoubleSpinBox(this);
-	m_roll->setRange(-360.0, 360.0);
-	m_roll->setSingleStep(1.0);
-	m_roll->setDecimals(2);
-	form->addRow(tr("Roll (Y)"), m_roll);
+	ui.m_roll->setRange(-360.0, 360.0);
+	ui.m_roll->setSingleStep(1.0);
+	ui.m_roll->setDecimals(2);
 
 	// Downsample combo + apply
-	m_downsampleCombo = new QComboBox(this);
-	m_downsampleCombo->addItem(tr("1x (none)"), 1);
-	m_downsampleCombo->addItem(tr("2x"), 2);
-	m_downsampleCombo->addItem(tr("4x"), 4);
-	m_downsampleCombo->setCurrentIndex(0);
-	form->addRow(tr("Downsample"), m_downsampleCombo);
+	ui.m_downsampleCombo->addItem(tr("1x (none)"), 1);
+	ui.m_downsampleCombo->addItem(tr("2x"), 2);
+	ui.m_downsampleCombo->addItem(tr("4x"), 4);
+	ui.m_downsampleCombo->setCurrentIndex(0);
 
-	m_applyDownsample = new QPushButton(tr("Apply"), this);
-	form->addRow(QString(), m_applyDownsample);
+	ui.m_live->setChecked(true);
 
-	m_live = new QCheckBox(tr("Live"), this);
-	m_live->setChecked(true);
+	connect(ui.m_yaw, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &VolumeRotationWidget::onValueChanged);
+	connect(ui.m_pitch, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &VolumeRotationWidget::onValueChanged);
+	connect(ui.m_roll, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &VolumeRotationWidget::onValueChanged);
 
-	m_reset = new QPushButton(tr("Reset"), this);
+	connect(ui.m_yaw, &QDoubleSpinBox::editingFinished, this, &VolumeRotationWidget::onEditingFinished);
+	connect(ui.m_pitch, &QDoubleSpinBox::editingFinished, this, &VolumeRotationWidget::onEditingFinished);
+	connect(ui.m_roll, &QDoubleSpinBox::editingFinished, this, &VolumeRotationWidget::onEditingFinished);
 
-	auto* h = new QHBoxLayout();
-	h->addLayout(form);
-	h->addWidget(m_live);
-	h->addWidget(m_reset);
-	setLayout(h);
-
-	connect(m_yaw, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &VolumeRotationWidget::onValueChanged);
-	connect(m_pitch, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &VolumeRotationWidget::onValueChanged);
-	connect(m_roll, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &VolumeRotationWidget::onValueChanged);
-
-	connect(m_yaw, &QDoubleSpinBox::editingFinished, this, &VolumeRotationWidget::onEditingFinished);
-	connect(m_pitch, &QDoubleSpinBox::editingFinished, this, &VolumeRotationWidget::onEditingFinished);
-	connect(m_roll, &QDoubleSpinBox::editingFinished, this, &VolumeRotationWidget::onEditingFinished);
-
-	connect(m_reset, &QPushButton::clicked, this, &VolumeRotationWidget::onResetClicked);
-	connect(m_applyDownsample, &QPushButton::clicked, this, &VolumeRotationWidget::onApplyDownsampleClicked);
+	connect(ui.m_reset, &QPushButton::clicked, this, &VolumeRotationWidget::onResetClicked);
+	connect(ui.m_applyDownsample, &QPushButton::clicked, this, &VolumeRotationWidget::onApplyDownsampleClicked);
 
 	// Flattened: create internal reslice pipeline pieces previously owned by ImageResliceHelper.
 	m_reslice = vtkSmartPointer<vtkImageReslice>::New();
@@ -84,13 +64,13 @@ VolumeRotationWidget::VolumeRotationWidget(QWidget* parent)
 	setOperational(false);
 }
 
-double VolumeRotationWidget::yaw() const { return m_yaw ? m_yaw->value() : 0.0; }
+double VolumeRotationWidget::yaw() const { return ui.m_yaw ? ui.m_yaw->value() : 0.0; }
 
-double VolumeRotationWidget::pitch() const { return m_pitch ? m_pitch->value() : 0.0; }
+double VolumeRotationWidget::pitch() const { return ui.m_pitch ? ui.m_pitch->value() : 0.0; }
 
-double VolumeRotationWidget::roll() const { return m_roll ? m_roll->value() : 0.0; }
+double VolumeRotationWidget::roll() const { return ui.m_roll ? ui.m_roll->value() : 0.0; }
 
-bool VolumeRotationWidget::liveUpdate() const { return m_live ? m_live->isChecked() : true; }
+bool VolumeRotationWidget::liveUpdate() const { return ui.m_live ? ui.m_live->isChecked() : true; }
 
 int VolumeRotationWidget::downsampleFactor() const { return m_downsampleFactor; }
 
@@ -100,9 +80,9 @@ void VolumeRotationWidget::setDownsampleFactor(int factor)
 	if (m_downsampleFactor == factor) return;
 	m_downsampleFactor = factor;
 	// Update combo selection to match
-	if (m_downsampleCombo) {
-		int idx = m_downsampleCombo->findData(factor);
-		if (idx >= 0) m_downsampleCombo->setCurrentIndex(idx);
+	if (ui.m_downsampleCombo) {
+		int idx = ui.m_downsampleCombo->findData(factor);
+		if (idx >= 0) ui.m_downsampleCombo->setCurrentIndex(idx);
 	}
 	emit downsampleFactorChanged(m_downsampleFactor);
 	// keep internal reslice downsample in sync
@@ -198,9 +178,9 @@ void VolumeRotationWidget::onResetClicked()
 {
 	// Temporarily inhibit signal feedback from programmatic UI changes
 	m_inProgrammaticUpdate = true;
-	if (m_yaw) m_yaw->setValue(0.0);
-	if (m_pitch) m_pitch->setValue(0.0);
-	if (m_roll) m_roll->setValue(0.0);
+	if (ui.m_yaw) ui.m_yaw->setValue(0.0);
+	if (ui.m_pitch) ui.m_pitch->setValue(0.0);
+	if (ui.m_roll) ui.m_roll->setValue(0.0);
 	m_inProgrammaticUpdate = false;
 
 	// Reset pending rotation state (do not change downsample)
@@ -235,7 +215,7 @@ void VolumeRotationWidget::onResetClicked()
 void VolumeRotationWidget::onApplyDownsampleClicked()
 {
 	int factor = 1;
-	if (m_downsampleCombo) factor = m_downsampleCombo->currentData().toInt();
+	if (ui.m_downsampleCombo) factor = ui.m_downsampleCombo->currentData().toInt();
 	setDownsampleFactor(factor);
 	// Apply to internal reslice state and update
 	m_resliceDownsample = m_downsampleFactor;
@@ -300,7 +280,7 @@ void VolumeRotationWidget::computeOutputGridFromInput()
 	m_reslice->SetOutputExtent(outExt);
 }
 
-void VolumeRotationWidget::Update()
+void VolumeRotationWidget::update()
 {
 	if (!m_changeInfo || !m_reslice) return;
 	// Ensure changeInfo is updated so its output is available to reslice
@@ -336,7 +316,7 @@ void VolumeRotationWidget::Update()
 	m_reslice->Update();
 }
 
-vtkImageReslice* VolumeRotationWidget::GetReslice()
+vtkImageReslice* VolumeRotationWidget::getReslice()
 {
 	return m_reslice.Get();
 }
@@ -353,13 +333,13 @@ void VolumeRotationWidget::setOperational(bool on)
 	m_operational = on;
 
 	// Visual / UI enable/disable
-	if (m_yaw) m_yaw->setEnabled(on);
-	if (m_pitch) m_pitch->setEnabled(on);
-	if (m_roll) m_roll->setEnabled(on);
-	if (m_live) m_live->setEnabled(on);
-	if (m_reset) m_reset->setEnabled(on);
-	if (m_downsampleCombo) m_downsampleCombo->setEnabled(on);
-	if (m_applyDownsample) m_applyDownsample->setEnabled(on);
+	if (ui.m_yaw) ui.m_yaw->setEnabled(on);
+	if (ui.m_pitch) ui.m_pitch->setEnabled(on);
+	if (ui.m_roll) ui.m_roll->setEnabled(on);
+	if (ui.m_live) ui.m_live->setEnabled(on);
+	if (ui.m_reset) ui.m_reset->setEnabled(on);
+	if (ui.m_downsampleCombo) ui.m_downsampleCombo->setEnabled(on);
+	if (ui.m_applyDownsample) ui.m_applyDownsample->setEnabled(on);
 
 	// When disabling, detach any upstream VTK input so pipeline stops producing.
 	// Also clear any input data that may keep the pipeline alive.

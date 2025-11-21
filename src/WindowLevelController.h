@@ -3,9 +3,6 @@
 
 #include "ui_WindowLevelController.h"
 
-class QDoubleSpinBox;
-class QCheckBox;
-class QPushButton;
 class QTimer;
 
 class WindowLevelController : public QWidget

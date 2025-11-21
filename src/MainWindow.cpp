@@ -109,10 +109,15 @@ MainWindow::MainWindow(QWidget* parent)
 		m_imageLoader, vtkCommand::ProgressEvent,
 		this, SLOT(onVtkProgressEvent()));
 
-	// Create volume rotation widget and insert into control panel if space exists
+	// Create volume rotation widget
 	m_volumeRotationWidget = new VolumeRotationWidget(this);
-	// Try to insert into the control panel layout (if present in UI)
-	if (ui->controlPanelLayout) {
+
+	// Prefer inserting the rotation widget into the VolumeControlsWidget group box if present.
+	// Fall back to placing it into the controlPanelLayout (legacy) if VolumeControlsWidget is not available.
+	if (ui->volumeControlsWidget) {
+		ui->volumeControlsWidget->insertVolumeRotationWidget(m_volumeRotationWidget);
+	}
+	else if (ui->controlPanelLayout) {
 		ui->controlPanelLayout->addWidget(m_volumeRotationWidget);
 	}
 

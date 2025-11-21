@@ -3,6 +3,7 @@
 #include <QSizePolicy>
 #include <QLayout>
 #include <algorithm>
+#include "VolumeRotationWidget.h"
 
 VolumeControlsWidget::VolumeControlsWidget(QWidget* parent)
 	: QFrame(parent)
@@ -104,6 +105,59 @@ void VolumeControlsWidget::setRangeSliders(int yzMin, int yzMax, int xzMin, int 
 			ui.XYViewRangeSlider->minimumValue(), ui.XYViewRangeSlider->maximumValue()
 		);
 	}
+}
+
+void VolumeControlsWidget::insertVolumeRotationWidget(QWidget* rotationWidget)
+{
+	if (!rotationWidget) return;
+
+	// Prefer to add the rotation widget into the dedicated group box layout (created by the UI)
+	QWidget* group = ui.groupBoxRotation;
+	QLayout* layout = nullptr;
+	if (group)
+		layout = group->layout();
+
+	// Ensure rotation widget has reasonable vertical size policy so group box can adopt its height
+	QSize hint = rotationWidget->sizeHint();
+	if (hint.height() > 0) {
+		rotationWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+		rotationWidget->setFixedHeight(hint.height());
+	}
+	else {
+		rotationWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+	}
+
+	if (layout) {
+		layout->addWidget(rotationWidget);
+		rotationWidget->setParent(group);
+	}
+	else {
+		// fallback to a named layout placed in the generated UI (if present)
+		if (ui.rotationLayout) {
+			ui.rotationLayout->addWidget(rotationWidget);
+			rotationWidget->setParent(group);
+		}
+		else {
+			// last resort: place under this widget's layout
+			if (this->layout()) {
+				this->layout()->addWidget(rotationWidget);
+				rotationWidget->setParent(this);
+			}
+			else {
+				rotationWidget->setParent(group ? group : this);
+			}
+		}
+	}
+
+	// Make the group box adopt the fixed height of its contents
+	if (group) {
+		group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+		group->adjustSize();
+	}
+
+	// Update geometry so parent layouts recompute sizes
+	this->updateGeometry();
+	this->adjustSize();
 }
 
 void VolumeControlsWidget::updateYZLabel(int min, int max)
