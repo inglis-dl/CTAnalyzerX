@@ -63,12 +63,6 @@ private:
 	// Ensure cachedReader exists and is configured for current path/type
 	void EnsureReaderInitialized();
 
-	// Cached reader instance used for both RequestInformation and RequestData
-	vtkSmartPointer<vtkImageAlgorithm> cachedReader;
-
-	// Ensure cachedReader exists and is configured for current path/type
-	void EnsureReaderInitialized();
-
 	ImageLoader(const ImageLoader&) = delete;
 	void operator=(const ImageLoader&) = delete;
 };

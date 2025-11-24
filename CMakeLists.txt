@@ -164,6 +164,8 @@ set(SOURCES
 	 src/VolumeRotationWidget.h
      src/vtkImageOrthoPlanes.cpp
      src/vtkImageOrthoPlanes.h
+	 src/JsonSettings.cpp
+	 src/JsonSettings.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early
