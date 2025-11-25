@@ -10,6 +10,9 @@
 #include "JsonSettings.h"
 #include <QStandardPaths>
 #include <QDir>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 
 const QSettings::Format JsonSettings::JsonFormat = QSettings::registerFormat("JsonFormat", &JsonSettings::readSettingsJson, &JsonSettings::writeSettingsJson);
 
@@ -35,63 +38,35 @@ void JsonSettings::parseJsonObject(QJsonObject& json, QString prefix, QVariantMa
 	}
 }
 
-// -+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-
-QJsonObject JsonSettings::restoreJsonObject(QVariantMap& map)
+// Helper: recursively insert a value into a nested QJsonObject by path parts
+static void insertValueIntoObject(QJsonObject& obj, const QStringList& parts, const QJsonValue& val)
 {
-	QJsonObject obj;
-	QStringList keys = map.keys();
-
-	foreach(const auto key, keys)
-	{
-		QVariant value = map.value(key);
-		QStringList sections = key.split('/');
-		if (sections.size() > 1)
-		{
-			continue;
-		}
-		else
-		{
-			map.remove(key);
-			obj.insert(key, QJsonValue::fromVariant(value));
-		}
+	if (parts.isEmpty()) return;
+	const QString key = parts.first();
+	if (parts.size() == 1) {
+		obj.insert(key, val);
+		return;
 	}
+	// Fetch existing child or create a new one
+	QJsonObject child = obj.value(key).toObject();
+	QStringList rest = parts.mid(1);
+	insertValueIntoObject(child, rest, val);
+	obj.insert(key, child);
+}
 
-	QList<QVariantMap> subMaps;
-	keys = map.keys();
-	for (int i = 0; i < keys.size(); i++)
-	{
-		bool found = false;
-		QString key = keys[i];
-
-		for (int j = 0; j < subMaps.size(); j++)
-		{
-			QString subKey = subMaps[j].key(QString("__key__"));
-			if (subKey.contains(key.section('/', 0, 0)))
-			{
-				subMaps[j].insert(key.section('/', 1), map.value(key));
-				found = true;
-				break;
-			}
-		}
-
-		if (!found)
-		{
-			QVariantMap tmp;
-			tmp.insert(key.section('/', 0, 0), QString("__key__"));
-			tmp.insert(key.section('/', 1), map.value(key));
-			subMaps.append(tmp);
-		}
+QJsonObject JsonSettings::restoreJsonObject(const QVariantMap& map)
+{
+	QJsonObject root;
+	const QStringList keys = map.keys();
+	for (const QString& flatKey : keys) {
+		QVariant v = map.value(flatKey);
+		QJsonValue jv = QJsonValue::fromVariant(v);
+		// Split on '/' to reconstruct nested structure
+		const QStringList parts = flatKey.split('/', Qt::SkipEmptyParts);
+		if (parts.isEmpty()) continue;
+		insertValueIntoObject(root, parts, jv);
 	}
-
-	for (int i = 0; i < subMaps.size(); i++)
-	{
-		QString key = subMaps[i].key(QString("__key__"));
-		subMaps[i].remove(key);
-
-		QJsonObject tmp = restoreJsonObject(subMaps[i]);
-		obj.insert(key, tmp);
-	}
-	return obj;
+	return root;
 }
 
 // -+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-

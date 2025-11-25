@@ -593,3 +593,52 @@ void ImageFrameWidget::refreshEndpointFromUpstream()
 	// Final render
 	render();
 }
+
+// the top color in the gradient
+void ImageFrameWidget::setForegroundColor(const QColor& c) {
+	if (auto* r = renderer()) {
+		double col[3] = { c.redF(), c.greenF(), c.blueF() };
+		r->SetBackground2(col);
+		emit foregroundColorChanged(c);
+	}
+}
+
+QColor ImageFrameWidget::foregroundColor() const {
+	if (auto* r = renderer()) {
+		double b2[3] = { 0.0, 0.0, 0.0 };
+		r->GetBackground2(b2);
+		return QColor::fromRgbF(b2[0], b2[1], b2[2]);
+	}
+	return QColor();
+}
+
+void ImageFrameWidget::setBackgroundColor(const QColor& c) {
+	if (auto* r = renderer()) {
+		double col[3] = { c.redF(), c.greenF(), c.blueF() };
+		r->SetBackground(col);
+		emit backgroundColorChanged(c);
+	}
+}
+
+QColor ImageFrameWidget::backgroundColor() const {
+	if (auto* r = renderer()) {
+		double b2[3] = { 0.0, 0.0, 0.0 };
+		r->GetBackground(b2);
+		return QColor::fromRgbF(b2[0], b2[1], b2[2]);
+	}
+	return QColor();
+}
+
+void ImageFrameWidget::setGradientBackground(bool on) {
+	if (auto* r = renderer()) {
+		r->SetGradientBackground(on);
+		emit gradientBackgroundChanged(on);
+	}
+}
+
+bool ImageFrameWidget::gradientBackground() const {
+	if (auto* r = renderer()) {
+		return r->GetGradientBackground() ? true : false;
+	}
+	return false;
+}

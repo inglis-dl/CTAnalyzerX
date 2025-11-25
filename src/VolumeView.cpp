@@ -370,6 +370,12 @@ void VolumeView::setOrthoPlanesVisible(bool visible)
 	const bool modified = (m_orthoPlanesVisible != visible);
 	m_orthoPlanesVisible = visible;
 
+	// Ensure the title and menu reflect the current mode so external UI (checkbox/menu) stays in sync.
+	setTitle(m_orthoPlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
+
+	if (!m_imageInitialized)
+		return;
+
 	// Mutually exclusive: show either volume or planes, not both
 	if (visible) {
 		if (m_volume && m_renderer->HasViewProp(m_volume))
@@ -383,9 +389,6 @@ void VolumeView::setOrthoPlanesVisible(bool visible)
 	if (m_orthoPlanes) {
 		m_orthoPlanes->SetPlaneVisibility(visible);
 	}
-
-	// Ensure the title and menu reflect the current mode so external UI (checkbox/menu) stays in sync.
-	setTitle(m_orthoPlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
 
 	if (modified)
 		emit orthoPlanesVisibleChanged(m_orthoPlanesVisible);

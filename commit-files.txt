@@ -1,2 +1,0 @@
-src/ImageFrameWidget.h
-src/WindowLevelBus.cpp

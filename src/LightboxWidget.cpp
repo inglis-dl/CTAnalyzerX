@@ -2,9 +2,9 @@
 #include "SliceView.h"
 #include "VolumeView.h"
 #include "SelectionFrameWidget.h"
-
 #include "WindowLevelController.h"
 #include "WindowLevelBridge.h"
+#include "JsonSettings.h"
 
 #include <vtkImageSinusoidSource.h>
 #include <vtkSmartPointer.h>
@@ -18,6 +18,8 @@
 #include <QParallelAnimationGroup>
 #include <array>
 #include <cmath>
+#include <QSettings>
+#include <QColor>
 
 LightboxWidget::LightboxWidget(QWidget* parent)
 	: QWidget(parent)
@@ -197,9 +199,22 @@ void LightboxWidget::setDefaultImage()
 	sinusoid->SetAmplitude(255);
 	sinusoid->SetWholeExtent(0, 63, 0, 127, 0, 31);
 	sinusoid->SetDirection(0.5, -0.5, 1.0 / std::sqrt(2.0));
+	// Ensure source has produced concrete vtkImageData so we can pass it as direct input.
 	sinusoid->Update();
 
-	setInputConnection(sinusoid->GetOutputPort(), true);
+	// Prefer passing concrete image data (SetInputData path) to child views so
+	// ImageFrameWidget::setImageData() can install it via SetInputData on the
+	// internal shift/scale filter. This avoids calling Update() on filters that
+	// have no upstream connections (prevents "input port 0 has 0 connections" errors).
+	vtkImageData* img = vtkImageData::SafeDownCast(sinusoid->GetOutput());
+	if (img) {
+		// Pass the produced image directly to views (safe, immediate metadata available).
+		setImageData(img);
+	}
+	else {
+		// Fallback: attach as a pipeline connection if output is not a concrete image.
+		setInputConnection(sinusoid->GetOutputPort(), true);
+	}
 }
 
 void LightboxWidget::setImageData(vtkImageData* image)
@@ -506,5 +521,97 @@ void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port, bool newImg)
 		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
 	}
+}
+
+void LightboxWidget::readSettings()
+{
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	if (settings.status() != QSettings::NoError) return;
+
+	settings.beginGroup("lightbox");
+
+	auto applyView = [&](const QString& key, SliceView* view) {
+		if (!view) return;
+		const int orient = settings.value(key + "/orientation", -1).toInt();
+		if (orient >= 0) view->setViewOrientation(static_cast<ImageFrameWidget::ViewOrientation>(orient));
+
+		const QString bg = settings.value(key + "/bg").toString();
+		const QString fg = settings.value(key + "/fg").toString();
+		const bool grad = settings.value(key + "/gradient", view->gradientBackground()).toBool();
+
+		if (!bg.isEmpty()) {
+			QColor c(bg);
+			if (c.isValid()) view->setBackgroundColor(c);
+		}
+		if (!fg.isEmpty()) {
+			QColor c(fg);
+			if (c.isValid()) view->setForegroundColor(c);
+		}
+		view->setGradientBackground(grad);
+		};
+
+	applyView("YZ", ui.YZView);
+	applyView("XZ", ui.XZView);
+	applyView("XY", ui.XYView);
+
+	if (auto* vol = ui.volumeView) {
+		const bool ortho = settings.value("volume/orthoPlanesVisible", vol->orthoPlanesVisible()).toBool();
+		const bool shading = settings.value("volume/shadingEnabled", vol->shadingEnabled()).toBool();
+		vol->setOrthoPlanesVisible(ortho);
+		vol->setShadingEnabled(shading);
+
+		const QString bg = settings.value("volume/bg").toString();
+		const QString fg = settings.value("volume/fg").toString();
+		const bool grad = settings.value("volume/gradient", vol->gradientBackground()).toBool();
+		if (!bg.isEmpty()) {
+			QColor c(bg);
+			if (c.isValid()) vol->setBackgroundColor(c);
+		}
+		if (!fg.isEmpty()) {
+			QColor c(fg);
+			if (c.isValid()) vol->setForegroundColor(c);
+		}
+		vol->setGradientBackground(grad);
+	}
+
+	settings.endGroup();
+}
+
+void LightboxWidget::writeSettings() const
+{
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	if (settings.status() != QSettings::NoError) return;
+
+	settings.beginGroup("lightbox");
+
+	auto storeView = [&](const QString& key, const SliceView* view) {
+		if (!view) {
+			settings.remove(key);
+			return;
+		}
+		settings.setValue(key + "/orientation", static_cast<int>(view->viewOrientation()));
+		QColor bg = view->backgroundColor();
+		QColor fg = view->foregroundColor();
+		settings.setValue(key + "/bg", bg.isValid() ? bg.name() : QString());
+		settings.setValue(key + "/fg", fg.isValid() ? fg.name() : QString());
+		settings.setValue(key + "/gradient", view->gradientBackground());
+		};
+
+	storeView("YZ", ui.YZView);
+	storeView("XZ", ui.XZView);
+	storeView("XY", ui.XYView);
+
+	if (auto* vol = ui.volumeView) {
+		settings.setValue("volume/orthoPlanesVisible", vol->orthoPlanesVisible());
+		settings.setValue("volume/shadingEnabled", vol->shadingEnabled());
+		QColor bg = vol->backgroundColor();
+		QColor fg = vol->foregroundColor();
+		settings.setValue("volume/bg", bg.isValid() ? bg.name() : QString());
+		settings.setValue("volume/fg", fg.isValid() ? fg.name() : QString());
+		settings.setValue("volume/gradient", vol->gradientBackground());
+	}
+
+	settings.endGroup();
+	settings.sync();
 }
 

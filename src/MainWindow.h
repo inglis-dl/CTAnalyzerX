@@ -29,6 +29,7 @@ protected:
 	void keyPressEvent(QKeyEvent* event) override;
 	void dragEnterEvent(QDragEnterEvent* event) override;
 	void dropEvent(QDropEvent* event) override;
+	void closeEvent(QCloseEvent* event) override; // persist settings on close
 
 private slots:
 	void onActionOpen();
@@ -51,6 +52,10 @@ private:
 	void loadRecentFiles();
 	void saveRecentFiles();
 	void openFile(const QString& filePath);
+
+	// JSON-backed settings helpers
+	void readSettings();
+	void writeSettings();
 
 	Ui::MainWindow* ui;
 	QStringList recentFiles;

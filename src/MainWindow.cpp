@@ -6,6 +6,7 @@
 #include "WindowLevelController.h"
 #include "WindowLevelBridge.h"
 #include "VolumeRotationWidget.h"
+#include "JsonSettings.h"
 
 #include <QFileDialog>
 #include <QMessageBox>
@@ -29,6 +30,11 @@
 #include <QElapsedTimer>
 #include <QThread>
 #include <QCoreApplication>
+#include <QCloseEvent>
+#include <QGuiApplication>
+#include <QScreen>
+#include <QColor>
+#include <QPalette>
 
 #include <vtkVersion.h>   // VTK version macros
 #include <vtkEventQtSlotConnect.h>
@@ -134,12 +140,14 @@ MainWindow::MainWindow(QWidget* parent)
 	*/
 	setupPanelConnections();
 
-	loadRecentFiles();
+	// Load settings (geometry, recent files, appearance) using JsonSettings-backed QSettings
+	readSettings();
 }
 
 MainWindow::~MainWindow()
 {
-	saveRecentFiles();
+	// persist settings (geometry, recent files, appearance) before shutdown
+	writeSettings();
 	delete ui;
 	// m_volumeRotationWidget has parent this and will be deleted automatically
 }
@@ -349,24 +357,99 @@ void MainWindow::updateRecentFilesMenu()
 	}
 }
 
+void MainWindow::readSettings()
+{
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	if (settings.status() == QSettings::NoError) {
+		// Appearance: restore geometry if valid
+		settings.beginGroup("appearance");
+		QRect rect;
+		QRect screen = QGuiApplication::primaryScreen()->geometry();
+		int xpos = settings.value("geometry_x").toInt();
+		int ypos = settings.value("geometry_y").toInt();
+		int w = settings.value("geometry_w").toInt();
+		int h = settings.value("geometry_h").toInt();
+
+		if (xpos <= 0 || xpos >= screen.width()) xpos = screen.x();
+		if (ypos <= 0 || ypos >= screen.height()) ypos = screen.y();
+
+		rect.setX(xpos);
+		rect.setY(ypos);
+		rect.setWidth(w > 0 ? w : this->width());
+		rect.setHeight(h > 0 ? h : this->height());
+
+		if (rect.isValid())
+			this->setGeometry(rect);
+		settings.endGroup();
+
+		// Recent files: load list
+		settings.beginGroup("recent");
+		QStringList rf = settings.value("recentFiles").toStringList();
+		if (!rf.isEmpty()) recentFiles = rf;
+		settings.endGroup();
+
+		// Delegate Lightbox-specific restore to LightboxWidget (it will read its own settings "lightbox" subgroup)
+		if (ui->lightboxWidget) {
+			ui->lightboxWidget->readSettings();
+		}
+
+		// (Optional) Appearance colors or other per-widget settings could be restored here.
+	}
+
+	// Ensure UI menu reflects loaded recent files
+	updateRecentFilesMenu();
+}
+
+void MainWindow::writeSettings()
+{
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	if (settings.status() == QSettings::NoError) {
+		// Application metadata (optional)
+		settings.beginGroup("application");
+		// Optionally write version/build info here if available
+		settings.setValue("version", QStringLiteral("unknown"));
+		settings.endGroup();
+
+		// Persist recent files
+		settings.beginGroup("recent");
+		settings.setValue("recentFiles", recentFiles);
+		settings.endGroup();
+
+		// Persist geometry/appearance
+		settings.beginGroup("appearance");
+		QRect rect(this->geometry());
+		settings.setValue("geometry_x", rect.x());
+		settings.setValue("geometry_y", rect.y());
+		settings.setValue("geometry_w", rect.width());
+		settings.setValue("geometry_h", rect.height());
+		settings.endGroup();
+
+		// Delegate Lightbox-specific persistence to LightboxWidget (it will write its own "lightbox" subgroup)
+		if (ui->lightboxWidget) {
+			ui->lightboxWidget->writeSettings();
+		}
+
+		settings.sync();
+	}
+}
+
 void MainWindow::loadRecentFiles()
 {
-	QSettings settings("CTAnalyzerX", "RecentFiles");
-	recentFiles = settings.value("recentFiles").toStringList();
-	updateRecentFilesMenu();
+	// Backwards-compatible wrapper: delegate to JSON-backed settings
+	readSettings();
 }
 
 void MainWindow::saveRecentFiles()
 {
-	QSettings settings("CTAnalyzerX", "RecentFiles");
-	settings.setValue("recentFiles", recentFiles);
+	// Backwards-compatible wrapper: delegate to JSON-backed settings
+	writeSettings();
 }
 
 void MainWindow::clearRecentFiles()
 {
 	recentFiles.clear();
 	updateRecentFilesMenu();
-	saveRecentFiles();
+	writeSettings();
 }
 
 void MainWindow::keyPressEvent(QKeyEvent* event)
@@ -463,7 +546,7 @@ void MainWindow::openFile(const QString& filePath)
 
 		// Update recent files list
 		addToRecentFiles(filePath);
-		saveRecentFiles();
+		writeSettings();
 	}
 	else {
 		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort(), true);
@@ -577,4 +660,11 @@ void MainWindow::showLoaderEnd()
 {
 	progressBar->setValue(100);
 	progressBar->setVisible(false);
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+	// Ensure settings are written on close
+	writeSettings();
+	QMainWindow::closeEvent(event);
 }

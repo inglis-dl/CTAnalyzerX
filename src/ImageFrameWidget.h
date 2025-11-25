@@ -3,6 +3,7 @@
 #include "SelectionFrameWidget.h"
 
 #include <QWidget>
+#include <QColor>
 #include <limits>
 
 class vtkImageData;
@@ -25,6 +26,11 @@ class ImageFrameWidget : public SelectionFrameWidget
 		// Properties
 		Q_PROPERTY(ViewOrientation viewOrientation READ viewOrientation WRITE setViewOrientation NOTIFY viewOrientationChanged)
 		Q_PROPERTY(Interpolation interpolation READ interpolation WRITE setInterpolation NOTIFY interpolationChanged)
+
+		// New visual properties for background/foreground gradient control
+		Q_PROPERTY(QColor backgroundColor READ backgroundColor WRITE setBackgroundColor NOTIFY backgroundColorChanged)
+		Q_PROPERTY(QColor foregroundColor READ foregroundColor WRITE setForegroundColor NOTIFY foregroundColorChanged)
+		Q_PROPERTY(bool gradientBackground READ gradientBackground WRITE setGradientBackground NOTIFY gradientBackgroundChanged)
 
 public:
 	enum Interpolation { Nearest, Linear, Cubic };
@@ -87,6 +93,15 @@ public:
 	void setOrientationMarkerVisible(bool visible);
 	bool orientationMarkerVisible() const { return m_orientationMarkerVisible; }
 
+	// New: background/foreground accessors that operate on the underlying vtkRenderer.
+	// Implemented inline for convenience and to mirror jswqAbstractView style.
+	void setBackgroundColor(const QColor& c);
+	QColor backgroundColor() const;
+	void setForegroundColor(const QColor& c);
+	QColor foregroundColor() const;
+	void setGradientBackground(bool on);
+	bool gradientBackground() const;
+
 public slots:
 	virtual void updateData() {};
 
@@ -106,6 +121,11 @@ signals:
 	void viewOrientationChanged(ViewOrientation);
 	void interpolationChanged(Interpolation);
 	void windowLevelChanged(double window, double level);
+
+	// New signals for property change notification
+	void backgroundColorChanged(const QColor& c);
+	void foregroundColorChanged(const QColor& c);
+	void gradientBackgroundChanged(bool on);
 
 protected:
 	// SceneFrameWidget override: used by render() and tooling.

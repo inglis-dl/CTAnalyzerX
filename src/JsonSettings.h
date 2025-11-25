@@ -24,7 +24,7 @@ public:
 
 private:
 	static void parseJsonObject(QJsonObject& json, QString prefix, QVariantMap& map);
-	static QJsonObject restoreJsonObject(QVariantMap& map);
+	static QJsonObject restoreJsonObject(const QVariantMap& map);
 };
 
 #endif // __JsonSettings_h
