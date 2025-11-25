@@ -25,11 +25,16 @@ public:
 	explicit MainWindow(QWidget* parent = nullptr);
 	~MainWindow();
 
+signals:
+	void requestLoadViewSettings();
+	void requestSaveViewSettings();
+
 protected:
 	void keyPressEvent(QKeyEvent* event) override;
 	void dragEnterEvent(QDragEnterEvent* event) override;
 	void dropEvent(QDropEvent* event) override;
 	void closeEvent(QCloseEvent* event) override; // persist settings on close
+	void showEvent(QShowEvent* e) override;
 
 private slots:
 	void onActionOpen();

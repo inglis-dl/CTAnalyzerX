@@ -2,6 +2,7 @@
 #include "ui_VolumeView.h"
 #include "MenuButton.h"
 #include "vtkImageOrthoPlanes.h"
+#include "JsonSettings.h" // Add this include at the top of the file
 
 #include <QAction>
 #include <QMenu>
@@ -991,5 +992,43 @@ void VolumeView::restoreDerivedViewState()
 	render();
 
 	m_hasSavedState = false;
+}
+
+void VolumeView::readSettings()
+{
+	// Read the common view settings first
+	ImageFrameWidget::readSettings();
+
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	if (settings.status() != QSettings::NoError) return;
+
+	const QString key = settingsGroupKey();
+	settings.beginGroup(key);
+
+	// Volume specific flags under the same per-view group
+	const bool ortho = settings.value("orthoPlanesVisible", m_orthoPlanesVisible).toBool();
+	const bool shading = settings.value("shadingEnabled", m_shadingEnabled).toBool();
+	setOrthoPlanesVisible(ortho);
+	setShadingEnabled(shading);
+
+	settings.endGroup();
+}
+
+void VolumeView::writeSettings() const
+{
+	// Write common view settings
+	ImageFrameWidget::writeSettings();
+
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	if (settings.status() != QSettings::NoError) return;
+
+	const QString key = const_cast<VolumeView*>(this)->settingsGroupKey();
+	settings.beginGroup(key);
+
+	settings.setValue("orthoPlanesVisible", orthoPlanesVisible());
+	settings.setValue("shadingEnabled", shadingEnabled());
+
+	settings.endGroup();
+	settings.sync();
 }
 

@@ -117,6 +117,11 @@ public slots:
 	// to preserve view-specific state (current slice, window/level, etc.).
 	virtual void refreshEndpointFromUpstream();
 
+	// Per-view settings I/O. Default implementations read/write common view keys.
+	// Subclasses may override to add view-specific keys.
+	virtual void readSettings();
+	virtual void writeSettings() const;
+
 signals:
 	void viewOrientationChanged(ViewOrientation);
 	void interpolationChanged(Interpolation);
@@ -199,6 +204,10 @@ protected:
 	double m_origin[3];
 
 	vtkImageData* upstreamInputImage() const;
+
+	// Map widget objectName() -> canonical settings key.
+	// Default implements heuristics for YZ/XZ/XY/volume. Subclasses may override.
+	virtual QString settingsGroupKey() const;
 
 private:
 

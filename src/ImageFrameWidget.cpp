@@ -1,4 +1,5 @@
 #include "ImageFrameWidget.h"
+#include "JsonSettings.h"
 
 #include <algorithm>
 #include <cmath>
@@ -20,6 +21,7 @@
 #include <vtkPropAssembly.h>
 #include <vtkAlgorithmOutput.h>
 #include <vtkDataObject.h>
+#include <QSettings>
 
 
 ImageFrameWidget::ImageFrameWidget(QWidget* parent)
@@ -641,4 +643,71 @@ bool ImageFrameWidget::gradientBackground() const {
 		return r->GetGradientBackground() ? true : false;
 	}
 	return false;
+}
+
+QString ImageFrameWidget::settingsGroupKey() const
+{
+	// Prefer explicit objectName (set in UI files). Fall back to simple heuristics.
+	const QString name = this->objectName();
+	if (!name.isEmpty()) {
+		// Normalize common names used in this app's saved JSON
+		if (name.contains(QLatin1String("YZ"), Qt::CaseInsensitive)) return QStringLiteral("YZ");
+		if (name.contains(QLatin1String("XZ"), Qt::CaseInsensitive)) return QStringLiteral("XZ");
+		if (name.contains(QLatin1String("XY"), Qt::CaseInsensitive)) return QStringLiteral("XY");
+		if (name.contains(QLatin1String("volume"), Qt::CaseInsensitive)) return QStringLiteral("volume");
+		// fallback to objectName as-is
+		return name;
+	}
+	// fallback to class name
+	return QString::fromUtf8(this->metaObject()->className());
+}
+
+void ImageFrameWidget::readSettings()
+{
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	if (settings.status() != QSettings::NoError) return;
+
+	const QString group = settingsGroupKey();
+	settings.beginGroup(group);
+
+	// orientation (optional)
+	const int orient = settings.value("orientation", static_cast<int>(m_viewOrientation)).toInt();
+	if (orient >= 0) setViewOrientation(static_cast<ViewOrientation>(orient));
+
+	// background / foreground colors
+	const QString bg = settings.value("bg").toString();
+	if (!bg.isEmpty()) {
+		QColor c(bg);
+		if (c.isValid()) setBackgroundColor(c);
+	}
+	const QString fg = settings.value("fg").toString();
+	if (!fg.isEmpty()) {
+		QColor c(fg);
+		if (c.isValid()) setForegroundColor(c);
+	}
+
+	// gradient flag
+	const bool grad = settings.value("gradient", gradientBackground()).toBool();
+	setGradientBackground(grad);
+
+	settings.endGroup(); // group
+}
+
+void ImageFrameWidget::writeSettings() const
+{
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	if (settings.status() != QSettings::NoError) return;
+
+	const QString key = const_cast<ImageFrameWidget*>(this)->settingsGroupKey();
+	settings.beginGroup(key);
+
+	settings.setValue("orientation", static_cast<int>(m_viewOrientation));
+	QColor bg = backgroundColor();
+	QColor fg = foregroundColor();
+	settings.setValue("bg", bg.isValid() ? bg.name() : QString());
+	settings.setValue("fg", fg.isValid() ? fg.name() : QString());
+	settings.setValue("gradient", gradientBackground());
+
+	settings.endGroup(); // key
+	settings.sync();
 }

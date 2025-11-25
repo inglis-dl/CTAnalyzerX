@@ -76,6 +76,10 @@ public slots:
 	void captureDerivedViewState() override;
 	void restoreDerivedViewState() override;
 
+	// Persist/load volume-specific settings (override of ImageFrameWidget)
+	void readSettings() override;
+	void writeSettings() const override;
+
 private:
 	Ui::VolumeView* ui = nullptr;
 

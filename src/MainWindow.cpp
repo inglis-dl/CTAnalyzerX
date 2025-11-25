@@ -142,6 +142,27 @@ MainWindow::MainWindow(QWidget* parent)
 
 	// Load settings (geometry, recent files, appearance) using JsonSettings-backed QSettings
 	readSettings();
+
+	// --- connect LightboxWidget view setting requests to MainWindow slots
+	if (ui->lightboxWidget) {
+		if (auto* yz = ui->lightboxWidget->getYZView())
+			connect(this, &MainWindow::requestLoadViewSettings, yz, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
+		if (auto* xz = ui->lightboxWidget->getXZView())
+			connect(this, &MainWindow::requestLoadViewSettings, xz, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
+		if (auto* xy = ui->lightboxWidget->getXYView())
+			connect(this, &MainWindow::requestLoadViewSettings, xy, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
+		if (auto* vol = ui->lightboxWidget->getVolumeView())
+			connect(this, &MainWindow::requestLoadViewSettings, vol, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
+
+		if (auto* yz = ui->lightboxWidget->getYZView())
+			connect(this, &MainWindow::requestSaveViewSettings, yz, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
+		if (auto* xz = ui->lightboxWidget->getXZView())
+			connect(this, &MainWindow::requestSaveViewSettings, xz, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
+		if (auto* xy = ui->lightboxWidget->getXYView())
+			connect(this, &MainWindow::requestSaveViewSettings, xy, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
+		if (auto* vol = ui->lightboxWidget->getVolumeView())
+			connect(this, &MainWindow::requestSaveViewSettings, vol, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
+	}
 }
 
 MainWindow::~MainWindow()
@@ -387,13 +408,6 @@ void MainWindow::readSettings()
 		QStringList rf = settings.value("recentFiles").toStringList();
 		if (!rf.isEmpty()) recentFiles = rf;
 		settings.endGroup();
-
-		// Delegate Lightbox-specific restore to LightboxWidget (it will read its own settings "lightbox" subgroup)
-		if (ui->lightboxWidget) {
-			ui->lightboxWidget->readSettings();
-		}
-
-		// (Optional) Appearance colors or other per-widget settings could be restored here.
 	}
 
 	// Ensure UI menu reflects loaded recent files
@@ -406,8 +420,63 @@ void MainWindow::writeSettings()
 	if (settings.status() == QSettings::NoError) {
 		// Application metadata (optional)
 		settings.beginGroup("application");
-		// Optionally write version/build info here if available
-		settings.setValue("version", QStringLiteral("unknown"));
+
+		// Compile-time fallbacks (match About dialog fallbacks)
+#ifndef CTANALYZERX_VERSION
+#define CTANALYZERX_VERSION "unknown"
+#endif
+#ifndef CTANALYZERX_BUILD_DATE
+#define CTANALYZERX_BUILD_DATE "unknown"
+#endif
+#ifndef CTANALYZERX_GIT_HASH
+#define CTANALYZERX_GIT_HASH "unknown"
+#endif
+#ifndef CTANALYZERX_BUILD_TYPE
+#define CTANALYZERX_BUILD_TYPE "unknown"
+#endif
+#ifndef CTANALYZERX_COMPILER
+#define CTANALYZERX_COMPILER "unknown"
+#endif
+#ifndef CTANALYZERX_VTKDICOM_VERSION
+#define CTANALYZERX_VTKDICOM_VERSION "unknown"
+#endif
+
+		const QString ver = QString::fromUtf8(CTANALYZERX_VERSION).trimmed();
+		const QString build = QString::fromUtf8(CTANALYZERX_BUILD_DATE).trimmed();
+		const QString fullHash = QString::fromUtf8(CTANALYZERX_GIT_HASH).trimmed();
+		const QString shortHash = fullHash.left(7);
+		const QString buildType = QString::fromUtf8(CTANALYZERX_BUILD_TYPE).trimmed();
+		const QString compiler = QString::fromUtf8(CTANALYZERX_COMPILER).trimmed();
+		const QString vtkDicomVer = QString::fromUtf8(CTANALYZERX_VTKDICOM_VERSION).trimmed();
+
+		// Platform / libs
+		const QString os = QSysInfo::prettyProductName();
+		const QString arch = QSysInfo::currentCpuArchitecture();
+		const QString qtVer = QString::fromLatin1(QT_VERSION_STR);
+		const QString vtkVer = QString::fromLatin1(vtkVersion::GetVTKVersionFull());
+		const QString itkVer = QStringLiteral("%1.%2.%3")
+			.arg(QString::number(ITK_VERSION_MAJOR),
+				 QString::number(ITK_VERSION_MINOR),
+				 QString::number(ITK_VERSION_PATCH));
+
+		// OpenGL summary (vendor | renderer | version)
+		const QString gl = queryOpenGLSummary();
+
+		// Persist concise about information for offline reporting
+		settings.setValue("version", ver);
+		settings.setValue("buildDate", build);
+		settings.setValue("gitHashShort", shortHash);
+		settings.setValue("buildType", buildType);
+		settings.setValue("compiler", compiler);
+		settings.setValue("vtkDicomVersion", vtkDicomVer);
+
+		settings.setValue("os", os);
+		settings.setValue("architecture", arch);
+		settings.setValue("qtVersion", qtVer);
+		settings.setValue("vtkVersion", vtkVer);
+		settings.setValue("itkVersion", itkVer);
+		settings.setValue("openGL", gl);
+
 		settings.endGroup();
 
 		// Persist recent files
@@ -424,10 +493,8 @@ void MainWindow::writeSettings()
 		settings.setValue("geometry_h", rect.height());
 		settings.endGroup();
 
-		// Delegate Lightbox-specific persistence to LightboxWidget (it will write its own "lightbox" subgroup)
-		if (ui->lightboxWidget) {
-			ui->lightboxWidget->writeSettings();
-		}
+		// Ask child views to persist their own per-view groups (they use settingsGroupKey()).
+		emit requestSaveViewSettings();
 
 		settings.sync();
 	}
@@ -662,9 +729,17 @@ void MainWindow::showLoaderEnd()
 	progressBar->setVisible(false);
 }
 
+void MainWindow::showEvent(QShowEvent* e)
+{
+	QMainWindow::showEvent(e);
+	emit requestLoadViewSettings();
+}
+
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-	// Ensure settings are written on close
+	// Ask views to persist themselves before final write
+	emit requestSaveViewSettings();
+	// existing close behavior
 	writeSettings();
 	QMainWindow::closeEvent(event);
 }

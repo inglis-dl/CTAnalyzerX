@@ -38,37 +38,6 @@ void JsonSettings::parseJsonObject(QJsonObject& json, QString prefix, QVariantMa
 	}
 }
 
-// Helper: recursively insert a value into a nested QJsonObject by path parts
-static void insertValueIntoObject(QJsonObject& obj, const QStringList& parts, const QJsonValue& val)
-{
-	if (parts.isEmpty()) return;
-	const QString key = parts.first();
-	if (parts.size() == 1) {
-		obj.insert(key, val);
-		return;
-	}
-	// Fetch existing child or create a new one
-	QJsonObject child = obj.value(key).toObject();
-	QStringList rest = parts.mid(1);
-	insertValueIntoObject(child, rest, val);
-	obj.insert(key, child);
-}
-
-QJsonObject JsonSettings::restoreJsonObject(const QVariantMap& map)
-{
-	QJsonObject root;
-	const QStringList keys = map.keys();
-	for (const QString& flatKey : keys) {
-		QVariant v = map.value(flatKey);
-		QJsonValue jv = QJsonValue::fromVariant(v);
-		// Split on '/' to reconstruct nested structure
-		const QStringList parts = flatKey.split('/', Qt::SkipEmptyParts);
-		if (parts.isEmpty()) continue;
-		insertValueIntoObject(root, parts, jv);
-	}
-	return root;
-}
-
 // -+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-
 bool JsonSettings::readSettingsJson(QIODevice& device, QVariantMap& map)
 {
@@ -97,4 +66,33 @@ QString JsonSettings::defaultSettingsPath() {
 	QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
 	QDir().mkpath(dir);
 	return dir + QDir::separator() + "settings.json";
+}
+
+// helper to insert nested value
+static void insertValueIntoObject(QJsonObject& obj, const QStringList& parts, const QJsonValue& val)
+{
+	if (parts.isEmpty()) return;
+	const QString key = parts.first();
+	if (parts.size() == 1) {
+		obj.insert(key, val);
+		return;
+	}
+	QJsonObject child = obj.value(key).toObject();
+	QStringList rest = parts.mid(1);
+	insertValueIntoObject(child, rest, val);
+	obj.insert(key, child);
+}
+
+QJsonObject JsonSettings::restoreJsonObject(const QVariantMap& map)
+{
+	QJsonObject root;
+	const QStringList keys = map.keys();
+	for (const QString& flatKey : keys) {
+		QVariant v = map.value(flatKey);
+		QJsonValue jv = QJsonValue::fromVariant(v);
+		const QStringList parts = flatKey.split('/', Qt::SkipEmptyParts);
+		if (parts.isEmpty()) continue;
+		insertValueIntoObject(root, parts, jv);
+	}
+	return root;
 }

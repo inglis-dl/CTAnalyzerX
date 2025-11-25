@@ -5,7 +5,6 @@
 #include <QHash>
 #include <QList>
 #include <QParallelAnimationGroup>
-#include <QSettings>
 
 class SliceView;
 class VolumeView;
@@ -21,11 +20,6 @@ class LightboxWidget : public QWidget {
 
 public:
 	explicit LightboxWidget(QWidget* parent = nullptr);
-
-	// Read/write lightbox-specific settings from the shared settings file.
-	// These methods instantiate their own QSettings (JsonFormat) and operate on the "lightbox" group.
-	void readSettings();
-	void writeSettings() const;
 
 	void setImageData(vtkImageData* image);
 	void setInputConnection(vtkAlgorithmOutput* port, bool newImg = true);
