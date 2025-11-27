@@ -41,6 +41,11 @@ public:
 protected:
 	void showEvent(QShowEvent* e) override;
 
+	// drag/drop to reorder frames by dragging title/header bars
+	void dragEnterEvent(QDragEnterEvent* e) override;
+	void dragMoveEvent(QDragMoveEvent* e) override;
+	void dropEvent(QDropEvent* e) override;
+
 public slots:
 	// Propagate a reset request to all child image frames (slices + volume)
 	void resetWindowLevel();

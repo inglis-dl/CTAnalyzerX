@@ -2,6 +2,7 @@
 
 #include <QFrame>
 #include <QColor>
+#include <QPoint> // added for drag start tracking
 
 class QHBoxLayout;
 class QVBoxLayout;
@@ -201,4 +202,7 @@ private:
 	bool m_maximizeAnimEnabled = true;
 	int m_maximizeAnimDurationMs = 200;
 	QGraphicsOpacityEffect* m_opacityEffect = nullptr;
+
+	// Drag support: track initial press position to start drags from the header.
+	QPoint m_dragStartPos;
 };

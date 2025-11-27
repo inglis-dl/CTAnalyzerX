@@ -25,6 +25,10 @@
 #include <QPropertyAnimation>
 #include <QEasingCurve>
 
+#include <QDrag>
+#include <QMimeData>
+#include <QPixmap>
+
 SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	: QFrame(parent)
 	, m_headerContainer(new QWidget(this))
@@ -307,7 +311,13 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 			}
 		}
 
+		// ---- drag start handling ----
 		if (event->type() == QEvent::MouseButtonPress) {
+			if (auto* me = static_cast<QMouseEvent*>(event)) {
+				// store global press position to later decide if we should start a drag
+				m_dragStartPos = me->globalPos();
+			}
+
 			// Select and focus this view when its title bar or menu button is pressed
 			setSelected(true);
 
@@ -322,6 +332,36 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 
 			return false; // allow normal processing
 		}
+
+		if (event->type() == QEvent::MouseMove) {
+			if (auto* me = static_cast<QMouseEvent*>(event)) {
+				// only start drag on left-button move and when there was an initial press
+				if ((me->buttons() & Qt::LeftButton) && !m_dragStartPos.isNull()) {
+					const int dist = (me->globalPos() - m_dragStartPos).manhattanLength();
+					if (dist >= QApplication::startDragDistance()) {
+						// start drag carrying this widget pointer (process-local)
+						QDrag* drag = new QDrag(this);
+						QMimeData* md = new QMimeData;
+						md->setData("application/x-selectionframe", QString::number(reinterpret_cast<quintptr>(this)).toUtf8());
+						drag->setMimeData(md);
+
+						// visual feedback pixmap (scaled)
+						QPixmap pm = this->grab();
+						if (!pm.isNull()) {
+							drag->setPixmap(pm.scaled(240, pm.height() * 240 / pm.width(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+						}
+
+						// execute move action (we handle swap on drop)
+						drag->exec(Qt::MoveAction);
+
+						// reset start pos to avoid repeated drags until next press
+						m_dragStartPos = QPoint();
+						return true; // consumed
+					}
+				}
+			}
+		}
+		// ------------------------------
 		if (event->type() == QEvent::MouseButtonDblClick) {
 			setSelected(true);
 			setFocus(Qt::MouseFocusReason);

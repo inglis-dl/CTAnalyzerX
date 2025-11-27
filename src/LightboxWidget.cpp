@@ -19,10 +19,60 @@
 #include <cmath>
 #include <QColor>
 
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+
+#include <QGridLayout>
+#include <QLayoutItem>
+
+
+namespace {
+	void swapWidgets(QGridLayout* grid, QWidget* a, QWidget* b)
+	{
+		if (!grid || !a || !b || a == b)
+			return;
+
+		int aRow = -1, aCol = -1, aRowSpan = 1, aColSpan = 1;
+		int bRow = -1, bCol = -1, bRowSpan = 1, bColSpan = 1;
+		QLayoutItem* aItem = nullptr;
+		QLayoutItem* bItem = nullptr;
+
+		// Find positions of a and b in the grid
+		for (int i = 0; i < grid->count(); ++i) {
+			int row, col, rowSpan, colSpan;
+			QLayoutItem* item = grid->itemAt(i);
+			QWidget* w = item ? item->widget() : nullptr;
+			grid->getItemPosition(i, &row, &col, &rowSpan, &colSpan);
+			if (w == a) {
+				aRow = row; aCol = col; aRowSpan = rowSpan; aColSpan = colSpan; aItem = item;
+			}
+			if (w == b) {
+				bRow = row; bCol = col; bRowSpan = rowSpan; bColSpan = colSpan; bItem = item;
+			}
+		}
+
+		if (!aItem || !bItem)
+			return;
+
+		// Remove both widgets from the layout
+		grid->removeWidget(a);
+		grid->removeWidget(b);
+
+		// Add them back at swapped positions
+		grid->addWidget(a, bRow, bCol, bRowSpan, bColSpan);
+		grid->addWidget(b, aRow, aCol, aRowSpan, aColSpan);
+	}
+} // namespace
+
+
 LightboxWidget::LightboxWidget(QWidget* parent)
 	: QWidget(parent)
 {
 	ui.setupUi(this);
+
+	// Allow drag/drop reordering
+	this->setAcceptDrops(true);
 
 	// Safety: UI may be created from Designer; guard null children where appropriate.
 	if (ui.YZView) ui.YZView->setViewOrientation(ImageFrameWidget::VIEW_ORIENTATION_YZ);
@@ -519,4 +569,92 @@ void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port, bool newImg)
 		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
 	}
+}
+
+// drag/drop handlers ------------------------------------------------------
+
+void LightboxWidget::dragEnterEvent(QDragEnterEvent* e)
+{
+	if (e->mimeData() && e->mimeData()->hasFormat("application/x-selectionframe")) {
+		e->acceptProposedAction();
+	}
+	else {
+		e->ignore();
+	}
+}
+
+void LightboxWidget::dragMoveEvent(QDragMoveEvent* e)
+{
+	if (e->mimeData() && e->mimeData()->hasFormat("application/x-selectionframe")) {
+		e->acceptProposedAction();
+	}
+	else {
+		e->ignore();
+	}
+}
+
+void LightboxWidget::dropEvent(QDropEvent* e)
+{
+	if (!e->mimeData() || !e->mimeData()->hasFormat("application/x-selectionframe")) {
+		e->ignore();
+		return;
+	}
+
+	const QByteArray ba = e->mimeData()->data("application/x-selectionframe");
+	const QString num = QString::fromUtf8(ba);
+	bool ok = false;
+	const quint64 v = num.toULongLong(&ok);
+	if (!ok) { e->ignore(); return; }
+
+	SelectionFrameWidget* src = reinterpret_cast<SelectionFrameWidget*>(static_cast<quintptr>(v));
+	if (!src) { e->ignore(); return; }
+
+	// Find target frame under drop position
+	QWidget* child = childAt(e->pos());
+	SelectionFrameWidget* target = nullptr;
+	for (QWidget* w = child; w; w = w->parentWidget()) {
+		if (auto* sf = qobject_cast<SelectionFrameWidget*>(w)) { target = sf; break; }
+	}
+
+	if (!target || target == src) { e->ignore(); return; }
+
+	// Swap in layout if possible
+	QGridLayout* grid = qobject_cast<QGridLayout*>(this->layout());
+	if (grid) {
+		swapWidgets(grid, src, target);
+	}
+	else {
+		// fallback: exchange geometries
+		QRect aGeo = src->geometry();
+		QRect bGeo = target->geometry();
+		src->setGeometry(bGeo);
+		target->setGeometry(aGeo);
+		src->update();
+		target->update();
+	}
+
+	// keep selection/focus and update menus for both frames
+	auto setMenuFor = [&](SelectionFrameWidget* w) {
+		if (!w) return;
+		if (auto* sv = qobject_cast<SliceView*>(w)) {
+			switch (sv->viewOrientation()) {
+				case ImageFrameWidget::VIEW_ORIENTATION_XY: w->setCurrentItem(QStringLiteral("XY")); break;
+				case ImageFrameWidget::VIEW_ORIENTATION_XZ: w->setCurrentItem(QStringLiteral("XZ")); break;
+				case ImageFrameWidget::VIEW_ORIENTATION_YZ: w->setCurrentItem(QStringLiteral("YZ")); break;
+				default: break;
+			}
+		}
+		else if (auto* vv = qobject_cast<VolumeView*>(w)) {
+			w->setCurrentItem(vv->orthoPlanesVisible() ? QStringLiteral("OrthoPlanes") : QStringLiteral("Volume"));
+		}
+		};
+
+	target->setSelected(true);
+	src->setSelected(false);
+	target->setFocus(Qt::OtherFocusReason);
+
+	setMenuFor(target);
+	setMenuFor(src);
+
+	e->acceptProposedAction();
 }
