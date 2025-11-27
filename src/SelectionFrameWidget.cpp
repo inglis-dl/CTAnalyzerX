@@ -847,3 +847,33 @@ QPropertyAnimation* SelectionFrameWidget::fadeTo(double opacity, int durationMs)
 	anim->start(QAbstractAnimation::DeleteWhenStopped);
 	return anim;
 }
+
+void SelectionFrameWidget::setDragHighlight(bool on)
+{
+	if (m_dragHighlight == on) return;
+	m_dragHighlight = on;
+
+	// When enabling highlight, add a visible border (non-persistent).
+	// When disabling, restore normal visuals via updateVisuals().
+	if (m_dragHighlight) {
+		// Use a green accent and thicker lines (4px)
+		const QString accent = QColor(0, 200, 0).name(); // bright green
+		const QColor bg = m_selected ? m_selectedTitleBg : m_titleBg;
+
+		// Header gets a green border, and the frame outer border is thickened too.
+		const QString headerStyle = QStringLiteral(
+			"#SelectionFrameHeader { background-color: %1; border: 4px solid %2; }"
+		).arg(bg.name(), accent);
+
+		const QString frameStyle = QStringLiteral(
+			"#SelectionFrameWidget { border: 4px solid %1; }"
+		).arg(accent);
+
+		if (m_headerContainer) m_headerContainer->setStyleSheet(headerStyle);
+		this->setStyleSheet(frameStyle);
+	}
+	else {
+		// revert to normal visuals
+		updateVisuals();
+	}
+}

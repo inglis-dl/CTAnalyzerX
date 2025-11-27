@@ -126,6 +126,9 @@ public:
 	// Helper used by container to animate fading
 	QPropertyAnimation* fadeTo(double opacity, int durationMs);
 
+	// add to the public section (near other methods)
+	void setDragHighlight(bool on);
+
 signals:
 	void selectionChanged(const QString& item);
 	void currentItemChanged(const QString& item);
@@ -205,4 +208,7 @@ private:
 
 	// Drag support: track initial press position to start drags from the header.
 	QPoint m_dragStartPos;
+
+	// add to the private section (near other members)
+	bool m_dragHighlight = false;
 };

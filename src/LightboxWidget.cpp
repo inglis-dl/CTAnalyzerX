@@ -573,10 +573,29 @@ void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port, bool newImg)
 
 // drag/drop handlers ------------------------------------------------------
 
+// add helper to find a SelectionFrameWidget under a point (place near anonymous namespace)
+static SelectionFrameWidget* frameAtPoint(QWidget* root, const QPoint& p)
+{
+	if (!root) return nullptr;
+	QWidget* child = root->childAt(p);
+	for (QWidget* w = child; w; w = w->parentWidget()) {
+		if (auto* sf = qobject_cast<SelectionFrameWidget*>(w)) return sf;
+	}
+	return nullptr;
+}
+
+// update drag handlers to highlight target
 void LightboxWidget::dragEnterEvent(QDragEnterEvent* e)
 {
 	if (e->mimeData() && e->mimeData()->hasFormat("application/x-selectionframe")) {
 		e->acceptProposedAction();
+
+		SelectionFrameWidget* target = frameAtPoint(this, e->pos());
+		if (target != m_dragHover) {
+			if (m_dragHover) m_dragHover->setDragHighlight(false);
+			m_dragHover = target;
+			if (m_dragHover) m_dragHover->setDragHighlight(true);
+		}
 	}
 	else {
 		e->ignore();
@@ -587,9 +606,26 @@ void LightboxWidget::dragMoveEvent(QDragMoveEvent* e)
 {
 	if (e->mimeData() && e->mimeData()->hasFormat("application/x-selectionframe")) {
 		e->acceptProposedAction();
+
+		// Highlight target under the current pointer (keep behavior matching dragEnterEvent)
+		SelectionFrameWidget* target = frameAtPoint(this, e->pos());
+		if (target != m_dragHover) {
+			if (m_dragHover) m_dragHover->setDragHighlight(false);
+			m_dragHover = target;
+			if (m_dragHover) m_dragHover->setDragHighlight(true);
+		}
 	}
 	else {
 		e->ignore();
+	}
+}
+
+void LightboxWidget::dragLeaveEvent(QDragLeaveEvent* /*e*/)
+{
+	// Clear any hover highlight when the drag leaves the widget
+	if (m_dragHover) {
+		m_dragHover->setDragHighlight(false);
+		m_dragHover = nullptr;
 	}
 }
 
@@ -657,4 +693,10 @@ void LightboxWidget::dropEvent(QDropEvent* e)
 	setMenuFor(src);
 
 	e->acceptProposedAction();
+
+	// Clear hover highlight after completing the drop so visual cuing is removed.
+	if (m_dragHover) {
+		m_dragHover->setDragHighlight(false);
+		m_dragHover = nullptr;
+	}
 }

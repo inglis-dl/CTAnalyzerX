@@ -45,6 +45,7 @@ protected:
 	void dragEnterEvent(QDragEnterEvent* e) override;
 	void dragMoveEvent(QDragMoveEvent* e) override;
 	void dropEvent(QDropEvent* e) override;
+	void dragLeaveEvent(QDragLeaveEvent* e) override;
 
 public slots:
 	// Propagate a reset request to all child image frames (slices + volume)
@@ -92,4 +93,6 @@ private:
 
 	// Guard to prevent feedback loops while propagating WL changes
 	bool m_propagatingWindowLevel = false;
+
+	SelectionFrameWidget* m_dragHover = nullptr;
 };
