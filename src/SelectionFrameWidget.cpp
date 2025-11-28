@@ -28,6 +28,7 @@
 #include <QDrag>
 #include <QMimeData>
 #include <QPixmap>
+#include "JsonSettings.h"
 
 SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	: QFrame(parent)
@@ -57,6 +58,17 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	m_selectedTitleBg = Qt::darkBlue;
 	m_borderColor = appPal.mid().color();
 	m_borderSelectedColor = Qt::darkBlue;
+	// load persisted drag highlight color (application JSON settings) or use default
+	{
+		QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+		settings.beginGroup(QStringLiteral("appearance"));
+		QVariant v = settings.value(QStringLiteral("selectionFrame/dragHighlightColor"));
+		settings.endGroup();
+		if (v.isValid()) {
+			QColor c; c.setNamedColor(v.toString());
+			if (c.isValid()) m_dragHighlightColor = c;
+		}
+	}
 
 	// Header actions area
 	m_headerActionsLayout->setContentsMargins(0, 0, 0, 0);
@@ -856,8 +868,8 @@ void SelectionFrameWidget::setDragHighlight(bool on)
 	// When enabling highlight, add a visible border (non-persistent).
 	// When disabling, restore normal visuals via updateVisuals().
 	if (m_dragHighlight) {
-		// Use a green accent and thicker lines (4px)
-		const QString accent = QColor(0, 200, 0).name(); // bright green
+		// Use the configured accent color and thicker lines (4px)
+		const QString accent = m_dragHighlightColor.name();
 		const QColor bg = m_selected ? m_selectedTitleBg : m_titleBg;
 
 		// Header gets a green border, and the frame outer border is thickened too.
@@ -875,5 +887,25 @@ void SelectionFrameWidget::setDragHighlight(bool on)
 	else {
 		// revert to normal visuals
 		updateVisuals();
+	}
+}
+
+void SelectionFrameWidget::setDragHighlightColor(const QColor& c)
+{
+	if (!c.isValid()) return;
+	if (m_dragHighlightColor == c) return;
+	m_dragHighlightColor = c;
+
+	// Persist into application JSON settings (appearance/selectionFrame/dragHighlightColor)
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	settings.beginGroup(QStringLiteral("appearance"));
+	settings.setValue(QStringLiteral("selectionFrame/dragHighlightColor"), m_dragHighlightColor.name());
+	settings.endGroup();
+	settings.sync();
+
+	// If currently highlighted, refresh visuals immediately
+	if (m_dragHighlight) {
+		// reuse setDragHighlight to re-apply style
+		setDragHighlight(true);
 	}
 }

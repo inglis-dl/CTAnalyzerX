@@ -36,7 +36,8 @@ class SelectionFrameWidget : public QFrame
 		Q_PROPERTY(QColor selectedTitleBackgroundColor READ selectedTitleBackgroundColor WRITE setSelectedTitleBackgroundColor)
 		Q_PROPERTY(QColor borderColor READ borderColor WRITE setBorderColor)
 		Q_PROPERTY(QColor borderSelectedColor READ borderSelectedColor WRITE setBorderSelectedColor)
-		Q_PROPERTY(bool restrictInteractionToSelection READ restrictInteractionToSelection WRITE setRestrictInteractionToSelection)
+		// Drag highlight color (persisted to application JSON settings)
+		Q_PROPERTY(QColor dragHighlightColor READ dragHighlightColor WRITE setDragHighlightColor)
 		// Maximize/restore
 		Q_PROPERTY(bool maximized READ isMaximized WRITE setMaximized NOTIFY maximizedChanged)
 		// Animation properties for maximize/minimize
@@ -128,6 +129,8 @@ public:
 
 	// add to the public section (near other methods)
 	void setDragHighlight(bool on);
+	void setDragHighlightColor(const QColor& c);
+	QColor dragHighlightColor() const { return m_dragHighlightColor; }
 
 signals:
 	void selectionChanged(const QString& item);
@@ -211,4 +214,6 @@ private:
 
 	// add to the private section (near other members)
 	bool m_dragHighlight = false;
+	// configurable highlight color (persisted/readable via JsonSettings)
+	QColor m_dragHighlightColor = QColor(0, 200, 0);
 };
