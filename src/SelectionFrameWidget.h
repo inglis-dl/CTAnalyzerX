@@ -2,6 +2,7 @@
 
 #include <QFrame>
 #include <QColor>
+#include <QPoint> // added for drag start tracking
 
 class QHBoxLayout;
 class QVBoxLayout;
@@ -35,7 +36,8 @@ class SelectionFrameWidget : public QFrame
 		Q_PROPERTY(QColor selectedTitleBackgroundColor READ selectedTitleBackgroundColor WRITE setSelectedTitleBackgroundColor)
 		Q_PROPERTY(QColor borderColor READ borderColor WRITE setBorderColor)
 		Q_PROPERTY(QColor borderSelectedColor READ borderSelectedColor WRITE setBorderSelectedColor)
-		Q_PROPERTY(bool restrictInteractionToSelection READ restrictInteractionToSelection WRITE setRestrictInteractionToSelection)
+		// Drag highlight color (persisted to application JSON settings)
+		Q_PROPERTY(QColor dragHighlightColor READ dragHighlightColor WRITE setDragHighlightColor)
 		// Maximize/restore
 		Q_PROPERTY(bool maximized READ isMaximized WRITE setMaximized NOTIFY maximizedChanged)
 		// Animation properties for maximize/minimize
@@ -125,6 +127,11 @@ public:
 	// Helper used by container to animate fading
 	QPropertyAnimation* fadeTo(double opacity, int durationMs);
 
+	// add to the public section (near other methods)
+	void setDragHighlight(bool on);
+	void setDragHighlightColor(const QColor& c);
+	QColor dragHighlightColor() const { return m_dragHighlightColor; }
+
 signals:
 	void selectionChanged(const QString& item);
 	void currentItemChanged(const QString& item);
@@ -201,4 +208,12 @@ private:
 	bool m_maximizeAnimEnabled = true;
 	int m_maximizeAnimDurationMs = 200;
 	QGraphicsOpacityEffect* m_opacityEffect = nullptr;
+
+	// Drag support: track initial press position to start drags from the header.
+	QPoint m_dragStartPos;
+
+	// add to the private section (near other members)
+	bool m_dragHighlight = false;
+	// configurable highlight color (persisted/readable via JsonSettings)
+	QColor m_dragHighlightColor = QColor(0, 200, 0);
 };

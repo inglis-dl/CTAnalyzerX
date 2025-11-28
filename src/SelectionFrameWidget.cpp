@@ -25,6 +25,11 @@
 #include <QPropertyAnimation>
 #include <QEasingCurve>
 
+#include <QDrag>
+#include <QMimeData>
+#include <QPixmap>
+#include "JsonSettings.h"
+
 SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	: QFrame(parent)
 	, m_headerContainer(new QWidget(this))
@@ -53,6 +58,17 @@ SelectionFrameWidget::SelectionFrameWidget(QWidget* parent)
 	m_selectedTitleBg = Qt::darkBlue;
 	m_borderColor = appPal.mid().color();
 	m_borderSelectedColor = Qt::darkBlue;
+	// load persisted drag highlight color (application JSON settings) or use default
+	{
+		QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+		settings.beginGroup(QStringLiteral("appearance"));
+		QVariant v = settings.value(QStringLiteral("selectionFrame/dragHighlightColor"));
+		settings.endGroup();
+		if (v.isValid()) {
+			QColor c; c.setNamedColor(v.toString());
+			if (c.isValid()) m_dragHighlightColor = c;
+		}
+	}
 
 	// Header actions area
 	m_headerActionsLayout->setContentsMargins(0, 0, 0, 0);
@@ -307,7 +323,13 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 			}
 		}
 
+		// ---- drag start handling ----
 		if (event->type() == QEvent::MouseButtonPress) {
+			if (auto* me = static_cast<QMouseEvent*>(event)) {
+				// store global press position to later decide if we should start a drag
+				m_dragStartPos = me->globalPos();
+			}
+
 			// Select and focus this view when its title bar or menu button is pressed
 			setSelected(true);
 
@@ -322,6 +344,36 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 
 			return false; // allow normal processing
 		}
+
+		if (event->type() == QEvent::MouseMove) {
+			if (auto* me = static_cast<QMouseEvent*>(event)) {
+				// only start drag on left-button move and when there was an initial press
+				if ((me->buttons() & Qt::LeftButton) && !m_dragStartPos.isNull()) {
+					const int dist = (me->globalPos() - m_dragStartPos).manhattanLength();
+					if (dist >= QApplication::startDragDistance()) {
+						// start drag carrying this widget pointer (process-local)
+						QDrag* drag = new QDrag(this);
+						QMimeData* md = new QMimeData;
+						md->setData("application/x-selectionframe", QString::number(reinterpret_cast<quintptr>(this)).toUtf8());
+						drag->setMimeData(md);
+
+						// visual feedback pixmap (scaled)
+						QPixmap pm = this->grab();
+						if (!pm.isNull()) {
+							drag->setPixmap(pm.scaled(240, pm.height() * 240 / pm.width(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+						}
+
+						// execute move action (we handle swap on drop)
+						drag->exec(Qt::MoveAction);
+
+						// reset start pos to avoid repeated drags until next press
+						m_dragStartPos = QPoint();
+						return true; // consumed
+					}
+				}
+			}
+		}
+		// ------------------------------
 		if (event->type() == QEvent::MouseButtonDblClick) {
 			setSelected(true);
 			setFocus(Qt::MouseFocusReason);
@@ -806,4 +858,54 @@ QPropertyAnimation* SelectionFrameWidget::fadeTo(double opacity, int durationMs)
 	anim->setEasingCurve(QEasingCurve::InOutQuad);
 	anim->start(QAbstractAnimation::DeleteWhenStopped);
 	return anim;
+}
+
+void SelectionFrameWidget::setDragHighlight(bool on)
+{
+	if (m_dragHighlight == on) return;
+	m_dragHighlight = on;
+
+	// When enabling highlight, add a visible border (non-persistent).
+	// When disabling, restore normal visuals via updateVisuals().
+	if (m_dragHighlight) {
+		// Use the configured accent color and thicker lines (4px)
+		const QString accent = m_dragHighlightColor.name();
+		const QColor bg = m_selected ? m_selectedTitleBg : m_titleBg;
+
+		// Header gets a green border, and the frame outer border is thickened too.
+		const QString headerStyle = QStringLiteral(
+			"#SelectionFrameHeader { background-color: %1; border: 4px solid %2; }"
+		).arg(bg.name(), accent);
+
+		const QString frameStyle = QStringLiteral(
+			"#SelectionFrameWidget { border: 4px solid %1; }"
+		).arg(accent);
+
+		if (m_headerContainer) m_headerContainer->setStyleSheet(headerStyle);
+		this->setStyleSheet(frameStyle);
+	}
+	else {
+		// revert to normal visuals
+		updateVisuals();
+	}
+}
+
+void SelectionFrameWidget::setDragHighlightColor(const QColor& c)
+{
+	if (!c.isValid()) return;
+	if (m_dragHighlightColor == c) return;
+	m_dragHighlightColor = c;
+
+	// Persist into application JSON settings (appearance/selectionFrame/dragHighlightColor)
+	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
+	settings.beginGroup(QStringLiteral("appearance"));
+	settings.setValue(QStringLiteral("selectionFrame/dragHighlightColor"), m_dragHighlightColor.name());
+	settings.endGroup();
+	settings.sync();
+
+	// If currently highlighted, refresh visuals immediately
+	if (m_dragHighlight) {
+		// reuse setDragHighlight to re-apply style
+		setDragHighlight(true);
+	}
 }
