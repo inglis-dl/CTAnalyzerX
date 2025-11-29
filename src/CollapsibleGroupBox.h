@@ -85,6 +85,9 @@ public:
 	/// Reimplemented for internal reasons
 	void setVisible(bool show) override;
 
+	// Add this method declaration:
+	void setContentWidget(QWidget* widget);
+
 protected Q_SLOTS:
 	/// called when the arrow indicator is clicked
 	/// users can call it programmatically by calling setChecked(bool)

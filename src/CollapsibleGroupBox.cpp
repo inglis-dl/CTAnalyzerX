@@ -28,6 +28,7 @@
 #include <QStyle>
 #include <QPropertyAnimation>
 #include <QEasingCurve>
+#include <QLayout>
 
 // CTK includes
 #include "CollapsibleGroupBox.h"
@@ -381,4 +382,28 @@ bool CollapsibleGroupBox::eventFilter(QObject* child, QEvent* e)
 		child->setProperty("visibilityToParent", false);
 	}
 	return this->QGroupBox::eventFilter(child, e);
+}
+
+//-----------------------------------------------------------------------------
+void CollapsibleGroupBox::setContentWidget(QWidget* widget)
+{
+	// Remove any existing layout and children except the title
+	QLayout* oldLayout = this->layout();
+	if (oldLayout) {
+		QLayoutItem* item;
+		while ((item = oldLayout->takeAt(0)) != nullptr) {
+			if (QWidget* w = item->widget()) {
+				w->setParent(nullptr);
+			}
+			delete item;
+		}
+		delete oldLayout;
+	}
+	if (widget) {
+		widget->setParent(this);
+		auto* lay = new QVBoxLayout();
+		lay->setContentsMargins(0, 0, 0, 0);
+		lay->addWidget(widget);
+		this->setLayout(lay);
+	}
 }
