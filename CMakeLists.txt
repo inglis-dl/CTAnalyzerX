@@ -166,6 +166,10 @@ set(SOURCES
      src/vtkImageOrthoPlanes.h
 	 src/JsonSettings.cpp
 	 src/JsonSettings.h
+     src/ImageProcessingStateMachine.cpp
+     src/ImageProcessingStateMachine.h
+     src/WorkflowPanelWidget.cpp
+     src/WorkflowPanelWidget.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early
