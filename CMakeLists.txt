@@ -166,6 +166,10 @@ set(SOURCES
      src/vtkImageOrthoPlanes.h
 	 src/JsonSettings.cpp
 	 src/JsonSettings.h
+	 src/vtkTransformWidget.cxx
+	 src/vtkTransformWidget.h
+	 src/vtkTransformRepresentation.cxx
+	 src/vtkTransformRepresentation.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early
