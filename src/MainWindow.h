@@ -8,6 +8,9 @@
 
 #include <memory>
 
+// Add include for state machine
+#include "ImageProcessingStateMachine.h"
+
 namespace Ui {
 	class MainWindow;
 }
@@ -15,7 +18,8 @@ namespace Ui {
 class vtkImageData;
 class ImageLoader;
 class vtkEventQtSlotConnect;
-class VolumeRotationWidget; // forward declare
+// forward declare - workflow panel (left)
+class WorkflowPanelWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -50,6 +54,21 @@ private slots:
 	void showLoaderStart();
 	void showLoaderEnd();
 
+	// ImageProcessingStateMachine integration slots
+	void onProcessingRequestLoadImage();
+	void onProcessingRequestDefineCrop();
+	void onProcessingRequestApplyCrop();
+	void onProcessingRequestLoadCropped();
+	void onProcessingRequestPlaceFiducials();
+	void onProcessingRequestStartInteractiveRotation();
+	void onProcessingRequestApplyRotation();
+	void onProcessingRequestLoadRotated();
+	void onProcessingRequestComputeThreshold();
+	void onProcessingRequestSegment();
+	void onProcessingRequestSaveSegment();
+	void onProcessingFinished();
+	void onProcessingError(const QString& reason);
+
 private:
 	void setupPanelConnections();
 	void addToRecentFiles(const QString& filePath);
@@ -70,8 +89,14 @@ private:
 	QProgressBar* progressBar = nullptr;
 	bool defaultImageLoaded = false;
 
-	// Rotation widget for reslicing the volume
-	VolumeRotationWidget* m_volumeRotationWidget = nullptr;
+	// Left-side workflow panel (replaces legacy control widgets)
+	WorkflowPanelWidget* m_workflowPanelWidget = nullptr;
+
+	// Image processing state machine
+	ImageProcessingStateMachine* m_processingStateMachine = nullptr;
+
+	// Note: VolumeControlsWidget / VolumeRotationWidget usage has been removed
+	// per refactor to use WorkflowPanelWidget (left) and LightboxWidget (right).
 };
 
 #endif // MAINWINDOW_H

@@ -1,12 +1,14 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
+#include "ImageProcessingStateMachine.h"
 
 #include "LightboxWidget.h"
 #include "ImageLoader.h"
 #include "WindowLevelController.h"
 #include "WindowLevelBridge.h"
-#include "VolumeRotationWidget.h"
+//#include "VolumeRotationWidget.h"   // removed: rotation widget handled via WorkflowPanelWidget now
 #include "JsonSettings.h"
+#include "WorkflowPanelWidget.h"
 
 #include <QFileDialog>
 #include <QMessageBox>
@@ -115,29 +117,95 @@ MainWindow::MainWindow(QWidget* parent)
 		m_imageLoader, vtkCommand::ProgressEvent,
 		this, SLOT(onVtkProgressEvent()));
 
-	// Create volume rotation widget
-	m_volumeRotationWidget = new VolumeRotationWidget(this);
-
-	// Prefer inserting the rotation widget into the VolumeControlsWidget group box if present.
-	// Fall back to placing it into the controlPanelLayout (legacy) if VolumeControlsWidget is not available.
-	if (ui->volumeControlsWidget) {
-		ui->volumeControlsWidget->insertVolumeRotationWidget(m_volumeRotationWidget);
+	// --- Ensure WorkflowPanelWidget is present on the left ---
+	// Prefer the designer-provided widget if available (ui->workflowPanelWidget).
+	// Otherwise create one and insert it into controlPanel.
+	m_workflowPanelWidget = nullptr;
+	if (ui->workflowPanelWidget) {
+		// ui->workflowPanelWidget is created by uic if the .ui has the custom widget
+		m_workflowPanelWidget = qobject_cast<WorkflowPanelWidget*>(ui->workflowPanelWidget);
 	}
-	else if (ui->controlPanelLayout) {
-		ui->controlPanelLayout->addWidget(m_volumeRotationWidget);
+	if (!m_workflowPanelWidget) {
+		// fallback: create and attach to controlPanel/layout
+		m_workflowPanelWidget = new WorkflowPanelWidget(this);
+		if (ui->controlPanelLayout) {
+			// remove existing items from layout (widgets will be reparented / deleted as needed)
+			QLayout* oldLayout = ui->controlPanelLayout;
+			if (oldLayout) {
+				QLayoutItem* item = nullptr;
+				while ((item = oldLayout->takeAt(0)) != nullptr) {
+					if (QWidget* w = item->widget()) {
+						w->setParent(nullptr);
+						delete w;
+					}
+					delete item;
+				}
+			}
+			ui->controlPanelLayout->addWidget(m_workflowPanelWidget);
+		}
+		else if (ui->controlPanel) {
+			if (QLayout* old = ui->controlPanel->layout()) {
+				QLayoutItem* item = nullptr;
+				while ((item = old->takeAt(0)) != nullptr) {
+					if (QWidget* w = item->widget()) {
+						w->setParent(nullptr);
+						delete w;
+					}
+					delete item;
+				}
+				delete old;
+			}
+			auto* vlay = new QVBoxLayout(ui->controlPanel);
+			vlay->setContentsMargins(0, 0, 0, 0);
+			vlay->addWidget(m_workflowPanelWidget);
+			ui->controlPanel->setLayout(vlay);
+		}
+		else if (this->centralWidget() && this->centralWidget()->layout()) {
+			this->centralWidget()->layout()->addWidget(m_workflowPanelWidget);
+		}
 	}
 
 	/*
-	// When the user explicitly applies a downsample, notify child ImageFrameWidget instances
-	// so they can re-check their vtkImageData and reconfigure (updateData()).
-	connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceApplied, this, [this]() {
-		if (!ui->lightboxWidget) return;
-		if (auto* yz = ui->lightboxWidget->getYZView()) yz->updateData();
-		if (auto* xz = ui->lightboxWidget->getXZView()) xz->updateData();
-		if (auto* xy = ui->lightboxWidget->getXYView()) xy->updateData();
-		if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
-	}, Qt::UniqueConnection);
+	// VolumeRotationWidget and VolumeControlsWidget are intentionally removed from the main UI.
+	// Their previous creation and wiring are commented out as the WorkflowPanelWidget now contains
+	// the workflow controls and placeholders (including rotation controls).
+	//
+	// Example of the removed code:
+	// m_volumeRotationWidget = new VolumeRotationWidget(this);
+	// if (ui->volumeControlsWidget) { ... }
+	// else if (m_workflowPanelWidget) { m_workflowPanelWidget->insertVolumeRotationWidget(m_volumeRotationWidget); }
 	*/
+
+	// Initialize image processing state machine
+	m_processingStateMachine = new ImageProcessingStateMachine(this);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestLoadImage,
+			this, &MainWindow::onProcessingRequestLoadImage);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestDefineCrop,
+			this, &MainWindow::onProcessingRequestDefineCrop);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestApplyCrop,
+			this, &MainWindow::onProcessingRequestApplyCrop);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestLoadCropped,
+			this, &MainWindow::onProcessingRequestLoadCropped);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestPlaceFiducials,
+			this, &MainWindow::onProcessingRequestPlaceFiducials);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestStartInteractiveRotation,
+			this, &MainWindow::onProcessingRequestStartInteractiveRotation);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestApplyRotation,
+			this, &MainWindow::onProcessingRequestApplyRotation);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestLoadRotated,
+			this, &MainWindow::onProcessingRequestLoadRotated);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestComputeThreshold,
+			this, &MainWindow::onProcessingRequestComputeThreshold);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestSegment,
+			this, &MainWindow::onProcessingRequestSegment);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestSaveSegment,
+			this, &MainWindow::onProcessingRequestSaveSegment);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::finished,
+			this, &MainWindow::onProcessingFinished);
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::error,
+			this, &MainWindow::onProcessingError);
+
+
 	setupPanelConnections();
 
 	// Load settings (geometry, recent files, appearance) using JsonSettings-backed QSettings
@@ -170,7 +238,8 @@ MainWindow::~MainWindow()
 	// persist settings (geometry, recent files, appearance) before shutdown
 	writeSettings();
 	delete ui;
-	// m_volumeRotationWidget has parent this and will be deleted automatically
+	// Note: widgets parented to 'this' or ui will be deleted automatically.
+	// m_workflowPanelWidget is owned by the UI (or this) and will be deleted accordingly.
 }
 
 void MainWindow::onActionOpen()
@@ -258,6 +327,11 @@ void MainWindow::onActionAbout()
 
 void MainWindow::setupPanelConnections()
 {
+	// Previously this function wired VolumeControlsWidget <-> LightboxWidget signals.
+	// That logic is commented out because the WorkflowPanelWidget now holds the UI
+	// controls and placeholders. If needed, re-wire using m_workflowPanelWidget APIs.
+
+	/*
 	// control the volume cropping planes in the volumeview
 	connect(ui->volumeControlsWidget, &VolumeControlsWidget::croppingRegionChanged,
 		ui->lightboxWidget->getVolumeView(), &VolumeView::setCroppingRegion);
@@ -273,17 +347,17 @@ void MainWindow::setupPanelConnections()
 	// synchronize cropping enabled state when VolumeView resets it (e.g., new image)
 	connect(ui->lightboxWidget->getVolumeView(), &VolumeView::croppingEnabledChanged,
 		ui->volumeControlsWidget, &VolumeControlsWidget::onExternalCroppingChanged);
+	*/
 
-	// --- Window/Level controller (now owned by LightboxWidget)
+	// --- Window/Level controller (owned by LightboxWidget) ---
 	if (ui->lightboxWidget) {
 		if (auto* wlController = ui->lightboxWidget->windowLevelController()) {
-			// If VolumeControlsWidget exposes an insert helper, use it so the groupBoxWindowLevel
-			// will size itself to the controller. Otherwise fall back to previous behavior.
-			if (ui->volumeControlsWidget) {
-				ui->volumeControlsWidget->insertWindowLevelController(wlController);
+			// Let workflow panel manage controller location if available
+			if (m_workflowPanelWidget) {
+				m_workflowPanelWidget->insertAppearanceWidget(wlController);
 			}
 			else if (ui->controlPanelLayout) {
-				ui->controlPanelLayout->insertWidget(1, wlController); // insert after VolumeControlsWidget
+				ui->controlPanelLayout->insertWidget(1, wlController);
 			}
 			else {
 				wlController->setParent(ui->controlPanel);
@@ -291,16 +365,9 @@ void MainWindow::setupPanelConnections()
 		}
 	}
 
-	// --- keep controls in sync when view mode changes (menu -> checkbox)
-	if (ui->lightboxWidget && ui->volumeControlsWidget) {
-		auto* volView = ui->lightboxWidget->getVolumeView();
-		auto* vcw = ui->volumeControlsWidget;
-		// Ensure checkbox exists before wiring; connect VolumeView signal -> QCheckBox::setChecked
-		if (volView && vcw && vcw->slicePlaneCheckBox()) {
-			connect(volView, &VolumeView::orthoPlanesVisibleChanged,
-					vcw->slicePlaneCheckBox(), &QCheckBox::setChecked,
-					Qt::UniqueConnection);
-		}
+	// Other view-mode sync left intact where only lightbox is required
+	if (ui->lightboxWidget /* && ui->volumeControlsWidget */) {
+		// If you later re-add VolumeControlsWidget wiring, guard and connect here.
 	}
 }
 
@@ -350,15 +417,6 @@ void MainWindow::updateRecentFilesMenu()
 		QAction* action = new QAction(displayName, this);
 		action->setProperty("isRecentFile", true);
 		action->setToolTip(filePath);
-		// Optionally, set an icon based on file type
-		/*
-		if (displayName.endsWith(".isq", Qt::CaseInsensitive)) {
-			action->setIcon(QIcon(":/icons/isq.png")); // Provide a suitable icon resource
-		}
-		else if (displayName.endsWith(".dcm", Qt::CaseInsensitive) || displayName.endsWith(".dicom", Qt::CaseInsensitive)) {
-			action->setIcon(QIcon(":/icons/dicom.png")); // Provide a suitable icon resource
-		}
-		*/
 		if (displayName.endsWith(".dcm", Qt::CaseInsensitive) || displayName.endsWith(".dicom", Qt::CaseInsensitive)) {
 			action->setIcon(QIcon(":/icons/dicom.png")); // Provide a suitable icon resource
 		}
@@ -585,39 +643,14 @@ void MainWindow::openFile(const QString& filePath)
 			QString("The loaded volume has invalid dimensions and cannot be displayed.\n\nFile: %1").arg(filePath));
 
 		ui->lightboxWidget->setDefaultImage();
-		if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
+		// previously: if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
 	}
-	else if (m_volumeRotationWidget) {
-
+	else {
 		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort(), true);
-
-		/*
-		// enable operational mode before attaching the pipeline
-		m_volumeRotationWidget->setOperational(true);
-
-		m_volumeRotationWidget->setInputConnection(m_imageLoader->GetOutputPort());
-
-		ui->lightboxWidget->setInputConnection(m_volumeRotationWidget->getOutputPort());
-		*/
-		/*
-		// pipeline mode: ask views to refresh when rotation widget updates the reslice
-		connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceReady, this, [this]() {
-			if (!ui->lightboxWidget) return;
-			if (auto* yz = ui->lightboxWidget->getYZView()) yz->updateData();
-			if (auto* xz = ui->lightboxWidget->getXZView()) xz->updateData();
-			if (auto* xy = ui->lightboxWidget->getXYView()) xy->updateData();
-			if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
-		}, Qt::UniqueConnection);
-		*/
-
 
 		// Update recent files list
 		addToRecentFiles(filePath);
 		writeSettings();
-	}
-	else {
-		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort(), true);
-		if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
 	}
 }
 
@@ -742,4 +775,105 @@ void MainWindow::closeEvent(QCloseEvent* event)
 	// existing close behavior
 	writeSettings();
 	QMainWindow::closeEvent(event);
+}
+
+
+void MainWindow::onProcessingRequestLoadImage()
+{
+	if (!m_processingStateMachine) return;
+	const QString path = m_processingStateMachine->inputFilePath();
+	if (!path.isEmpty()) {
+		// Reuse existing openFile helper to load and display image
+		openFile(path);
+		statusBar()->showMessage(tr("StateMachine: loading image '%1'").arg(path), 3000);
+	}
+	else {
+		statusBar()->showMessage(tr("StateMachine: requestLoadImage (no path set)"), 3000);
+		qDebug() << "ImageProcessingStateMachine requested load image but input path is empty.";
+	}
+}
+
+void MainWindow::onProcessingRequestDefineCrop()
+{
+	// Hook for UI to enable crop tools. As a minimal integration we notify user.
+	statusBar()->showMessage(tr("StateMachine: define crop"), 3000);
+	qDebug() << "StateMachine requested crop definition.";
+	// TODO: enable crop UI / forward to appropriate widget
+}
+
+void MainWindow::onProcessingRequestApplyCrop()
+{
+	statusBar()->showMessage(tr("StateMachine: apply crop"), 3000);
+	qDebug() << "StateMachine requested applying crop.";
+	// TODO: trigger crop worker and notify state machine via notifyCropApplied()
+}
+
+void MainWindow::onProcessingRequestLoadCropped()
+{
+	statusBar()->showMessage(tr("StateMachine: load cropped image"), 3000);
+	qDebug() << "StateMachine requested load cropped.";
+	// TODO: open cropped file (worker should call notifyCroppedLoaded())
+}
+
+void MainWindow::onProcessingRequestPlaceFiducials()
+{
+	statusBar()->showMessage(tr("StateMachine: place fiducials"), 3000);
+	qDebug() << "StateMachine requested fiducial placement.";
+	// TODO: forward to LightboxWidget / SelectionFrame controls
+}
+
+void MainWindow::onProcessingRequestStartInteractiveRotation()
+{
+	statusBar()->showMessage(tr("StateMachine: start interactive rotation"), 3000);
+	qDebug() << "StateMachine requested interactive rotation.";
+	// TODO: show rotation widget and let user manipulate then call notifyInteractiveRotationFinished()
+}
+
+void MainWindow::onProcessingRequestApplyRotation()
+{
+	statusBar()->showMessage(tr("StateMachine: apply rotation"), 3000);
+	qDebug() << "StateMachine requested apply rotation.";
+	// TODO: trigger rotation worker and call notifyRotationApplied()
+}
+
+void MainWindow::onProcessingRequestLoadRotated()
+{
+	statusBar()->showMessage(tr("StateMachine: load rotated image"), 3000);
+	qDebug() << "StateMachine requested load rotated image.";
+	// TODO: open rotated file
+}
+
+void MainWindow::onProcessingRequestComputeThreshold()
+{
+	statusBar()->showMessage(tr("StateMachine: compute threshold"), 3000);
+	qDebug() << "StateMachine requested compute threshold.";
+	// TODO: run threshold computation (Otsu/histogram) and notify state machine
+}
+
+void MainWindow::onProcessingRequestSegment()
+{
+	statusBar()->showMessage(tr("StateMachine: segment"), 3000);
+	qDebug() << "StateMachine requested segmentation.";
+	// TODO: run segmentation worker and call notifySegmentationDone()
+}
+
+void MainWindow::onProcessingRequestSaveSegment()
+{
+	statusBar()->showMessage(tr("StateMachine: save segment"), 3000);
+	qDebug() << "StateMachine requested save segment.";
+	// TODO: save segmentation and call notifySaved()
+}
+
+void MainWindow::onProcessingFinished()
+{
+	statusBar()->showMessage(tr("Processing finished"), 5000);
+	qDebug() << "Image processing finished.";
+	// TODO: post-processing UI updates
+}
+
+void MainWindow::onProcessingError(const QString& reason)
+{
+	qDebug() << "ImageProcessingStateMachine error:" << reason;
+	QMessageBox::critical(this, tr("Processing Error"), reason);
+	statusBar()->showMessage(tr("Processing error: %1").arg(reason), 10000);
 }

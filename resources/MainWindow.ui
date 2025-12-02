@@ -25,7 +25,7 @@
       </property>
       <layout class="QVBoxLayout" name="controlPanelLayout">
        <item>
-        <widget class="VolumeControlsWidget" name="volumeControlsWidget" native="true"/>
+        <widget class="WorkflowPanelWidget" name="workflowPanelWidget" native="true"/>
        </item>
       </layout>
      </widget>
@@ -98,9 +98,9 @@
  </widget>
  <customwidgets>
   <customwidget>
-   <class>VolumeControlsWidget</class>
+   <class>WorkflowPanelWidget</class>
    <extends>QWidget</extends>
-   <header>VolumeControlsWidget.h</header>
+   <header>WorkflowPanelWidget.h</header>
   </customwidget>
   <customwidget>
    <class>LightboxWidget</class>
