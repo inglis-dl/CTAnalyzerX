@@ -4,6 +4,8 @@
 #include <QStateMachine>
 #include <QState>
 #include <QFinalState>
+#include <atomic>
+#include <QString>
 
 class ImageProcessingStateMachine : public QObject
 {
@@ -35,6 +37,10 @@ public:
 	QString inputFilePath() const { return m_inputFile; }
 	void setTempDir(const QString& d) { m_tempDir = d; }
 	QString tempDir() const { return m_tempDir; }
+
+	// New accessors for external checks
+	State currentState() const { return m_currentState; }
+	bool isActive() const { return m_active.load(); }
 
 public slots:
 	// External control
@@ -89,6 +95,9 @@ signals:
 	void finished();
 	void error(const QString& reason);
 
+	// New: broadcast when internal state changes
+	void stateChanged(ImageProcessingStateMachine::State newState);
+
 private:
 	QStateMachine* m_machine = nullptr;
 	QState* m_idle = nullptr;
@@ -108,4 +117,8 @@ private:
 	// optional runtime info (paths)
 	QString m_inputFile;
 	QString m_tempDir;
+
+	// runtime tracking (single source of truth for active/state)
+	std::atomic<bool> m_active{ false };
+	State m_currentState = Idle;
 };

@@ -205,6 +205,19 @@ MainWindow::MainWindow(QWidget* parent)
 	connect(m_processingStateMachine, &ImageProcessingStateMachine::error,
 			this, &MainWindow::onProcessingError);
 
+	// Note: removed local m_processingActive bookkeeping. MainWindow queries the state machine
+	// via isActive()/stateChanged() if needed. Keep UI updates driven from finished/error/canceled signals.
+
+	// Optional: respond to stateChanged for UI hints (not required, shown as example)
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::stateChanged, this, [this](ImageProcessingStateMachine::State s) {
+		// simple UI gating: disable Open while machine is active (LoadingImage..SavingSegment)
+		bool active = (s != ImageProcessingStateMachine::Idle && s != ImageProcessingStateMachine::Completed && s != ImageProcessingStateMachine::ErrorState);
+		if (ui) {
+			ui->actionOpen->setEnabled(!active);
+			// optionally also gate other actions if desired:
+			ui->actionSave->setEnabled(!active);
+		}
+	});
 
 	setupPanelConnections();
 
@@ -421,7 +434,44 @@ void MainWindow::updateRecentFilesMenu()
 			action->setIcon(QIcon(":/icons/dicom.png")); // Provide a suitable icon resource
 		}
 		connect(action, &QAction::triggered, this, [this, filePath]() {
-			openFile(filePath);
+			// If no state machine is present fall back to immediate open (preserves current behavior).
+			if (!m_processingStateMachine) {
+				openFile(filePath);
+				return;
+			}
+
+			// If the machine is idle, hand the path to it and start the workflow.
+			if (!m_processingStateMachine->isActive()) {
+				m_processingStateMachine->setInputFilePath(filePath);
+				m_processingStateMachine->start();
+				statusBar()->showMessage(tr("Queued file for processing: %1").arg(filePath), 2000);
+				return;
+			}
+
+			// Machine is active — prompt user to cancel and restart (same policy as drag/drop).
+			const auto resp = QMessageBox::question(this, tr("Processing in progress"),
+				tr("A processing job is currently running.\n\nCancel it and start processing the selected file?\n\n%1").arg(filePath),
+				QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+			if (resp == QMessageBox::Yes) {
+				// Wait for canceled() then start the new job. Use a self-disconnecting connection.
+				QMetaObject::Connection* conn = new QMetaObject::Connection;
+				*conn = connect(m_processingStateMachine, &ImageProcessingStateMachine::canceled, this,
+					[this, filePath, conn]() {
+						m_processingStateMachine->setInputFilePath(filePath);
+						m_processingStateMachine->start();
+						disconnect(*conn);
+						delete conn;
+					}, Qt::QueuedConnection);
+
+				// Ask the machine to cancel current job; when it emits canceled() our lambda will start new job.
+				m_processingStateMachine->cancel();
+				statusBar()->showMessage(tr("Canceling current job and will start processing selected file..."), 2000);
+				return;
+			}
+
+			// User declined — provide feedback and do nothing.
+			statusBar()->showMessage(tr("Selection ignored while processing is active"), 2000);
 		});
 		ui->menuFile->insertAction(ui->menuFile->actions().value(insertIndex), action);
 		++insertIndex;
@@ -726,21 +776,71 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* event)
 	event->ignore();
 }
 
-// Handle drop: open the first supported file
+// Handle drop: hand the first supported file to the state machine.
+// If a processing job is already running, prompt to cancel & restart.
 void MainWindow::dropEvent(QDropEvent* event)
 {
 	const QMimeData* mimeData = event->mimeData();
-	if (mimeData->hasUrls()) {
-		for (const QUrl& url : mimeData->urls()) {
-			QString filePath = url.toLocalFile();
-			if (ImageLoader::CanReadFile(filePath)) {
-				openFile(filePath);
-				event->acceptProposedAction();
-				return;
-			}
+	if (!mimeData->hasUrls()) {
+		event->ignore();
+		return;
+	}
+
+	QString droppedPath;
+	for (const QUrl& url : mimeData->urls()) {
+		QString filePath = url.toLocalFile();
+		if (ImageLoader::CanReadFile(filePath)) {
+			droppedPath = filePath;
+			break;
 		}
 	}
-	event->ignore();
+	if (droppedPath.isEmpty()) {
+		event->ignore();
+		return;
+	}
+
+	// If no state machine, fall back to original behavior
+	if (!m_processingStateMachine) {
+		openFile(droppedPath);
+		event->acceptProposedAction();
+		return;
+	}
+
+	// If not active, start immediately (ask machine if it is active)
+	if (!m_processingStateMachine->isActive()) {
+		m_processingStateMachine->setInputFilePath(droppedPath);
+		m_processingStateMachine->start();
+		statusBar()->showMessage(tr("Queued file for processing: %1").arg(droppedPath), 2000);
+		event->acceptProposedAction();
+		return;
+	}
+
+	// Machine is active — prompt user to cancel and restart
+	const auto resp = QMessageBox::question(this, tr("Processing in progress"),
+		tr("A processing job is currently running.\n\nCancel it and start processing the dropped file?\n\n%1").arg(droppedPath),
+		QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+	if (resp == QMessageBox::Yes) {
+		// Wait for canceled signal, then start with droppedPath.
+		QMetaObject::Connection* conn = new QMetaObject::Connection;
+		*conn = connect(m_processingStateMachine, &ImageProcessingStateMachine::canceled, this, [this, droppedPath, conn]() {
+			// now safe to start new job
+			m_processingStateMachine->setInputFilePath(droppedPath);
+			m_processingStateMachine->start();
+			disconnect(*conn);
+			delete conn;
+		}, Qt::QueuedConnection);
+
+		// Request cancellation; machine will emit canceled() and our lambda will start new job.
+		m_processingStateMachine->cancel();
+		statusBar()->showMessage(tr("Canceling current job and will start processing dropped file..."), 2000);
+		event->acceptProposedAction();
+		return;
+	}
+
+	// User chose not to cancel — ignore or accept w/out action to indicate handled
+	statusBar()->showMessage(tr("Dropped file ignored while processing is active"), 2000);
+	event->acceptProposedAction();
 }
 
 void MainWindow::setLoaderProgress(int percent)
@@ -782,98 +882,213 @@ void MainWindow::onProcessingRequestLoadImage()
 {
 	if (!m_processingStateMachine) return;
 	const QString path = m_processingStateMachine->inputFilePath();
-	if (!path.isEmpty()) {
-		// Reuse existing openFile helper to load and display image
-		openFile(path);
-		statusBar()->showMessage(tr("StateMachine: loading image '%1'").arg(path), 3000);
-	}
-	else {
+	if (path.isEmpty()) {
 		statusBar()->showMessage(tr("StateMachine: requestLoadImage (no path set)"), 3000);
 		qDebug() << "ImageProcessingStateMachine requested load image but input path is empty.";
+
+		// Ensure loader UI is hidden if no path (openFile won't be called)
+		showLoaderEnd();
+		return;
+	}
+
+	// Disable UI to avoid reentrancy while loading
+	if (ui) {
+		ui->actionOpen->setEnabled(false);
+		ui->actionSave->setEnabled(false);
+	}
+	if (m_workflowPanelWidget) {
+		m_workflowPanelWidget->setCroppingEnabled(false);
+		m_workflowPanelWidget->setRotationEnabled(false);
+		m_workflowPanelWidget->setSegmentationEnabled(false);
+		m_workflowPanelWidget->setFiducialsEnabled(false);
+		m_workflowPanelWidget->setAppearanceEnabled(false);
+	}
+
+	// Ensure loader UI is visible
+	showLoaderStart();
+
+	// Perform the actual load using existing helper (synchronous)
+	openFile(path);
+
+	// Inspect loader output to determine success (match checks in openFile)
+	bool success = false;
+	if (m_imageLoader) {
+		if (auto img = m_imageLoader->GetOutput()) {
+			int dims[3]; img->GetDimensions(dims);
+			if (dims[0] > 1 && dims[1] > 1 && dims[2] > 1) success = true;
+		}
+	}
+
+	// Stop loader UI (openFile and VTK events may already have toggled this; safe to call)
+	showLoaderEnd();
+
+	if (success) {
+		// Enable relevant workflow steps now that an image is present
+		if (m_workflowPanelWidget) {
+			m_workflowPanelWidget->setCroppingEnabled(true);
+			m_workflowPanelWidget->setRotationEnabled(true);
+			m_workflowPanelWidget->setSegmentationEnabled(true);
+			m_workflowPanelWidget->setFiducialsEnabled(true);
+			m_workflowPanelWidget->setAppearanceEnabled(true);
+		}
+
+		// Let the state machine know the image load completed so it can transition to next state
+		m_processingStateMachine->notifyImageLoaded();
+
+		statusBar()->showMessage(tr("StateMachine: loading image '%1'").arg(path), 3000);
+		qDebug() << "StateMachine: loaded image" << path;
+	}
+	else {
+		// Failed: leave workflow mostly disabled but re-enable load/save so user can try again
+		statusBar()->showMessage(tr("StateMachine: failed to load image '%1'").arg(path), 5000);
+		qDebug() << "StateMachine: failed to load image" << path;
+	}
+
+	// Restore basic menu actions
+	if (ui) {
+		ui->actionOpen->setEnabled(true);
+		ui->actionSave->setEnabled(true);
 	}
 }
 
+// -----------------------------------------------------------------------------
+// Minimal handlers for state-machine "request" signals that were declared
+// in MainWindow.h but not implemented. These keep the UI responsive and
+// provide hooks for later hooking real workers / UI flows.
+// -----------------------------------------------------------------------------
+
 void MainWindow::onProcessingRequestDefineCrop()
 {
-	// Hook for UI to enable crop tools. As a minimal integration we notify user.
-	statusBar()->showMessage(tr("StateMachine: define crop"), 3000);
-	qDebug() << "StateMachine requested crop definition.";
-	// TODO: enable crop UI / forward to appropriate widget
+	// Enable/notify UI so user can define crop. Do not auto-transition here.
+	statusBar()->showMessage(tr("StateMachine: please define crop (use controls on the left)"), 4000);
+	qDebug() << "StateMachine requested: define crop";
+	// TODO: show/raise cropping UI and wire completion to m_processingStateMachine->notifyCropDefined()
 }
 
 void MainWindow::onProcessingRequestApplyCrop()
 {
-	statusBar()->showMessage(tr("StateMachine: apply crop"), 3000);
-	qDebug() << "StateMachine requested applying crop.";
-	// TODO: trigger crop worker and notify state machine via notifyCropApplied()
+	// Apply crop should start a worker that creates a cropped temporary file,
+	// then call m_processingStateMachine->notifyCropApplied() or notifyFailed(...)
+	statusBar()->showMessage(tr("StateMachine: applying crop (starting worker)"), 4000);
+	qDebug() << "StateMachine requested: apply crop";
+	// TODO: start crop worker; on completion call notifyCropApplied()/notifyFailed()
 }
 
 void MainWindow::onProcessingRequestLoadCropped()
 {
-	statusBar()->showMessage(tr("StateMachine: load cropped image"), 3000);
-	qDebug() << "StateMachine requested load cropped.";
-	// TODO: open cropped file (worker should call notifyCroppedLoaded())
+	// Trigger UI/loader to load the produced cropped volume (worker should provide path)
+	statusBar()->showMessage(tr("StateMachine: load cropped volume"), 3000);
+	qDebug() << "StateMachine requested: load cropped";
+	// TODO: load cropped file (or wait for worker to call m_processingStateMachine->notifyCroppedLoaded())
 }
 
 void MainWindow::onProcessingRequestPlaceFiducials()
 {
 	statusBar()->showMessage(tr("StateMachine: place fiducials"), 3000);
-	qDebug() << "StateMachine requested fiducial placement.";
-	// TODO: forward to LightboxWidget / SelectionFrame controls
+	qDebug() << "StateMachine requested: place fiducials";
+	// TODO: enable fiducial UI and call notifyFiducialsPlaced() when done
 }
 
 void MainWindow::onProcessingRequestStartInteractiveRotation()
 {
 	statusBar()->showMessage(tr("StateMachine: start interactive rotation"), 3000);
-	qDebug() << "StateMachine requested interactive rotation.";
-	// TODO: show rotation widget and let user manipulate then call notifyInteractiveRotationFinished()
+	qDebug() << "StateMachine requested: start interactive rotation";
+	// TODO: present rotation UI; call notifyInteractiveRotationFinished() when user completes
 }
 
 void MainWindow::onProcessingRequestApplyRotation()
 {
-	statusBar()->showMessage(tr("StateMachine: apply rotation"), 3000);
-	qDebug() << "StateMachine requested apply rotation.";
-	// TODO: trigger rotation worker and call notifyRotationApplied()
+	statusBar()->showMessage(tr("StateMachine: apply rotation (starting worker)"), 3000);
+	qDebug() << "StateMachine requested: apply rotation";
+	// TODO: start rotation worker; on completion call notifyRotationApplied()/notifyFailed()
 }
 
 void MainWindow::onProcessingRequestLoadRotated()
 {
 	statusBar()->showMessage(tr("StateMachine: load rotated image"), 3000);
-	qDebug() << "StateMachine requested load rotated image.";
-	// TODO: open rotated file
+	qDebug() << "StateMachine requested: load rotated";
+	// TODO: load rotated file (or wait for worker to call m_processingStateMachine->notifyRotatedLoaded())
 }
 
 void MainWindow::onProcessingRequestComputeThreshold()
 {
 	statusBar()->showMessage(tr("StateMachine: compute threshold"), 3000);
-	qDebug() << "StateMachine requested compute threshold.";
-	// TODO: run threshold computation (Otsu/histogram) and notify state machine
+	qDebug() << "StateMachine requested: compute threshold";
+	// TODO: run threshold computation (Otsu/histogram) and call notifyThresholdComputed()
 }
 
 void MainWindow::onProcessingRequestSegment()
 {
-	statusBar()->showMessage(tr("StateMachine: segment"), 3000);
-	qDebug() << "StateMachine requested segmentation.";
-	// TODO: run segmentation worker and call notifySegmentationDone()
+	statusBar()->showMessage(tr("StateMachine: run segmentation"), 3000);
+	qDebug() << "StateMachine requested: segment";
+	// TODO: run segmentation worker and call notifySegmentationDone()/notifyFailed()
 }
 
 void MainWindow::onProcessingRequestSaveSegment()
 {
-	statusBar()->showMessage(tr("StateMachine: save segment"), 3000);
-	qDebug() << "StateMachine requested save segment.";
-	// TODO: save segmentation and call notifySaved()
+	statusBar()->showMessage(tr("StateMachine: save segmented volume"), 3000);
+	qDebug() << "StateMachine requested: save segment";
+	// TODO: prompt save dialog or start saver and call notifySaved()/notifyFailed()
 }
 
 void MainWindow::onProcessingFinished()
 {
+	// Stop any loader UI
+	showLoaderEnd();
+
+	// Ensure workflow controls reflect that an image is present (or not)
+	bool hasImage = false;
+	if (m_imageLoader) {
+		if (auto img = m_imageLoader->GetOutput()) {
+			int d[3]; img->GetDimensions(d);
+			hasImage = (d[0] > 1 && d[1] > 1 && d[2] > 1);
+		}
+	}
+	if (m_workflowPanelWidget) {
+		m_workflowPanelWidget->setCroppingEnabled(hasImage);
+		m_workflowPanelWidget->setRotationEnabled(hasImage);
+		m_workflowPanelWidget->setSegmentationEnabled(hasImage);
+		m_workflowPanelWidget->setFiducialsEnabled(hasImage);
+		m_workflowPanelWidget->setAppearanceEnabled(true);
+	}
+
+	// Re-enable menu actions
+	if (ui) {
+		ui->actionOpen->setEnabled(true);
+		ui->actionSave->setEnabled(true);
+	}
+
 	statusBar()->showMessage(tr("Processing finished"), 5000);
 	qDebug() << "Image processing finished.";
-	// TODO: post-processing UI updates
+	// Additional UI updates after processing can be added here.
 }
 
 void MainWindow::onProcessingError(const QString& reason)
 {
+	// Stop loader visuals
+	showLoaderEnd();
+
 	qDebug() << "ImageProcessingStateMachine error:" << reason;
 	QMessageBox::critical(this, tr("Processing Error"), reason);
 	statusBar()->showMessage(tr("Processing error: %1").arg(reason), 10000);
+
+	// Restore workflow/menu so user can retry or open another file
+	if (m_workflowPanelWidget) {
+		bool hasImage = false;
+		if (m_imageLoader) {
+			if (auto img = m_imageLoader->GetOutput()) {
+				int d[3]; img->GetDimensions(d);
+				hasImage = (d[0] > 1 && d[1] > 1 && d[2] > 1);
+			}
+		}
+		m_workflowPanelWidget->setCroppingEnabled(hasImage);
+		m_workflowPanelWidget->setRotationEnabled(hasImage);
+		m_workflowPanelWidget->setSegmentationEnabled(hasImage);
+		m_workflowPanelWidget->setFiducialsEnabled(hasImage);
+		m_workflowPanelWidget->setAppearanceEnabled(true);
+	}
+	if (ui) {
+		ui->actionOpen->setEnabled(true);
+		ui->actionSave->setEnabled(true);
+	}
 }

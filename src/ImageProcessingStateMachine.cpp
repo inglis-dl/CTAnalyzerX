@@ -1,6 +1,6 @@
 #include "ImageProcessingStateMachine.h"
 #include <QSignalTransition>
-#include <QEvent>
+#include <QList>
 
 ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 	: QObject(parent)
@@ -47,20 +47,75 @@ ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 	}
 
 	// on entry of each state emit request signals so external logic starts work
-	connect(m_loading, &QState::entered, this, [this]() { emit requestLoadImage(); });
-	connect(m_definingCrop, &QState::entered, this, [this]() { emit requestDefineCrop(); });
-	connect(m_applyingCrop, &QState::entered, this, [this]() { emit requestApplyCrop(); });
-	connect(m_loadingCropped, &QState::entered, this, [this]() { emit requestLoadCropped(); });
-	connect(m_placingFiducials, &QState::entered, this, [this]() { emit requestPlaceFiducials(); });
-	connect(m_interactiveRotation, &QState::entered, this, [this]() { emit requestStartInteractiveRotation(); });
-	connect(m_applyingRotation, &QState::entered, this, [this]() { emit requestApplyRotation(); });
-	connect(m_loadingRotated, &QState::entered, this, [this]() { emit requestLoadRotated(); });
-	connect(m_computingThreshold, &QState::entered, this, [this]() { emit requestComputeThreshold(); });
-	connect(m_segmenting, &QState::entered, this, [this]() { emit requestSegment(); });
-	connect(m_saving, &QState::entered, this, [this]() { emit requestSaveSegment(); });
+	connect(m_loading, &QState::entered, this, [this]() {
+		m_currentState = LoadingImage;
+		m_active.store(true);
+		emit stateChanged(m_currentState);
+		emit requestLoadImage();
+	});
+	connect(m_definingCrop, &QState::entered, this, [this]() {
+		m_currentState = DefiningCrop;
+		emit stateChanged(m_currentState);
+		emit requestDefineCrop();
+	});
+	connect(m_applyingCrop, &QState::entered, this, [this]() {
+		m_currentState = ApplyingCrop;
+		emit stateChanged(m_currentState);
+		emit requestApplyCrop();
+	});
+	connect(m_loadingCropped, &QState::entered, this, [this]() {
+		m_currentState = LoadingCropped;
+		emit stateChanged(m_currentState);
+		emit requestLoadCropped();
+	});
+	connect(m_placingFiducials, &QState::entered, this, [this]() {
+		m_currentState = PlacingFiducials;
+		emit stateChanged(m_currentState);
+		emit requestPlaceFiducials();
+	});
+	connect(m_interactiveRotation, &QState::entered, this, [this]() {
+		m_currentState = InteractiveRotation;
+		emit stateChanged(m_currentState);
+		emit requestStartInteractiveRotation();
+	});
+	connect(m_applyingRotation, &QState::entered, this, [this]() {
+		m_currentState = ApplyingRotation;
+		emit stateChanged(m_currentState);
+		emit requestApplyRotation();
+	});
+	connect(m_loadingRotated, &QState::entered, this, [this]() {
+		m_currentState = LoadingRotated;
+		emit stateChanged(m_currentState);
+		emit requestLoadRotated();
+	});
+	connect(m_computingThreshold, &QState::entered, this, [this]() {
+		m_currentState = ComputingThreshold;
+		emit stateChanged(m_currentState);
+		emit requestComputeThreshold();
+	});
+	connect(m_segmenting, &QState::entered, this, [this]() {
+		m_currentState = Segmenting;
+		emit stateChanged(m_currentState);
+		emit requestSegment();
+	});
+	connect(m_saving, &QState::entered, this, [this]() {
+		m_currentState = SavingSegment;
+		emit stateChanged(m_currentState);
+		emit requestSaveSegment();
+	});
+
+	// idle entered
+	connect(m_idle, &QState::entered, this, [this]() {
+		m_currentState = Idle;
+		m_active.store(false);
+		emit stateChanged(m_currentState);
+	});
 
 	// final state -> finished; reset to idle automatically so machine is reusable
 	connect(m_final, &QFinalState::entered, this, [this]() {
+		m_currentState = Completed;
+		m_active.store(false);
+		emit stateChanged(m_currentState);
 		emit finished();
 		// reset to idle
 		m_machine->stop();
@@ -70,6 +125,9 @@ ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 
 	// failure handling: forward error and reset to idle
 	connect(this, &ImageProcessingStateMachine::failed, this, [this](const QString& reason) {
+		m_currentState = ErrorState;
+		m_active.store(false);
+		emit stateChanged(m_currentState);
 		emit error(reason);
 		// stop and restart in idle so the machine can accept a new start
 		m_machine->stop();
