@@ -81,6 +81,9 @@ private:
 	void readSettings();
 	void writeSettings();
 
+	// New: centralized UI update helper driven by state machine
+	void updateUiForState(ImageProcessingStateMachine::State s);
+
 	Ui::MainWindow* ui;
 	QStringList recentFiles;
 	vtkSmartPointer<vtkImageData> currentImageData;

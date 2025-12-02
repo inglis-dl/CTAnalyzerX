@@ -205,6 +205,15 @@ MainWindow::MainWindow(QWidget* parent)
 	connect(m_processingStateMachine, &ImageProcessingStateMachine::error,
 			this, &MainWindow::onProcessingError);
 
+	// Replace ad-hoc lambda: use the centralized updateUiForState handler.
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::stateChanged,
+			this, &MainWindow::updateUiForState, Qt::QueuedConnection);
+
+	// Ensure UI initially reflects the machine's starting state
+	if (m_processingStateMachine) {
+		updateUiForState(m_processingStateMachine->currentState());
+	}
+
 	// Note: removed local m_processingActive bookkeeping. MainWindow queries the state machine
 	// via isActive()/stateChanged() if needed. Keep UI updates driven from finished/error/canceled signals.
 
@@ -1090,5 +1099,137 @@ void MainWindow::onProcessingError(const QString& reason)
 	if (ui) {
 		ui->actionOpen->setEnabled(true);
 		ui->actionSave->setEnabled(true);
+	}
+}
+
+void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
+{
+	// Helper to determine whether a valid image is loaded
+	auto hasImage = [&]() -> bool {
+		if (!m_imageLoader) return false;
+		if (auto img = m_imageLoader->GetOutput()) {
+			int d[3]; img->GetDimensions(d);
+			return (d[0] > 1 && d[1] > 1 && d[2] > 1);
+		}
+		return false;
+		};
+
+	const bool imagePresent = hasImage();
+
+	switch (s) {
+		case ImageProcessingStateMachine::Idle:
+		case ImageProcessingStateMachine::Completed:
+		case ImageProcessingStateMachine::ErrorState:
+		// Idle: allow opening and saving (save only if image present)
+		if (ui) {
+			ui->actionOpen->setEnabled(true);
+			ui->actionSave->setEnabled(imagePresent);
+		}
+		if (m_workflowPanelWidget) {
+			m_workflowPanelWidget->setCroppingEnabled(imagePresent);
+			m_workflowPanelWidget->setRotationEnabled(imagePresent);
+			m_workflowPanelWidget->setSegmentationEnabled(imagePresent);
+			m_workflowPanelWidget->setFiducialsEnabled(imagePresent);
+			m_workflowPanelWidget->setAppearanceEnabled(true);
+		}
+		showLoaderEnd();
+		break;
+
+		case ImageProcessingStateMachine::LoadingImage:
+		// Block top-level UI while image is loaded
+		if (ui) {
+			ui->actionOpen->setEnabled(false);
+			ui->actionSave->setEnabled(false);
+		}
+		if (m_workflowPanelWidget) {
+			m_workflowPanelWidget->setCroppingEnabled(false);
+			m_workflowPanelWidget->setRotationEnabled(false);
+			m_workflowPanelWidget->setSegmentationEnabled(false);
+			m_workflowPanelWidget->setFiducialsEnabled(false);
+			m_workflowPanelWidget->setAppearanceEnabled(false);
+		}
+		showLoaderStart();
+		break;
+
+		case ImageProcessingStateMachine::DefiningCrop:
+		if (ui) {
+			ui->actionOpen->setEnabled(false);
+			ui->actionSave->setEnabled(false);
+		}
+		if (m_workflowPanelWidget) {
+			m_workflowPanelWidget->setCroppingEnabled(true);
+			m_workflowPanelWidget->setRotationEnabled(false);
+			m_workflowPanelWidget->setSegmentationEnabled(false);
+			m_workflowPanelWidget->setFiducialsEnabled(false);
+			m_workflowPanelWidget->setAppearanceEnabled(false);
+		}
+		showLoaderEnd();
+		break;
+
+		case ImageProcessingStateMachine::ApplyingCrop:
+		case ImageProcessingStateMachine::ApplyingRotation:
+		case ImageProcessingStateMachine::ComputingThreshold:
+		case ImageProcessingStateMachine::Segmenting:
+		case ImageProcessingStateMachine::SavingSegment:
+		// Long-running operations: disable interaction and show loader
+		if (ui) {
+			ui->actionOpen->setEnabled(false);
+			ui->actionSave->setEnabled(false);
+		}
+		if (m_workflowPanelWidget) {
+			m_workflowPanelWidget->setCroppingEnabled(false);
+			m_workflowPanelWidget->setRotationEnabled(false);
+			m_workflowPanelWidget->setSegmentationEnabled(false);
+			m_workflowPanelWidget->setFiducialsEnabled(false);
+			m_workflowPanelWidget->setAppearanceEnabled(false);
+		}
+		showLoaderStart();
+		break;
+
+		case ImageProcessingStateMachine::PlacingFiducials:
+		if (ui) {
+			ui->actionOpen->setEnabled(false);
+			ui->actionSave->setEnabled(false);
+		}
+		if (m_workflowPanelWidget) {
+			m_workflowPanelWidget->setCroppingEnabled(false);
+			m_workflowPanelWidget->setRotationEnabled(false);
+			m_workflowPanelWidget->setSegmentationEnabled(false);
+			m_workflowPanelWidget->setFiducialsEnabled(true);
+			m_workflowPanelWidget->setAppearanceEnabled(false);
+		}
+		showLoaderEnd();
+		break;
+
+		case ImageProcessingStateMachine::InteractiveRotation:
+		if (ui) {
+			ui->actionOpen->setEnabled(false);
+			ui->actionSave->setEnabled(false);
+		}
+		if (m_workflowPanelWidget) {
+			m_workflowPanelWidget->setCroppingEnabled(false);
+			m_workflowPanelWidget->setRotationEnabled(true);
+			m_workflowPanelWidget->setSegmentationEnabled(false);
+			m_workflowPanelWidget->setFiducialsEnabled(false);
+			m_workflowPanelWidget->setAppearanceEnabled(false);
+		}
+		showLoaderEnd();
+		break;
+
+		default:
+		// conservative fallback
+		if (ui) {
+			ui->actionOpen->setEnabled(false);
+			ui->actionSave->setEnabled(false);
+		}
+		if (m_workflowPanelWidget) {
+			m_workflowPanelWidget->setCroppingEnabled(false);
+			m_workflowPanelWidget->setRotationEnabled(false);
+			m_workflowPanelWidget->setSegmentationEnabled(false);
+			m_workflowPanelWidget->setFiducialsEnabled(false);
+			m_workflowPanelWidget->setAppearanceEnabled(false);
+		}
+		showLoaderEnd();
+		break;
 	}
 }
