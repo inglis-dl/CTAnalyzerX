@@ -1,6 +1,11 @@
 #include "ImageProcessingStateMachine.h"
+#include "JsonUtils.h"
+
 #include <QSignalTransition>
 #include <QList>
+#include <QJsonArray>
+#include <QDateTime>
+#include <QDebug>
 
 ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 	: QObject(parent)
@@ -142,7 +147,80 @@ ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 void ImageProcessingStateMachine::start() { Q_EMIT started(); }
 void ImageProcessingStateMachine::cancel() { Q_EMIT canceled(); }
 
-void ImageProcessingStateMachine::notifyImageLoaded() { Q_EMIT imageLoaded(); }
+// New: read sidecar for current input file into m_sidecar and set derived flags
+bool ImageProcessingStateMachine::readSidecarForInput()
+{
+	if (m_inputFile.isEmpty()) {
+		m_sidecar = QJsonObject();
+		m_isDerived = false;
+		m_derivedFrom.clear();
+		return false;
+	}
+	m_sidecar = JsonUtils::readJsonSidecar(m_inputFile);
+	if (m_sidecar.isEmpty()) {
+		m_isDerived = false;
+		m_derivedFrom.clear();
+		return false;
+	}
+	const QString op = m_sidecar.value(QStringLiteral("operation")).toString();
+	m_isDerived = !op.isEmpty();
+	m_derivedFrom = m_sidecar.value(QStringLiteral("derived_from")).toString();
+	return true;
+}
+
+// New: append a workflow step entry to an image sidecar's history
+bool ImageProcessingStateMachine::appendHistoryToSidecar(const QString& imagePath, const QString& stepName, const QJsonObject& params)
+{
+	if (imagePath.isEmpty()) return false;
+	QJsonObject side = JsonUtils::readJsonSidecar(imagePath);
+	QJsonArray history = side.value(QStringLiteral("history")).toArray();
+	QJsonObject entry;
+	entry.insert(QStringLiteral("step"), stepName);
+	entry.insert(QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+	entry.insert(QStringLiteral("params"), params);
+	history.append(entry);
+	side.insert(QStringLiteral("history"), history);
+	return JsonUtils::writeJsonSidecar(imagePath, side);
+}
+
+// New: write crop sidecar for produced outPath and append history; update internal lastDerivedPath
+bool ImageProcessingStateMachine::writeCropSidecarForOutput(const QString& outPath, const QJsonObject& params)
+{
+	if (outPath.isEmpty()) return false;
+	// write primary sidecar structure
+	if (!JsonUtils::writeCropSidecar(outPath, m_inputFile, params)) {
+		qWarning() << "ImageProcessingStateMachine: failed to write crop sidecar for" << outPath;
+		return false;
+	}
+	// append history entry
+	if (!appendHistoryToSidecar(outPath, QStringLiteral("crop"), params)) {
+		qWarning() << "ImageProcessingStateMachine: failed to append history to sidecar for" << outPath;
+		// not fatal
+	}
+	m_lastDerivedPath = outPath;
+	return true;
+}
+
+// Notify image loaded; inspect sidecar to decide whether this is a derived/cropped image
+void ImageProcessingStateMachine::notifyImageLoaded()
+{
+	// Ensure we have sidecar data for the current input
+	if (m_sidecar.isEmpty()) {
+		readSidecarForInput();
+	}
+
+	const QString op = m_sidecar.value(QStringLiteral("operation")).toString();
+	if (!op.isEmpty() && op == QStringLiteral("crop")) {
+		// This is a derived cropped volume (treat as cropped-loaded)
+		m_lastDerivedPath = m_inputFile;
+		emit croppedLoaded();
+		return;
+	}
+
+	// normal full/original image
+	emit imageLoaded();
+}
+
 void ImageProcessingStateMachine::notifyCropDefined() { Q_EMIT cropDefined(); }
 void ImageProcessingStateMachine::notifyCropApplied() { Q_EMIT cropApplied(); }
 void ImageProcessingStateMachine::notifyCroppedLoaded() { Q_EMIT croppedLoaded(); }

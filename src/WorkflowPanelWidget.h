@@ -49,12 +49,18 @@ public:
 	QWidget* segmentationContainer() const;
 	QWidget* appearanceContainer() const;
 
+	// Fine-grained control helpers for cropping workflow
+	void setDefineCropEnabled(bool on);
+	void setApplyCropEnabled(bool on);
+	void setSaveCroppedEnabled(bool on);
+
 signals:
 	// High-level workflow actions driven by the panel controls
 	void loadImageRequested();
 	void defineCropRequested();
 	void applyCropRequested();
 	void loadCroppedRequested();
+	void saveCroppedRequested(); // new: request to save cropped volume (user chooses path)
 
 	void placeFiducialsRequested();
 	void startInteractiveRotationRequested();
@@ -74,6 +80,7 @@ private slots:
 	void onDefineCropClicked();
 	void onApplyCropClicked();
 	void onLoadCroppedClicked();
+	void onSaveCroppedClicked();
 
 	void onPlaceFiducialsClicked();
 	void onStartInteractiveRotationClicked();
@@ -102,6 +109,7 @@ private:
 	QWidget* m_croppingContainer = nullptr;
 	QPushButton* m_btnDefineCrop = nullptr;
 	QPushButton* m_btnApplyCrop = nullptr;
+	QPushButton* m_btnSaveCropped = nullptr; // new
 	QPushButton* m_btnLoadCropped = nullptr;
 
 	CollapsibleGroupBox* m_grpFiducials = nullptr;
@@ -132,4 +140,5 @@ private:
 	QPointer<QWidget> m_customRotationWidget;
 	QPointer<QWidget> m_customSegmentationWidget;
 	QPointer<QWidget> m_customAppearanceWidget;
+
 };

@@ -6,6 +6,7 @@
 #include <QFinalState>
 #include <atomic>
 #include <QString>
+#include <QJsonObject> // new
 
 class ImageProcessingStateMachine : public QObject
 {
@@ -41,6 +42,18 @@ public:
 	// New accessors for external checks
 	State currentState() const { return m_currentState; }
 	bool isActive() const { return m_active.load(); }
+
+	// New: sidecar / provenance helpers
+	// Read the JSON sidecar for the current input file into internal state
+	bool readSidecarForInput();
+	// Convenience: write a crop sidecar for an output derived image and append history
+	bool writeCropSidecarForOutput(const QString& outPath, const QJsonObject& params);
+	// Append a workflow step entry to an image's sidecar history
+	bool appendHistoryToSidecar(const QString& imagePath, const QString& stepName, const QJsonObject& params);
+
+	// Query last derived path produced by this state machine (if any)
+	QString lastDerivedPath() const { return m_lastDerivedPath; }
+	bool inputIsDerived() const { return m_isDerived; }
 
 public slots:
 	// External control
@@ -117,6 +130,12 @@ private:
 	// optional runtime info (paths)
 	QString m_inputFile;
 	QString m_tempDir;
+
+	// Sidecar / provenance info (owned by state machine)
+	QJsonObject m_sidecar;
+	bool m_isDerived = false;
+	QString m_derivedFrom;
+	QString m_lastDerivedPath;
 
 	// runtime tracking (single source of truth for active/state)
 	std::atomic<bool> m_active{ false };

@@ -1,5 +1,4 @@
 #include "WorkflowPanelWidget.h"
-
 #include "CollapsibleGroupBox.h"
 
 #include <QVBoxLayout>
@@ -53,9 +52,11 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 		cl->addWidget(makePlaceholderLabel(tr("VolumeCroppingWidget placeholder (Range sliders + 3D box widget)")));
 		m_btnDefineCrop = new QPushButton(tr("Define Crop (Enable box)"), m_croppingContainer);
 		m_btnApplyCrop = new QPushButton(tr("Apply Crop & Save Temp"), m_croppingContainer);
+		m_btnSaveCropped = new QPushButton(tr("Save Cropped Volume..."), m_croppingContainer); // new
 		m_btnLoadCropped = new QPushButton(tr("Load Cropped Volume"), m_croppingContainer);
 		cl->addWidget(m_btnDefineCrop);
 		cl->addWidget(m_btnApplyCrop);
+		cl->addWidget(m_btnSaveCropped);
 		cl->addWidget(m_btnLoadCropped);
 	}
 	m_grpCropping->setContentWidget(m_croppingContainer);
@@ -63,6 +64,7 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 	connect(m_btnDefineCrop, &QPushButton::clicked, this, &WorkflowPanelWidget::onDefineCropClicked);
 	connect(m_btnApplyCrop, &QPushButton::clicked, this, &WorkflowPanelWidget::onApplyCropClicked);
 	connect(m_btnLoadCropped, &QPushButton::clicked, this, &WorkflowPanelWidget::onLoadCroppedClicked);
+	connect(m_btnSaveCropped, &QPushButton::clicked, this, &WorkflowPanelWidget::onSaveCroppedClicked); // new
 
 	// --- Fiducials / Axes group (step 5) ---
 	m_grpFiducials = makeGroup(tr("Fiducials & Axes"));
@@ -213,6 +215,7 @@ void WorkflowPanelWidget::setCroppingEnabled(bool on)
 	if (m_btnDefineCrop) m_btnDefineCrop->setEnabled(on);
 	if (m_btnApplyCrop) m_btnApplyCrop->setEnabled(on);
 	if (m_btnLoadCropped) m_btnLoadCropped->setEnabled(on);
+	if (m_btnSaveCropped) m_btnSaveCropped->setEnabled(on);
 }
 
 bool WorkflowPanelWidget::isCroppingEnabled() const
@@ -324,4 +327,26 @@ void WorkflowPanelWidget::onRunSegmentationClicked()
 void WorkflowPanelWidget::onSaveSegmentClicked()
 {
 	emit saveSegmentRequested();
+}
+
+// new: save cropped slot
+void WorkflowPanelWidget::onSaveCroppedClicked()
+{
+	emit saveCroppedRequested();
+}
+
+// new fine-grained control implementations
+void WorkflowPanelWidget::setDefineCropEnabled(bool on)
+{
+	if (m_btnDefineCrop) m_btnDefineCrop->setEnabled(on);
+}
+
+void WorkflowPanelWidget::setApplyCropEnabled(bool on)
+{
+	if (m_btnApplyCrop) m_btnApplyCrop->setEnabled(on);
+}
+
+void WorkflowPanelWidget::setSaveCroppedEnabled(bool on)
+{
+	if (m_btnSaveCropped) m_btnSaveCropped->setEnabled(on);
 }

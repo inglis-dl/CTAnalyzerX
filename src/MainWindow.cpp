@@ -1,7 +1,6 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
 #include "ImageProcessingStateMachine.h"
-
 #include "LightboxWidget.h"
 #include "ImageLoader.h"
 #include "WindowLevelController.h"
@@ -227,6 +226,40 @@ MainWindow::MainWindow(QWidget* parent)
 			ui->actionSave->setEnabled(!active);
 		}
 	});
+
+	// --- Wire workflow panel actions into state-machine-driven flow ---
+	if (m_workflowPanelWidget) {
+		// Load image button -> open file dialog (same as ActionOpen)
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::loadImageRequested, this, &MainWindow::onActionOpen);
+
+		// When user clicks "Define Crop" we only enable the Apply button (user must click Apply to proceed)
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested, this, [this]() {
+			if (m_workflowPanelWidget) {
+				m_workflowPanelWidget->setApplyCropEnabled(true);
+				// Keep define enabled so user can re-open box if needed
+			}
+		});
+
+		// When user clicks "Apply Crop" -> notify state machine that crop is defined
+		// This causes the machine to transition to ApplyingCrop and emit requestApplyCrop().
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::applyCropRequested, this, [this]() {
+			if (m_processingStateMachine) {
+				// Signal that definition is complete and the machine should move on to apply crop
+				m_processingStateMachine->notifyCropDefined();
+			}
+		});
+
+		// Save cropped request -> prompt for path then (TODO) start save worker
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested, this, [this]() {
+			QString out = QFileDialog::getSaveFileName(this, tr("Save Cropped Volume"), "", tr("NIfTI (*.nii *.nii.gz);;All Files (*)"));
+			if (out.isEmpty()) return;
+			// TODO: start save worker that writes the cropped file to 'out'.
+			// For now show a stub message and enable next workflow items after manual intervention.
+			QMessageBox::information(this, tr("Save Cropped"), tr("Cropped volume would be saved to:\n%1\n\n(Implement save worker.)").arg(out));
+			// After a real save completes, notify the state machine or directly advance:
+			// m_processingStateMachine->notifyCroppedLoaded();
+		});
+	}
 
 	setupPanelConnections();
 
@@ -941,8 +974,14 @@ void MainWindow::onProcessingRequestLoadImage()
 			m_workflowPanelWidget->setAppearanceEnabled(true);
 		}
 
-		// Let the state machine know the image load completed so it can transition to next state
-		m_processingStateMachine->notifyImageLoaded();
+		// Let the state machine inspect any sidecar and transition appropriately.
+		// Sidecar detection / branching is owned by ImageProcessingStateMachine::notifyImageLoaded(),
+		// but ensure the machine has read the sidecar first so it can make the correct decision.
+		if (m_processingStateMachine) {
+			// readSidecarForInput() is idempotent and safe to call from the GUI thread
+			m_processingStateMachine->readSidecarForInput();
+			m_processingStateMachine->notifyImageLoaded();
+		}
 
 		statusBar()->showMessage(tr("StateMachine: loading image '%1'").arg(path), 3000);
 		qDebug() << "StateMachine: loaded image" << path;
@@ -959,12 +998,6 @@ void MainWindow::onProcessingRequestLoadImage()
 		ui->actionSave->setEnabled(true);
 	}
 }
-
-// -----------------------------------------------------------------------------
-// Minimal handlers for state-machine "request" signals that were declared
-// in MainWindow.h but not implemented. These keep the UI responsive and
-// provide hooks for later hooking real workers / UI flows.
-// -----------------------------------------------------------------------------
 
 void MainWindow::onProcessingRequestDefineCrop()
 {
@@ -1102,9 +1135,11 @@ void MainWindow::onProcessingError(const QString& reason)
 	}
 }
 
+// Add this implementation near the other MainWindow helpers (below constructor for example).
+
 void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 {
-	// Helper to determine whether a valid image is loaded
+	// Helper to check if a valid image is currently loaded
 	auto hasImage = [&]() -> bool {
 		if (!m_imageLoader) return false;
 		if (auto img = m_imageLoader->GetOutput()) {
@@ -1114,29 +1149,31 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		return false;
 		};
 
-	const bool imagePresent = hasImage();
+	const bool imgPresent = hasImage();
 
+	// Default: enable/disable top-level actions based on whether the machine is idle/completed/error
 	switch (s) {
 		case ImageProcessingStateMachine::Idle:
 		case ImageProcessingStateMachine::Completed:
 		case ImageProcessingStateMachine::ErrorState:
-		// Idle: allow opening and saving (save only if image present)
 		if (ui) {
 			ui->actionOpen->setEnabled(true);
-			ui->actionSave->setEnabled(imagePresent);
+			ui->actionSave->setEnabled(imgPresent);
 		}
+		// Enable/disable workflow groups depending on whether an image is present
 		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->setCroppingEnabled(imagePresent);
-			m_workflowPanelWidget->setRotationEnabled(imagePresent);
-			m_workflowPanelWidget->setSegmentationEnabled(imagePresent);
-			m_workflowPanelWidget->setFiducialsEnabled(imagePresent);
+			m_workflowPanelWidget->setCroppingEnabled(imgPresent);
+			m_workflowPanelWidget->setRotationEnabled(imgPresent);
+			m_workflowPanelWidget->setSegmentationEnabled(imgPresent);
+			m_workflowPanelWidget->setFiducialsEnabled(imgPresent);
 			m_workflowPanelWidget->setAppearanceEnabled(true);
 		}
+		// Hide loader if idle
 		showLoaderEnd();
 		break;
 
 		case ImageProcessingStateMachine::LoadingImage:
-		// Block top-level UI while image is loaded
+		// Block UI while loading
 		if (ui) {
 			ui->actionOpen->setEnabled(false);
 			ui->actionSave->setEnabled(false);
@@ -1152,6 +1189,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		break;
 
 		case ImageProcessingStateMachine::DefiningCrop:
+		// Let user interact with cropping controls only
 		if (ui) {
 			ui->actionOpen->setEnabled(false);
 			ui->actionSave->setEnabled(false);
@@ -1171,7 +1209,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		case ImageProcessingStateMachine::ComputingThreshold:
 		case ImageProcessingStateMachine::Segmenting:
 		case ImageProcessingStateMachine::SavingSegment:
-		// Long-running operations: disable interaction and show loader
+		// Long-running workers - disable interactive UI and show loader
 		if (ui) {
 			ui->actionOpen->setEnabled(false);
 			ui->actionSave->setEnabled(false);
@@ -1187,6 +1225,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		break;
 
 		case ImageProcessingStateMachine::PlacingFiducials:
+		// Enable fiducials placement UI
 		if (ui) {
 			ui->actionOpen->setEnabled(false);
 			ui->actionSave->setEnabled(false);
@@ -1217,7 +1256,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		break;
 
 		default:
-		// conservative fallback
+		// conservative fallback: disable risky UI
 		if (ui) {
 			ui->actionOpen->setEnabled(false);
 			ui->actionSave->setEnabled(false);

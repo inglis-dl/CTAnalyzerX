@@ -170,6 +170,8 @@ set(SOURCES
      src/ImageProcessingStateMachine.h
      src/WorkflowPanelWidget.cpp
      src/WorkflowPanelWidget.h
+     src/JsonUtils.cpp
+     src/JsonUtils.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early
