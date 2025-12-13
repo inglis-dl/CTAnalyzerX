@@ -2,15 +2,12 @@
 
 #include <QWidget>
 #include <QPointer>
-
-class CollapsibleGroupBox;
-class QPushButton;
-class QLabel;
-class QVBoxLayout;
-class QScrollArea;
-
-class VolumeRotationWidget;
-class WindowLevelController;
+#include <QVBoxLayout>
+#include <QScrollArea>
+#include <QLabel>
+#include <QPushButton>
+#include "CollapsibleGroupBox.h"
+#include "ImageProcessingStateMachine.h" // added for State
 
 class WorkflowPanelWidget : public QWidget
 {
@@ -34,6 +31,12 @@ public:
 	void setAppearanceEnabled(bool on);
 	bool isAppearanceEnabled() const;
 
+	// New: centralize expand/collapse + enable/disable policy driven by state machine
+	// Accepts the ImageProcessingStateMachine::State and a flag indicating whether
+	// a valid image is present. This method both enables/disables the workflow
+	// groups and updates their collapsed/expanded visual state.
+	void applyState(ImageProcessingStateMachine::State s, bool imagePresent);
+
 	// Insert real widgets into the placeholders (ownership is NOT transferred;
 	// the widget will be reparented to the placeholder area).
 	void insertVolumeCroppingWidget(QWidget* widget);
@@ -41,13 +44,6 @@ public:
 	void insertVolumeRotationWidget(QWidget* widget);
 	void insertSegmentationWidget(QWidget* widget);
 	void insertAppearanceWidget(QWidget* widget);
-
-	// Accessors to placeholder containers (for advanced wiring)
-	QWidget* croppingContainer() const;
-	QWidget* fiducialsContainer() const;
-	QWidget* rotationContainer() const;
-	QWidget* segmentationContainer() const;
-	QWidget* appearanceContainer() const;
 
 	// Fine-grained control helpers for cropping workflow
 	void setDefineCropEnabled(bool on);
@@ -141,4 +137,9 @@ private:
 	QPointer<QWidget> m_customSegmentationWidget;
 	QPointer<QWidget> m_customAppearanceWidget;
 
+	// Recompute and apply group widths to fit the scroll area's viewport
+	void adjustGroupWidths();
+
+protected:
+	void resizeEvent(QResizeEvent* event) override;
 };

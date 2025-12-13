@@ -53,17 +53,7 @@ public:
 	/// \sa QGroupBox::setChecked(bool)
 	inline void setCollapsed(bool collapse)
 	{
-		// Ensure checkable; use checked to represent expanded state
-		if (!this->isCheckable())
-			this->setCheckable(true);
-
-		const bool wantChecked = !collapse;
-		if (this->isChecked() != wantChecked) {
-			const QSignalBlocker b(this); // avoid double-expand signals
-			this->setChecked(wantChecked);
-		}
-		// Invoke the expansion logic (derived or internal) with final state
-		this->expand(wantChecked);
+		this->setChecked(!collapse);
 	}
 
 	/// Return the collapse state of the groupbox
@@ -71,7 +61,7 @@ public:
 	inline bool collapsed() const
 	{
 		// If not checkable, treat as expanded
-		return this->isCheckable() ? !this->isChecked() : false;
+		return !this->isChecked();
 	}
 
 	/// Set the height of the collapsed box. Does not include the title height.

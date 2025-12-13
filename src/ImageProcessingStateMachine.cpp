@@ -7,6 +7,26 @@
 #include <QDateTime>
 #include <QDebug>
 
+QAbstractState* ImageProcessingStateMachine::stateForEnum(State s) const
+{
+	switch (s) {
+		case Idle:               return m_idle;
+		case LoadingImage:       return m_loading;
+		case DefiningCrop:       return m_definingCrop;
+		case ApplyingCrop:       return m_applyingCrop;
+		case LoadingCropped:     return m_loadingCropped;
+		case PlacingFiducials:   return m_placingFiducials;
+		case InteractiveRotation:return m_interactiveRotation;
+		case ApplyingRotation:   return m_applyingRotation;
+		case LoadingRotated:     return m_loadingRotated;
+		case ComputingThreshold: return m_computingThreshold;
+		case Segmenting:         return m_segmenting;
+		case SavingSegment:      return m_saving;
+		case Completed:          return m_final; // QFinalState* -> QAbstractState* ok
+		default:                 return nullptr;
+	}
+}
+
 ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 	: QObject(parent)
 {
@@ -201,6 +221,30 @@ bool ImageProcessingStateMachine::writeCropSidecarForOutput(const QString& outPa
 	return true;
 }
 
+// Public: add an external signal->state transition
+bool ImageProcessingStateMachine::addExternalTransition(State from, State to, QObject* sender, const char* signal)
+{
+	if (!m_machine || !sender || !signal) return false;
+	QAbstractState* sourceAbs = stateForEnum(from);
+	QAbstractState* targetAbs = stateForEnum(to);
+	if (!sourceAbs || !targetAbs) {
+		qWarning() << "ImageProcessingStateMachine::addExternalTransition: invalid state mapping" << from << to;
+		return false;
+	}
+	// QSignalTransition::setTargetState accepts QAbstractState*
+	QSignalTransition* t = new QSignalTransition(sender, signal);
+	t->setTargetState(targetAbs);
+	// Only QState (not QFinalState) has addTransition(), so cast and add if possible.
+	QState* sourceState = qobject_cast<QState*>(sourceAbs);
+	if (!sourceState) {
+		qWarning() << "ImageProcessingStateMachine::addExternalTransition: 'from' state is not a QState";
+		delete t;
+		return false;
+	}
+	sourceState->addTransition(t);
+	return true;
+}
+
 // Notify image loaded; inspect sidecar to decide whether this is a derived/cropped image
 void ImageProcessingStateMachine::notifyImageLoaded()
 {
@@ -231,5 +275,4 @@ void ImageProcessingStateMachine::notifyRotatedLoaded() { Q_EMIT rotatedLoaded()
 void ImageProcessingStateMachine::notifyThresholdComputed() { Q_EMIT thresholdComputed(); }
 void ImageProcessingStateMachine::notifySegmentationDone() { Q_EMIT segmentationDone(); }
 void ImageProcessingStateMachine::notifySaved() { Q_EMIT saved(); }
-
 void ImageProcessingStateMachine::notifyFailed(const QString& reason) { Q_EMIT failed(reason); }

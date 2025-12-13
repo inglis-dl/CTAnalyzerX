@@ -43,7 +43,7 @@ public:
 	State currentState() const { return m_currentState; }
 	bool isActive() const { return m_active.load(); }
 
-	// New: sidecar / provenance helpers
+	// New: sidecar / provenance helpers (owned by state machine)
 	// Read the JSON sidecar for the current input file into internal state
 	bool readSidecarForInput();
 	// Convenience: write a crop sidecar for an output derived image and append history
@@ -51,9 +51,17 @@ public:
 	// Append a workflow step entry to an image's sidecar history
 	bool appendHistoryToSidecar(const QString& imagePath, const QString& stepName, const QJsonObject& params);
 
+	// Add an external signal->state transition so UI widgets can drive the state machine directly.
+	// Example usage:
+	//   addExternalTransition(DefiningCrop, ApplyingCrop, widget, SIGNAL(applyCropRequested()));
+	bool addExternalTransition(State from, State to, QObject* sender, const char* signal);
+
 	// Query last derived path produced by this state machine (if any)
 	QString lastDerivedPath() const { return m_lastDerivedPath; }
 	bool inputIsDerived() const { return m_isDerived; }
+
+	//QState* applyingCropState() const { return m_applyingCrop; }
+	//QState* applyingRotationState() const { return m_applyingRotation; }
 
 public slots:
 	// External control
@@ -140,4 +148,7 @@ private:
 	// runtime tracking (single source of truth for active/state)
 	std::atomic<bool> m_active{ false };
 	State m_currentState = Idle;
+
+	// helper to map enum -> QState* (keeps mapping internal)
+	QAbstractState* stateForEnum(State s) const;
 };

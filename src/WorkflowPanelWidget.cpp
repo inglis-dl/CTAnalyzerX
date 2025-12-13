@@ -1,12 +1,18 @@
 #include "WorkflowPanelWidget.h"
 #include "CollapsibleGroupBox.h"
+#include <QLayout>
+#include <QDebug>
+#include <QCoreApplication> // if not already present
 
+#include <QVariant> // add near other includes
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QLabel>
 #include <QFrame>
 #include <QScrollArea>
+#include <QLayout>
+#include <QResizeEvent>
 
 WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 	: QWidget(parent)
@@ -15,6 +21,8 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 	m_scrollArea = new QScrollArea(this);
 	m_scrollArea->setWidgetResizable(true);
 	m_scrollArea->setFrameStyle(QFrame::NoFrame);
+	// Avoid horizontal scrollbar by default — we'll ensure content fits
+	m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
 	m_scrollContent = new QWidget(m_scrollArea);
 	m_rootLayout = new QVBoxLayout(m_scrollContent);
@@ -31,6 +39,7 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 	// --- Image load group ---
 	m_grpLoad = makeGroup(tr("Image"));
 	m_btnLoadImage = new QPushButton(tr("Load Image..."), m_grpLoad);
+	m_btnLoadImage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 	m_loadContainer = new QWidget(m_grpLoad);
 	{
 		auto* lay = new QVBoxLayout(m_loadContainer);
@@ -52,8 +61,13 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 		cl->addWidget(makePlaceholderLabel(tr("VolumeCroppingWidget placeholder (Range sliders + 3D box widget)")));
 		m_btnDefineCrop = new QPushButton(tr("Define Crop (Enable box)"), m_croppingContainer);
 		m_btnApplyCrop = new QPushButton(tr("Apply Crop & Save Temp"), m_croppingContainer);
-		m_btnSaveCropped = new QPushButton(tr("Save Cropped Volume..."), m_croppingContainer); // new
+		m_btnSaveCropped = new QPushButton(tr("Save Cropped Volume..."), m_croppingContainer);
 		m_btnLoadCropped = new QPushButton(tr("Load Cropped Volume"), m_croppingContainer);
+		// Make buttons expand horizontally so they don't force horizontal scroll
+		m_btnDefineCrop->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+		m_btnApplyCrop->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+		m_btnSaveCropped->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+		m_btnLoadCropped->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 		cl->addWidget(m_btnDefineCrop);
 		cl->addWidget(m_btnApplyCrop);
 		cl->addWidget(m_btnSaveCropped);
@@ -64,7 +78,7 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 	connect(m_btnDefineCrop, &QPushButton::clicked, this, &WorkflowPanelWidget::onDefineCropClicked);
 	connect(m_btnApplyCrop, &QPushButton::clicked, this, &WorkflowPanelWidget::onApplyCropClicked);
 	connect(m_btnLoadCropped, &QPushButton::clicked, this, &WorkflowPanelWidget::onLoadCroppedClicked);
-	connect(m_btnSaveCropped, &QPushButton::clicked, this, &WorkflowPanelWidget::onSaveCroppedClicked); // new
+	connect(m_btnSaveCropped, &QPushButton::clicked, this, &WorkflowPanelWidget::onSaveCroppedClicked);
 
 	// --- Fiducials / Axes group (step 5) ---
 	m_grpFiducials = makeGroup(tr("Fiducials & Axes"));
@@ -74,6 +88,7 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 		fl->setContentsMargins(0, 0, 0, 0);
 		fl->addWidget(makePlaceholderLabel(tr("Fiducial placement controls placeholder (define plane & rotation axes)")));
 		m_btnPlaceFiducials = new QPushButton(tr("Place Fiducials"), m_fiducialsContainer);
+		m_btnPlaceFiducials->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 		fl->addWidget(m_btnPlaceFiducials);
 	}
 	m_grpFiducials->setContentWidget(m_fiducialsContainer);
@@ -89,6 +104,8 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 		rl->addWidget(makePlaceholderLabel(tr("VolumeRotationWidget placeholder (axes widget + spinboxes)")));
 		m_btnStartInteractiveRotation = new QPushButton(tr("Start Interactive Rotation"), m_rotationContainer);
 		m_btnApplyRotation = new QPushButton(tr("Apply Rotation & Save"), m_rotationContainer);
+		m_btnStartInteractiveRotation->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+		m_btnApplyRotation->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 		rl->addWidget(m_btnStartInteractiveRotation);
 		rl->addWidget(m_btnApplyRotation);
 	}
@@ -108,6 +125,10 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 		m_btnPreviewThreshold = new QPushButton(tr("Preview Threshold"), m_segmentationContainer);
 		m_btnRunSegmentation = new QPushButton(tr("Run Region Growing"), m_segmentationContainer);
 		m_btnSaveSegment = new QPushButton(tr("Save Segmented Volume"), m_segmentationContainer);
+		m_btnComputeThreshold->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		m_btnPreviewThreshold->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		m_btnRunSegmentation->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		m_btnSaveSegment->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 		sl->addWidget(m_btnComputeThreshold);
 		sl->addWidget(m_btnPreviewThreshold);
 		sl->addWidget(m_btnRunSegmentation);
@@ -127,19 +148,64 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 		auto* al = new QVBoxLayout(m_appearanceContainer);
 		al->setContentsMargins(0, 0, 0, 0);
 		al->addWidget(makePlaceholderLabel(tr("Window/Level controller and non-processing appearance controls")));
-		// real WindowLevelController can be inserted via insertAppearanceWidget()
 	}
 	m_grpAppearance->setContentWidget(m_appearanceContainer);
 	m_rootLayout->addWidget(m_grpAppearance);
+
+	// Defer one-time width adjustment and make future adjustments on resize.
+	adjustGroupWidths();
 
 	// spacer to push groups up
 	m_rootLayout->addStretch(1);
 }
 
+void WorkflowPanelWidget::adjustGroupWidths()
+{
+	if (!m_scrollArea || !m_scrollContent) return;
+
+	// Available width inside the scroll area's viewport
+	int avail = m_scrollArea->viewport()->width();
+	// leave some padding for group margins/arrow/title
+	const int padding = 24;
+	int target = qMax(220, avail - padding);
+
+	// Apply maximum width so layout will reflow and never require a horizontal scrollbar.
+	const QList<QWidget*> groups = {
+		m_grpLoad, m_grpCropping, m_grpFiducials,
+		m_grpRotation, m_grpSegmentation, m_grpAppearance
+	};
+	for (QWidget* g : groups) {
+		if (!g) continue;
+		g->setMaximumWidth(target);
+		g->setMinimumWidth(0); // do not force a large minimum width
+		// ensure child widgets can expand horizontally
+		// IMPORTANT: use Preferred vertical policy (not Minimum) so the group's
+		// height can grow to accommodate its content when expanded.
+		g->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+	}
+
+	// Allow content widget to shrink/grow with the viewport
+	m_scrollContent->setMinimumWidth(0);
+	m_scrollContent->setMaximumWidth(target);
+}
+
+void WorkflowPanelWidget::resizeEvent(QResizeEvent* event)
+{
+	QWidget::resizeEvent(event);
+	// Recompute group widths to fit the new viewport size
+	adjustGroupWidths();
+}
+
 CollapsibleGroupBox* WorkflowPanelWidget::makeGroup(const QString& title)
 {
-	auto* g = new CollapsibleGroupBox(title, this);
-	g->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+	// Ensure the group is parented to the scroll content so the m_rootLayout
+	// (which belongs to m_scrollContent) becomes the group's layout manager.
+	QWidget* parentForGroup = m_scrollContent ? m_scrollContent : this;
+	auto* g = new CollapsibleGroupBox(title, parentForGroup);
+	// Allow the group to expand to show its contents when opened.
+	// IMPORTANT: vertical policy should be Preferred so the layout permits the
+	// group to grow in height to fit its contents (Minimum was preventing full expansion).
+	g->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
 	return g;
 }
 
@@ -211,11 +277,17 @@ void WorkflowPanelWidget::insertAppearanceWidget(QWidget* widget)
 // --- Group enable/disable helpers (controller-friendly) ---
 void WorkflowPanelWidget::setCroppingEnabled(bool on)
 {
-	if (m_grpCropping) m_grpCropping->setEnabled(on);
+	if (!m_grpCropping) return;
+
+	// Keep controls enabled/disabled for accessibility
 	if (m_btnDefineCrop) m_btnDefineCrop->setEnabled(on);
 	if (m_btnApplyCrop) m_btnApplyCrop->setEnabled(on);
 	if (m_btnLoadCropped) m_btnLoadCropped->setEnabled(on);
 	if (m_btnSaveCropped) m_btnSaveCropped->setEnabled(on);
+
+	// Enable/disable the cropping group itself and expand when enabled
+	m_grpCropping->setEnabled(on);
+	m_grpCropping->setCollapsed(!on);
 }
 
 bool WorkflowPanelWidget::isCroppingEnabled() const
@@ -225,9 +297,14 @@ bool WorkflowPanelWidget::isCroppingEnabled() const
 
 void WorkflowPanelWidget::setRotationEnabled(bool on)
 {
-	if (m_grpRotation) m_grpRotation->setEnabled(on);
+	if (!m_grpRotation) return;
+
+	// Keep controls enabled/disabled for accessibility
 	if (m_btnStartInteractiveRotation) m_btnStartInteractiveRotation->setEnabled(on);
 	if (m_btnApplyRotation) m_btnApplyRotation->setEnabled(on);
+
+	m_grpRotation->setEnabled(on);
+	m_grpRotation->setCollapsed(!on);
 }
 
 bool WorkflowPanelWidget::isRotationEnabled() const
@@ -237,11 +314,16 @@ bool WorkflowPanelWidget::isRotationEnabled() const
 
 void WorkflowPanelWidget::setSegmentationEnabled(bool on)
 {
-	if (m_grpSegmentation) m_grpSegmentation->setEnabled(on);
+	if (!m_grpSegmentation) return;
+
+	// Keep controls enabled/disabled for accessibility
 	if (m_btnComputeThreshold) m_btnComputeThreshold->setEnabled(on);
 	if (m_btnPreviewThreshold) m_btnPreviewThreshold->setEnabled(on);
 	if (m_btnRunSegmentation) m_btnRunSegmentation->setEnabled(on);
 	if (m_btnSaveSegment) m_btnSaveSegment->setEnabled(on);
+
+	m_grpSegmentation->setEnabled(on);
+	m_grpSegmentation->setCollapsed(!on);
 }
 
 bool WorkflowPanelWidget::isSegmentationEnabled() const
@@ -251,8 +333,13 @@ bool WorkflowPanelWidget::isSegmentationEnabled() const
 
 void WorkflowPanelWidget::setFiducialsEnabled(bool on)
 {
-	if (m_grpFiducials) m_grpFiducials->setEnabled(on);
+	if (!m_grpFiducials) return;
+
+	// Keep controls enabled/disabled for accessibility
 	if (m_btnPlaceFiducials) m_btnPlaceFiducials->setEnabled(on);
+
+	m_grpFiducials->setEnabled(on);
+	m_grpFiducials->setCollapsed(!on);
 }
 
 bool WorkflowPanelWidget::isFiducialsEnabled() const
@@ -260,14 +347,20 @@ bool WorkflowPanelWidget::isFiducialsEnabled() const
 	return m_grpFiducials ? m_grpFiducials->isEnabled() : false;
 }
 
-void WorkflowPanelWidget::setAppearanceEnabled(bool on)
+void WorkflowPanelWidget::setAppearanceEnabled(bool /*on*/)
 {
-	if (m_grpAppearance) m_grpAppearance->setEnabled(on);
-	// appearance container may contain multiple widgets; rely on group enable to propagate
+	// Appearance controls are independent of processing pipeline.
+	// Always keep appearance group enabled and expanded so users can change
+	// visible properties (window/level, etc.) for any loaded image.
+	if (m_grpAppearance) {
+		m_grpAppearance->setEnabled(true);
+		m_grpAppearance->setCollapsed(false); // ensure open
+	}
 }
 
 bool WorkflowPanelWidget::isAppearanceEnabled() const
 {
+	// Appearance group is always available when created.
 	return m_grpAppearance ? m_grpAppearance->isEnabled() : false;
 }
 
@@ -349,4 +442,74 @@ void WorkflowPanelWidget::setApplyCropEnabled(bool on)
 void WorkflowPanelWidget::setSaveCroppedEnabled(bool on)
 {
 	if (m_btnSaveCropped) m_btnSaveCropped->setEnabled(on);
+}
+
+// New: centralized expand/collapse policy driven by state machine state.
+// NOTE: this only updates the visual collapsed/expanded state of the group boxes.
+// Enabling/disabling of controls remains the responsibility of the caller (MainWindow).
+void WorkflowPanelWidget::applyState(ImageProcessingStateMachine::State s, bool imagePresent)
+{
+	bool enableCropping = false;
+	bool enableRotation = false;
+	bool enableSegmentation = false;
+	bool enableFiducials = false;
+
+	// Default collapse policy flag for which group should be expanded
+	enum class ExpandTarget { None, Cropping, Rotation, Fiducials, Segmentation } expand = ExpandTarget::None;
+
+	switch (s) {
+		case ImageProcessingStateMachine::Idle:
+		case ImageProcessingStateMachine::Completed:
+		case ImageProcessingStateMachine::ErrorState:
+		// When idle/completed/error: workflow groups become available only when an image is present.
+		enableCropping = imagePresent;
+		enableRotation = imagePresent;
+		enableSegmentation = imagePresent;
+		enableFiducials = imagePresent;
+
+		// Expand cropping by default when image present; keep appearance accessible as well.
+		expand = imagePresent ? ExpandTarget::Cropping : ExpandTarget::None;
+		break;
+
+		case ImageProcessingStateMachine::LoadingImage:
+		// While loading everything should be disabled and collapsed.
+		// keep all flags false
+		expand = ExpandTarget::None;
+		break;
+
+		case ImageProcessingStateMachine::DefiningCrop:
+		enableCropping = true;
+		expand = ExpandTarget::Cropping;
+		break;
+
+		case ImageProcessingStateMachine::ApplyingCrop:
+		case ImageProcessingStateMachine::ApplyingRotation:
+		case ImageProcessingStateMachine::ComputingThreshold:
+		case ImageProcessingStateMachine::Segmenting:
+		case ImageProcessingStateMachine::SavingSegment:
+		// Long-running workers: disable UI
+		expand = ExpandTarget::None;
+		break;
+
+		case ImageProcessingStateMachine::PlacingFiducials:
+		enableFiducials = true;
+		expand = ExpandTarget::Fiducials;
+		break;
+
+		case ImageProcessingStateMachine::InteractiveRotation:
+		enableRotation = true;
+		expand = ExpandTarget::Rotation;
+		break;
+
+		default:
+		// conservative fallback: disable everything
+		expand = ExpandTarget::None;
+		break;
+	}
+
+	// Apply enable/disable using the public helpers (keeps encapsulation)
+	setCroppingEnabled(enableCropping);
+	setRotationEnabled(enableRotation);
+	setSegmentationEnabled(enableSegmentation);
+	setFiducialsEnabled(enableFiducials);
 }
