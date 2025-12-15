@@ -9,6 +9,9 @@
 #include "CollapsibleGroupBox.h"
 #include "ImageProcessingStateMachine.h" // added for State
 
+class LightboxWidget; // forward
+class WindowLevelController; // forward
+
 class WorkflowPanelWidget : public QWidget
 {
 	Q_OBJECT
@@ -45,6 +48,20 @@ public:
 	void insertSegmentationWidget(QWidget* widget);
 	void insertAppearanceWidget(QWidget* widget);
 
+	// Take ownership of the WindowLevelController instance (via Qt parenting).
+	// MainWindow should create the controller and call this method so the WorkflowPanelWidget
+	// becomes the controller's parent and lifetime manager. The controller will be shown
+	// in the appearance area.
+	void setWindowLevelController(WindowLevelController* controller);
+
+	// Accessor for the controller placed in the UI (if any).
+	WindowLevelController* windowLevelController() const { return m_windowLevelController; }
+
+	// Let the panel own/drive real-time cropping updates to a LightboxWidget.
+	// Panel does NOT take ownership of the lightbox; it merely connects its
+	// cropping signal to the LightboxWidget's handler.
+	void setLightboxWidget(LightboxWidget* lightbox);
+
 	// Fine-grained control helpers for cropping workflow
 	void setDefineCropEnabled(bool on);
 	void setApplyCropEnabled(bool on);
@@ -57,6 +74,11 @@ signals:
 	void applyCropRequested();
 	void loadCroppedRequested();
 	void saveCroppedRequested(); // new: request to save cropped volume (user chooses path)
+
+	// forwarded cropping region (real-time updates from CropController)
+	void croppingRegionChanged(int xMin, int xMax,
+							   int yMin, int yMax,
+							   int zMin, int zMax);
 
 	void placeFiducialsRequested();
 	void startInteractiveRotationRequested();
@@ -126,6 +148,12 @@ private:
 
 	CollapsibleGroupBox* m_grpAppearance = nullptr;
 	QWidget* m_appearanceContainer = nullptr;
+
+	// Keep pointer to the WindowLevelController owned by this panel (parented to this).
+	WindowLevelController* m_windowLevelController = nullptr;
+
+	// Panel-owned reference to Lightbox (not owner)
+	QPointer<LightboxWidget> m_lightbox;
 
 	// Small informative labels
 	QLabel* makePlaceholderLabel(const QString& text);

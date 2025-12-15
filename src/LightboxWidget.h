@@ -35,8 +35,33 @@ public:
 	SliceView* getXYView() const;
 	VolumeView* getVolumeView() const;
 
-	// Minimal accessor so MainWindow can place the controller in its layout
+	// Accept an externally-owned WindowLevelController (LightboxWidget does NOT take ownership).
+	// MainWindow will create the controller, give ownership to WorkflowPanelWidget and register
+	// the same controller instance here so LightboxWidget can route reset requests and avoid
+	// creating a duplicate controller.
+	void setWindowLevelController(WindowLevelController* ctrl);
+
+	// Minimal accessor so MainWindow can place the controller in its layout or inspect it
 	WindowLevelController* windowLevelController() const { return m_wlController; }
+
+public slots:
+	// Propagate a reset request to all child image frames (slices + volume)
+	void resetWindowLevel();
+
+	// Forward cropping regions from external UI (e.g., CropController).
+	// LightboxWidget will apply the region to VolumeView and update slice indices.
+	void setCroppingRegion(int xMin, int xMax,
+						   int yMin, int yMax,
+						   int zMin, int zMax);
+
+signals:
+	// Forwarded extents notifications from child views (same format as ImageFrameWidget)
+	void imageExtentsChanged(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
+
+private slots:
+	// Handle maximize/restore requests from child frames
+	void onRequestMaximize(SelectionFrameWidget* w);
+	void onRequestRestore(SelectionFrameWidget* w);
 
 protected:
 	void showEvent(QShowEvent* e) override;
@@ -46,17 +71,6 @@ protected:
 	void dragMoveEvent(QDragMoveEvent* e) override;
 	void dropEvent(QDropEvent* e) override;
 	void dragLeaveEvent(QDragLeaveEvent* e) override;
-
-public slots:
-	// Propagate a reset request to all child image frames (slices + volume)
-	void resetWindowLevel();
-
-signals:
-
-private slots:
-	// Handle maximize/restore requests from child frames
-	void onRequestMaximize(SelectionFrameWidget* w);
-	void onRequestRestore(SelectionFrameWidget* w);
 
 private:
 	void connectSliceSynchronization();
@@ -87,7 +101,8 @@ private:
 	// shared image property used by all SliceView instances (always present)
 	vtkSmartPointer<vtkImageProperty> m_sharedImageProperty;
 
-	// Encapsulated Window/Level controller + bridge (owned by LightboxWidget)
+	// External Window/Level controller (NOT owned by LightboxWidget).
+	// The controller is created by MainWindow and owned by WorkflowPanelWidget (via Qt parent-child).
 	WindowLevelController* m_wlController = nullptr;
 	WindowLevelBridge* m_wlBridge = nullptr;
 

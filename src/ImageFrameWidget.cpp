@@ -555,6 +555,12 @@ void ImageFrameWidget::cacheImageGeometry()
 	m_imageData->GetExtent(m_extent);
 	m_imageData->GetSpacing(m_spacing);
 	m_imageData->GetOrigin(m_origin);
+
+	// Emit a generic extents-changed signal for any ImageFrameWidget-derived view.
+	// m_extent layout: [xmin, xmax, ymin, ymax, zmin, zmax]
+	emit imageExtentsChanged(m_extent[0], m_extent[1],
+							 m_extent[2], m_extent[3],
+							 m_extent[4], m_extent[5]);
 }
 
 void ImageFrameWidget::refreshEndpointFromUpstream()

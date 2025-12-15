@@ -1,6 +1,6 @@
 #include "LightboxWidget.h"
-#include "SliceView.h"
 #include "VolumeView.h"
+#include "SliceView.h"
 #include "SelectionFrameWidget.h"
 #include "WindowLevelController.h"
 #include "WindowLevelBridge.h"
@@ -71,6 +71,19 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 {
 	ui.setupUi(this);
 
+	// Forward image extents from any child frame to LightboxWidget so it can mediate updates.
+	auto forwardExtentsFrom = [this](ImageFrameWidget* v) {
+		if (!v) return;
+		// connect derived-class emission to LightboxWidget forwarding signal
+		connect(v, &ImageFrameWidget::imageExtentsChanged,
+				this, &LightboxWidget::imageExtentsChanged, Qt::UniqueConnection);
+		};
+
+	forwardExtentsFrom(ui.YZView);
+	forwardExtentsFrom(ui.XZView);
+	forwardExtentsFrom(ui.XYView);
+	forwardExtentsFrom(ui.volumeView);
+
 	// Allow drag/drop reordering
 	this->setAcceptDrops(true);
 
@@ -91,26 +104,47 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 	// Optional: choose a default selected/highlighted view
 	if (ui.XYView) ui.XYView->setSelected(true);
 
-	// Minimal, safe encapsulation:
-	// create WindowLevelController and WindowLevelBridge here, parented to this widget.
-	// MainWindow will only take the controller widget to insert into its layout.
-	if (!m_wlController) {
-		m_wlController = new WindowLevelController(this);
-	}
+	// Create the WindowLevelBridge now (bridge is owned by Lightbox)
 	if (!m_wlBridge) {
-		// Bridge targets the volume view; slice-to-bridge connections are wired below.
 		m_wlBridge = new WindowLevelBridge(getVolumeView(), nullptr, this);
 	}
 
-	// Connect controller -> local propagator (so controller updates slices + volume)
+	// NOTE:
+	// Do NOT create a WindowLevelController here. The controller may be provided by
+	// the WorkflowPanelWidget UI and registered via setWindowLevelController().
+	// All controller-related wiring is performed in setWindowLevelController().
+	// This avoids duplicate controllers and duplicate connections.
+}
+
+// New: install an externally-owned WindowLevelController instance (Lightbox does not take ownership)
+void LightboxWidget::setWindowLevelController(WindowLevelController* ctrl)
+{
+	// If the controller is identical, nothing to do.
+	if (m_wlController == ctrl) return;
+
+	// Disconnect and unwire previous controller if any
+	if (m_wlController) {
+		disconnect(m_wlController, nullptr, this, nullptr);
+		// Do not delete the controller; its lifetime is owned by the WorkflowPanelWidget (caller).
+		m_wlController = nullptr;
+	}
+
+	// Adopt new controller reference (Lightbox does NOT take ownership)
+	m_wlController = ctrl;
+	if (!m_wlController) return;
+
+	// Ensure we have a bridge (bridge remains parented to this Lightbox)
+	if (!m_wlBridge) {
+		m_wlBridge = new WindowLevelBridge(getVolumeView(), nullptr, this);
+	}
+
+	// Controller -> Lightbox propagation (apply to volume via bridge and to all slice views)
 	connect(m_wlController, &WindowLevelController::windowLevelChanged, this, [this](double w, double l) {
 		if (m_propagatingWindowLevel) return;
 		m_propagatingWindowLevel = true;
 
-		// Apply to volume via bridge (native domain)
 		if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
 
-		// Also apply to all slice views (mapped via each slice's mapping)
 		if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
 		if (auto* xz = getXZView()) xz->setWindowLevelNative(w, l);
 		if (auto* xy = getXYView()) xy->setWindowLevelNative(w, l);
@@ -122,7 +156,6 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 		if (m_propagatingWindowLevel) return;
 		m_propagatingWindowLevel = true;
 
-		// call the bridge's changed handler directly (committed semantics treated same)
 		if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
 
 		if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
@@ -132,22 +165,20 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 		m_propagatingWindowLevel = false;
 	}, Qt::UniqueConnection);
 
-	// Keep controller UI in sync when the active VolumeView emits windowLevelChanged
+	// Controller reset -> Lightbox reset propagation
+	connect(m_wlController, &WindowLevelController::requestResetWindowLevel,
+			this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+
+	// Volume -> controller update (keep controller UI synchronized if the volume changes WL)
 	if (auto* vol = getVolumeView()) {
 		connect(vol, &VolumeView::windowLevelChanged, this, [this](double w, double l) {
-			// When a VolumeView resets WL (e.g. user pressed 'r' in Volume mode)
-			// we must propagate that reset to the controller, the bridge (volume),
-			// and all slice views so they stay synchronized.
 			if (m_propagatingWindowLevel) return;
 			m_propagatingWindowLevel = true;
 
-			// Update controller UI
 			if (m_wlController) {
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
 			}
-
-			// Notify bridge (volume side) and all slices (native-domain mapping per slice)
 			if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
 			if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
 			if (auto* xz = getXZView()) xz->setWindowLevelNative(w, l);
@@ -157,28 +188,25 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 		}, Qt::UniqueConnection);
 	}
 
-	// Hook slice -> local propagator so slice-driven WL updates siblings + volume
+	// Hook slice -> local propagator so slice-driven WL updates siblings + volume + controller
 	if (auto* yz = getYZView()) {
 		connect(yz, &SliceView::windowLevelChanged, this, [this, yz](double w, double l) {
 			if (m_propagatingWindowLevel) return;
 			m_propagatingWindowLevel = true;
 
-			// Update volume via bridge
 			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
 
-			// Update controller UI so spinboxes reflect interactive slice changes
 			if (m_wlController) {
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
 			}
-
-			// Update other slices (slaves)
 			if (auto* xz = getXZView()) { if (xz != yz) xz->setWindowLevelNative(w, l); }
 			if (auto* xy = getXYView()) { if (xy != yz) xy->setWindowLevelNative(w, l); }
 
 			m_propagatingWindowLevel = false;
 		}, Qt::UniqueConnection);
 	}
+
 	if (auto* xz = getXZView()) {
 		connect(xz, &SliceView::windowLevelChanged, this, [this, xz](double w, double l) {
 			if (m_propagatingWindowLevel) return;
@@ -190,13 +218,13 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
 			}
-
 			if (auto* yz = getYZView()) { if (yz != xz) yz->setWindowLevelNative(w, l); }
 			if (auto* xy = getXYView()) { if (xy != xz) xy->setWindowLevelNative(w, l); }
 
 			m_propagatingWindowLevel = false;
 		}, Qt::UniqueConnection);
 	}
+
 	if (auto* xy = getXYView()) {
 		connect(xy, &SliceView::windowLevelChanged, this, [this, xy](double w, double l) {
 			if (m_propagatingWindowLevel) return;
@@ -208,7 +236,6 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
 			}
-
 			if (auto* yz = getYZView()) { if (yz != xy) yz->setWindowLevelNative(w, l); }
 			if (auto* xz = getXZView()) { if (xz != xy) xz->setWindowLevelNative(w, l); }
 
@@ -216,19 +243,10 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 		}, Qt::UniqueConnection);
 	}
 
-	// Wire controller reset request to propagate to our child views
-	connect(m_wlController, &WindowLevelController::requestResetWindowLevel,
-			this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
-
-	if (auto* yz = getYZView()) {
-		connect(yz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
-	}
-	if (auto* xz = getXZView()) {
-		connect(xz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
-	}
-	if (auto* xy = getXYView()) {
-		connect(xy, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
-	}
+	// Ensure reset requests from slices still reach Lightbox (idempotent because of UniqueConnection)
+	if (auto* yz = getYZView()) connect(yz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	if (auto* xz = getXZView()) connect(xz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	if (auto* xy = getXYView()) connect(xy, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
 }
 
 void LightboxWidget::showEvent(QShowEvent* e)
@@ -364,6 +382,30 @@ void LightboxWidget::connectMaximizeSignals()
 	connectOne(ui.XZView);
 	connectOne(ui.XYView);
 	connectOne(ui.volumeView);
+}
+
+void LightboxWidget::setCroppingRegion(int xMin, int xMax,
+									   int yMin, int yMax,
+									   int zMin, int zMax)
+{
+	// Forward cropping region to the VolumeView if present.
+	if (ui.volumeView) {
+		ui.volumeView->setCroppingRegion(xMin, xMax, yMin, yMax, zMin, zMax);
+	}
+
+	// Compute center indices for each axis and clamp to provided ranges.
+	auto clamp = [](int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); };
+	int xCenter = clamp((xMin + xMax) / 2, xMin, xMax);
+	int yCenter = clamp((yMin + yMax) / 2, yMin, yMax);
+	int zCenter = clamp((zMin + zMax) / 2, zMin, zMax);
+
+	// Map axes to views:
+	//  - YZ view is the X-axis slice
+	//  - XZ view is the Y-axis slice
+	//  - XY view is the Z-axis slice
+	setYZSlice(xCenter);
+	setXZSlice(yCenter);
+	setXYSlice(zCenter);
 }
 
 // Utility: map a child frame geometry into this widget's coordinate system

@@ -172,6 +172,8 @@ set(SOURCES
      src/WorkflowPanelWidget.h
      src/JsonUtils.cpp
      src/JsonUtils.h
+     src/CropController.cpp
+     src/CropController.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early

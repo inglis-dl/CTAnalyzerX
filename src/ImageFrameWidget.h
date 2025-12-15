@@ -132,6 +132,11 @@ signals:
 	void foregroundColorChanged(const QColor& c);
 	void gradientBackgroundChanged(bool on);
 
+	// Notifies listeners when the image extents (voxel indices) changed on this view.
+	// Format: xMin, xMax, yMin, yMax, zMin, zMax
+	void imageExtentsChanged(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
+
+
 protected:
 	// SceneFrameWidget override: used by render() and tooling.
 	vtkRenderWindow* getRenderWindow() const;

@@ -406,25 +406,40 @@ void MainWindow::setupPanelConnections()
 		ui->volumeControlsWidget, &VolumeControlsWidget::onExternalCroppingChanged);
 	*/
 
-	// --- Window/Level controller (owned by LightboxWidget) ---
+	// --- Window/Level controller (owned by WorkflowPanelWidget UI) ---
 	if (ui->lightboxWidget) {
-		if (auto* wlController = ui->lightboxWidget->windowLevelController()) {
-			// Let workflow panel manage controller location if available
-			if (m_workflowPanelWidget) {
-				m_workflowPanelWidget->insertAppearanceWidget(wlController);
-			}
-			else if (ui->controlPanelLayout) {
-				ui->controlPanelLayout->insertWidget(1, wlController);
-			}
-			else {
-				wlController->setParent(ui->controlPanel);
-			}
+		WindowLevelController* wlController = nullptr;
+
+		// Prefer the controller embedded in the WorkflowPanelWidget (uic placed one by default).
+		if (m_workflowPanelWidget) {
+			wlController = m_workflowPanelWidget->windowLevelController();
 		}
+
+		// Fallback: if workflow panel is not present, ask the lightbox if it created one internally.
+		if (!wlController) {
+			wlController = ui->lightboxWidget->windowLevelController();
+		}
+
+		// Register the controller instance with the Lightbox so it can wire propagation.
+		if (wlController) {
+			ui->lightboxWidget->setWindowLevelController(wlController);
+		}
+	}
+
+	// Let the WorkflowPanelWidget own the live connection to the Lightbox for cropping updates.
+	if (m_workflowPanelWidget && ui->lightboxWidget) {
+		m_workflowPanelWidget->setLightboxWidget(ui->lightboxWidget);
 	}
 
 	// Other view-mode sync left intact where only lightbox is required
 	if (ui->lightboxWidget /* && ui->volumeControlsWidget */) {
 		// If you later re-add VolumeControlsWidget wiring, guard and connect here.
+
+		// Keep WorkflowPanelWidget informed of cropping-enabled changes coming from VolumeView
+		if (m_workflowPanelWidget && ui->lightboxWidget->getVolumeView()) {
+			connect(ui->lightboxWidget->getVolumeView(), &VolumeView::croppingEnabledChanged,
+					m_workflowPanelWidget, &WorkflowPanelWidget::setCroppingEnabled, Qt::UniqueConnection);
+		}
 	}
 }
 

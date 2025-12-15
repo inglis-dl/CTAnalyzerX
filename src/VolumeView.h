@@ -57,7 +57,6 @@ public:
 	void createMenuAndActions();
 
 signals:
-	void imageExtentsChanged(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 	void orthoPlanesVisibleChanged(bool visible);
 	// Emitted when the effective cropping enabled state changes (e.g. reset to false on new image)
 	void croppingEnabledChanged(bool enabled);
