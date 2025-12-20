@@ -174,6 +174,8 @@ set(SOURCES
      src/JsonUtils.h
      src/CropController.cpp
      src/CropController.h
+     src/CropExporter.cpp
+     src/CropExporter.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early
