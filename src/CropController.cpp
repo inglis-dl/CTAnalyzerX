@@ -16,7 +16,6 @@ CropController::CropController(QWidget* parent)
 
 	// connect UI
 	connect(ui.defineButton, &QPushButton::toggled, this, &CropController::on_defineButton_toggled);
-	connect(ui.applyButton, &QPushButton::clicked, this, &CropController::on_applyButton_clicked);
 	connect(ui.resetButton, &QPushButton::clicked, this, &CropController::on_resetButton_clicked);
 	connect(ui.saveButton, &QPushButton::clicked, this, &CropController::on_saveButton_clicked);
 
@@ -27,6 +26,10 @@ CropController::CropController(QWidget* parent)
 
 	// sensible defaults for labels (in case caller doesn't call setRangeSliders)
 	setRangeSliders(0, 1000, 0, 1000, 0, 1000);
+
+	// Ensure Save is correctly initialized according to slider defaults
+	// (it will be disabled because the initial region matches the full image)
+	updateSaveButtonState();
 }
 
 CropController::~CropController()
@@ -67,6 +70,9 @@ void CropController::setRangeSliders(int xMin, int xMax, int yMin, int yMax, int
 	ui.xRangeSlider->blockSignals(xb);
 	ui.yRangeSlider->blockSignals(yb);
 	ui.zRangeSlider->blockSignals(zb);
+
+	// Recompute Save-enabled state after establishing full ranges
+	updateSaveButtonState();
 }
 
 void CropController::onExternalCroppingChanged(bool enabled)
@@ -84,11 +90,6 @@ void CropController::on_defineButton_toggled(bool checked)
 	emit defineCropToggled(checked);
 }
 
-void CropController::on_applyButton_clicked()
-{
-	emit applyCropRequested();
-}
-
 void CropController::on_resetButton_clicked()
 {
 	// Reset sliders to full ranges (min, max) to match VolumeControlsWidget behavior
@@ -102,10 +103,14 @@ void CropController::on_resetButton_clicked()
 		ui.yRangeSlider->minimumValue(), ui.yRangeSlider->maximumValue(),
 		ui.zRangeSlider->minimumValue(), ui.zRangeSlider->maximumValue()
 	);
+
+	// Update Save button state after reset (now same as input, so Save should be disabled)
+	updateSaveButtonState();
 }
 
 void CropController::on_saveButton_clicked()
 {
+	// Save is the single commit action now.
 	emit saveCroppedRequested();
 }
 
@@ -118,6 +123,7 @@ void CropController::on_xRangeSlider_valuesChanged(int min, int max)
 		ui.yRangeSlider->minimumValue(), ui.yRangeSlider->maximumValue(),
 		ui.zRangeSlider->minimumValue(), ui.zRangeSlider->maximumValue()
 	);
+	updateSaveButtonState();
 }
 
 void CropController::on_yRangeSlider_valuesChanged(int min, int max)
@@ -129,6 +135,7 @@ void CropController::on_yRangeSlider_valuesChanged(int min, int max)
 		min, max,
 		ui.zRangeSlider->minimumValue(), ui.zRangeSlider->maximumValue()
 	);
+	updateSaveButtonState();
 }
 
 void CropController::on_zRangeSlider_valuesChanged(int min, int max)
@@ -140,15 +147,15 @@ void CropController::on_zRangeSlider_valuesChanged(int min, int max)
 		ui.yRangeSlider->minimumValue(), ui.yRangeSlider->maximumValue(),
 		min, max
 	);
+	updateSaveButtonState();
 }
 
 void CropController::setSiblingControlsEnabled(bool on)
 {
-	// The Define button is allowed to remain enabled; everything else is toggled.
-	// Keep Apply / Reset / Save buttons and sliders in disabled state when not defining.
-	ui.applyButton->setEnabled(on);
 	ui.resetButton->setEnabled(on);
-	ui.saveButton->setEnabled(on);
+	// Save should only be enabled when defining AND when extents produce a valid, smaller-than-input volume.
+	// updateSaveButtonState() will take care of that.
+	updateSaveButtonState();
 
 	ui.xRangeSlider->setEnabled(on);
 	ui.yRangeSlider->setEnabled(on);
@@ -165,4 +172,37 @@ void CropController::updateLabels()
 	ui.xMaxLabel->setText(QString::number(ui.xRangeSlider->maximumValue()));
 	ui.yMaxLabel->setText(QString::number(ui.yRangeSlider->maximumValue()));
 	ui.zMaxLabel->setText(QString::number(ui.zRangeSlider->maximumValue()));
+}
+
+// New helper: enable Save only when:
+// - Define mode is active (ui.defineButton checked),
+// - the selected extents produce positive dimensions on each axis,
+// - AND the selected extents are strictly smaller than the full image extents on at least one axis.
+void CropController::updateSaveButtonState()
+{
+	// If no UI elements available bail out defensively.
+	if (!ui.saveButton || !ui.xRangeSlider || !ui.yRangeSlider || !ui.zRangeSlider || !ui.defineButton) return;
+
+	// Must be in define mode to allow save
+	if (!ui.defineButton->isChecked()) {
+		ui.saveButton->setEnabled(false);
+		return;
+	}
+
+	int xmin = ui.xRangeSlider->minimumValue();
+	int xmax = ui.xRangeSlider->maximumValue();
+	int ymin = ui.yRangeSlider->minimumValue();
+	int ymax = ui.yRangeSlider->maximumValue();
+	int zmin = ui.zRangeSlider->minimumValue();
+	int zmax = ui.zRangeSlider->maximumValue();
+
+	// positive dimensions
+	bool positive = (xmax - xmin + 1) > 0 && (ymax - ymin + 1) > 0 && (zmax - zmin + 1) > 0;
+
+	// different from full extents?
+	bool smaller = (xmin != ui.xRangeSlider->minimum()) || (xmax != ui.xRangeSlider->maximum()) ||
+		(ymin != ui.yRangeSlider->minimum()) || (ymax != ui.yRangeSlider->maximum()) ||
+		(zmin != ui.zRangeSlider->minimum()) || (zmax != ui.zRangeSlider->maximum());
+
+	ui.saveButton->setEnabled(positive && smaller);
 }

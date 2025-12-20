@@ -54,14 +54,13 @@ WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 	// There are no separate define/apply/save buttons in the UI; ensure legacy pointers are null
 	m_croppingContainer = nullptr;
 	m_btnDefineCrop = nullptr;
-	m_btnApplyCrop = nullptr;
 	m_btnSaveCropped = nullptr;
 	m_btnLoadCropped = nullptr;
 
 	// Wire CropController signals to existing slots/signals
 	if (auto* crop = qobject_cast<CropController*>(m_customCroppingWidget.data())) {
 		connect(crop, &CropController::defineCropToggled, this, [this](bool) { emit defineCropRequested(); });
-		connect(crop, &CropController::applyCropRequested, this, &WorkflowPanelWidget::onApplyCropClicked);
+		// Apply step removed from the UI/flow - no connection to onApplyCropClicked.
 		connect(crop, &CropController::saveCroppedRequested, this, &WorkflowPanelWidget::onSaveCroppedClicked);
 		// Forward croppingRegionChanged so external owners can react in real time.
 		connect(crop, &CropController::croppingRegionChanged,
@@ -240,7 +239,6 @@ void WorkflowPanelWidget::setCroppingEnabled(bool on)
 
 	// Keep legacy button pointers in sync if present
 	if (m_btnDefineCrop) m_btnDefineCrop->setEnabled(on);
-	if (m_btnApplyCrop) m_btnApplyCrop->setEnabled(on);
 	if (m_btnLoadCropped) m_btnLoadCropped->setEnabled(on);
 	if (m_btnSaveCropped) m_btnSaveCropped->setEnabled(on);
 
@@ -336,11 +334,6 @@ void WorkflowPanelWidget::onDefineCropClicked()
 	emit defineCropRequested();
 }
 
-void WorkflowPanelWidget::onApplyCropClicked()
-{
-	emit applyCropRequested();
-}
-
 void WorkflowPanelWidget::onLoadCroppedClicked()
 {
 	emit loadCroppedRequested();
@@ -393,11 +386,6 @@ void WorkflowPanelWidget::setDefineCropEnabled(bool on)
 	if (m_btnDefineCrop) m_btnDefineCrop->setEnabled(on);
 }
 
-void WorkflowPanelWidget::setApplyCropEnabled(bool on)
-{
-	if (m_btnApplyCrop) m_btnApplyCrop->setEnabled(on);
-}
-
 void WorkflowPanelWidget::setSaveCroppedEnabled(bool on)
 {
 	if (m_btnSaveCropped) m_btnSaveCropped->setEnabled(on);
@@ -441,7 +429,6 @@ void WorkflowPanelWidget::applyState(ImageProcessingStateMachine::State s, bool 
 		expand = ExpandTarget::Cropping;
 		break;
 
-		case ImageProcessingStateMachine::ApplyingCrop:
 		case ImageProcessingStateMachine::ApplyingRotation:
 		case ImageProcessingStateMachine::ComputingThreshold:
 		case ImageProcessingStateMachine::Segmenting:

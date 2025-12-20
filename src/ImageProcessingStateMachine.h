@@ -16,15 +16,14 @@ public:
 		Idle = 0,
 		LoadingImage,         // step 1
 		DefiningCrop,         // step 2 (UI to define crop)
-		ApplyingCrop,         // step 3 (apply crop and save tmp)
-		LoadingCropped,       // step 4 (load & display cropped)
-		PlacingFiducials,     // step 5
-		InteractiveRotation,  // step 6 (interactive via widget)
-		ApplyingRotation,     // step 7 (apply rotation + save)
-		LoadingRotated,       // step 7b (reload rotated)
-		ComputingThreshold,   // step 8 (Otsu/histogram)
-		Segmenting,           // step 9 (region growing / isolate)
-		SavingSegment,        // step 10 (save result)
+		LoadingCropped,       // step 3 (load & display cropped)  <-- ApplyingCrop removed
+		PlacingFiducials,     // step 4
+		InteractiveRotation,  // step 5 (interactive via widget)
+		ApplyingRotation,     // step 6 (apply rotation + save)
+		LoadingRotated,       // step 6b (reload rotated)
+		ComputingThreshold,   // step 7 (Otsu/histogram)
+		Segmenting,           // step 8 (region growing / isolate)
+		SavingSegment,        // step 9 (save result)
 		Completed,
 		ErrorState
 	};
@@ -53,15 +52,12 @@ public:
 
 	// Add an external signal->state transition so UI widgets can drive the state machine directly.
 	// Example usage:
-	//   addExternalTransition(DefiningCrop, ApplyingCrop, widget, SIGNAL(applyCropRequested()));
+	//   addExternalTransition(DefiningCrop, LoadingCropped, widget, SIGNAL(someSignal()));
 	bool addExternalTransition(State from, State to, QObject* sender, const char* signal);
 
 	// Query last derived path produced by this state machine (if any)
 	QString lastDerivedPath() const { return m_lastDerivedPath; }
 	bool inputIsDerived() const { return m_isDerived; }
-
-	//QState* applyingCropState() const { return m_applyingCrop; }
-	//QState* applyingRotationState() const { return m_applyingRotation; }
 
 public slots:
 	// External control
@@ -102,7 +98,9 @@ signals:
 	// Emitted when entering states: connect these to actual work.
 	void requestLoadImage();
 	void requestDefineCrop();
-	void requestApplyCrop();       // should create cropped tmp file and signal back path via VolumeView
+	// New: request the application to automatically save the cropped volume
+	void requestSaveCropped();
+	// requestApplyCrop removed (Apply step no longer part of state machine)
 	void requestLoadCropped();
 	void requestPlaceFiducials();
 	void requestStartInteractiveRotation();
@@ -124,7 +122,7 @@ private:
 	QState* m_idle = nullptr;
 	QState* m_loading = nullptr;
 	QState* m_definingCrop = nullptr;
-	QState* m_applyingCrop = nullptr;
+	// m_applyingCrop removed
 	QState* m_loadingCropped = nullptr;
 	QState* m_placingFiducials = nullptr;
 	QState* m_interactiveRotation = nullptr;

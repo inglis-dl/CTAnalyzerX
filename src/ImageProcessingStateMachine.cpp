@@ -6,6 +6,9 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QDebug>
+#include <QFile>
+#include <QJsonDocument>
+#include <QDir>
 
 QAbstractState* ImageProcessingStateMachine::stateForEnum(State s) const
 {
@@ -13,8 +16,7 @@ QAbstractState* ImageProcessingStateMachine::stateForEnum(State s) const
 		case Idle:               return m_idle;
 		case LoadingImage:       return m_loading;
 		case DefiningCrop:       return m_definingCrop;
-		case ApplyingCrop:       return m_applyingCrop;
-		case LoadingCropped:     return m_loadingCropped;
+		case LoadingCropped:     return m_loadingCropped; // ApplyingCrop removed
 		case PlacingFiducials:   return m_placingFiducials;
 		case InteractiveRotation:return m_interactiveRotation;
 		case ApplyingRotation:   return m_applyingRotation;
@@ -36,7 +38,7 @@ ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 	m_idle = new QState(m_machine);
 	m_loading = new QState(m_machine);
 	m_definingCrop = new QState(m_machine);
-	m_applyingCrop = new QState(m_machine);
+	// m_applyingCrop removed
 	m_loadingCropped = new QState(m_machine);
 	m_placingFiducials = new QState(m_machine);
 	m_interactiveRotation = new QState(m_machine);
@@ -50,8 +52,11 @@ ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 	// transitions (use old SIGNAL macro for readability in QState)
 	m_idle->addTransition(this, SIGNAL(started()), m_loading);
 	m_loading->addTransition(this, SIGNAL(imageLoaded()), m_definingCrop);
-	m_definingCrop->addTransition(this, SIGNAL(cropDefined()), m_applyingCrop);
-	m_applyingCrop->addTransition(this, SIGNAL(cropApplied()), m_loadingCropped);
+
+	// Previously: defining->applying->loadingCropped
+	// Apply step removed: transition directly from DefiningCrop -> LoadingCropped on cropApplied
+	m_definingCrop->addTransition(this, SIGNAL(cropApplied()), m_loadingCropped);
+
 	m_loadingCropped->addTransition(this, SIGNAL(croppedLoaded()), m_placingFiducials);
 	m_placingFiducials->addTransition(this, SIGNAL(fiducialsPlaced()), m_interactiveRotation);
 	m_interactiveRotation->addTransition(this, SIGNAL(interactiveRotationFinished()), m_applyingRotation);
@@ -62,7 +67,7 @@ ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 	m_saving->addTransition(this, SIGNAL(saved()), m_final);
 
 	// cancel from most states -> idle
-	QList<QState*> cancellable = { m_loading, m_definingCrop, m_applyingCrop, m_loadingCropped,
+	QList<QState*> cancellable = { m_loading, m_definingCrop, m_loadingCropped,
 								   m_placingFiducials, m_interactiveRotation, m_applyingRotation,
 								   m_loadingRotated, m_computingThreshold, m_segmenting, m_saving };
 	for (QState* s : cancellable) {
@@ -83,11 +88,7 @@ ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 		emit stateChanged(m_currentState);
 		emit requestDefineCrop();
 	});
-	connect(m_applyingCrop, &QState::entered, this, [this]() {
-		m_currentState = ApplyingCrop;
-		emit stateChanged(m_currentState);
-		emit requestApplyCrop();
-	});
+	// m_applyingCrop entry handler removed
 	connect(m_loadingCropped, &QState::entered, this, [this]() {
 		m_currentState = LoadingCropped;
 		emit stateChanged(m_currentState);
@@ -162,6 +163,12 @@ ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 
 	m_machine->setInitialState(m_idle);
 	m_machine->start();
+
+	// When UI/worker notifies that the crop was defined, ask the application to save it automatically.
+	// The application (MainWindow) should perform the save and then call notifyCropApplied()/notifyCroppedLoaded().
+	connect(this, &ImageProcessingStateMachine::cropDefined, this, [this]() {
+		emit requestSaveCropped();
+	});
 }
 
 void ImageProcessingStateMachine::start() { Q_EMIT started(); }
@@ -188,36 +195,84 @@ bool ImageProcessingStateMachine::readSidecarForInput()
 	return true;
 }
 
-// New: append a workflow step entry to an image sidecar's history
+// Add near other helper implementations (e.g., notifyCropDefined...) — implement sidecar helpers.
+bool ImageProcessingStateMachine::writeCropSidecarForOutput(const QString& outPath, const QJsonObject& params)
+{
+	// Write a sidecar JSON next to the produced output file describing the crop.
+	// Also append an entry to the original input image's sidecar history (if available).
+	if (outPath.isEmpty()) return false;
+
+	// Prepare sidecar object for the derived output
+	QJsonObject outSidecar = params; // copy provided params
+	outSidecar.insert(QStringLiteral("derived_from"), m_inputFile);
+	outSidecar.insert(QStringLiteral("writer_timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+
+	// Write output sidecar next to outPath (basename.json)
+	QFileInfo outFi(outPath);
+	const QString outSidecarPath = QDir(outFi.absolutePath()).filePath(outFi.completeBaseName() + QStringLiteral(".json"));
+
+	QFile outFile(outSidecarPath);
+	if (!outFile.open(QIODevice::WriteOnly)) {
+		qWarning() << "ImageProcessingStateMachine::writeCropSidecarForOutput: failed to open" << outSidecarPath;
+		return false;
+	}
+	QJsonDocument outDoc(outSidecar);
+	outFile.write(outDoc.toJson(QJsonDocument::Indented));
+	outFile.close();
+
+	// Append a history entry into the original input's sidecar so provenance is preserved.
+	if (!m_inputFile.isEmpty()) {
+		QJsonObject histParams = params;
+		histParams.insert(QStringLiteral("output"), outPath);
+		bool ok = appendHistoryToSidecar(m_inputFile, QStringLiteral("crop"), histParams);
+		if (!ok) {
+			qWarning() << "ImageProcessingStateMachine::writeCropSidecarForOutput: failed to append history to input sidecar for" << m_inputFile;
+			// still consider success for writing the output sidecar
+		}
+	}
+
+	return true;
+}
+
 bool ImageProcessingStateMachine::appendHistoryToSidecar(const QString& imagePath, const QString& stepName, const QJsonObject& params)
 {
-	if (imagePath.isEmpty()) return false;
-	QJsonObject side = JsonUtils::readJsonSidecar(imagePath);
-	QJsonArray history = side.value(QStringLiteral("history")).toArray();
+	if (imagePath.isEmpty() || stepName.isEmpty()) return false;
+
+	QFileInfo fi(imagePath);
+	const QString sidecarPath = QDir(fi.absolutePath()).filePath(fi.completeBaseName() + QStringLiteral(".json"));
+
+	// Read existing sidecar if present
+	QJsonObject rootObj;
+	if (QFile::exists(sidecarPath)) {
+		QFile in(sidecarPath);
+		if (in.open(QIODevice::ReadOnly)) {
+			const QByteArray data = in.readAll();
+			in.close();
+			QJsonDocument doc = QJsonDocument::fromJson(data);
+			if (doc.isObject()) rootObj = doc.object();
+		}
+	}
+
+	// Prepare history entry
 	QJsonObject entry;
 	entry.insert(QStringLiteral("step"), stepName);
 	entry.insert(QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
 	entry.insert(QStringLiteral("params"), params);
-	history.append(entry);
-	side.insert(QStringLiteral("history"), history);
-	return JsonUtils::writeJsonSidecar(imagePath, side);
-}
 
-// New: write crop sidecar for produced outPath and append history; update internal lastDerivedPath
-bool ImageProcessingStateMachine::writeCropSidecarForOutput(const QString& outPath, const QJsonObject& params)
-{
-	if (outPath.isEmpty()) return false;
-	// write primary sidecar structure
-	if (!JsonUtils::writeCropSidecar(outPath, m_inputFile, params)) {
-		qWarning() << "ImageProcessingStateMachine: failed to write crop sidecar for" << outPath;
+	// Append to history array
+	QJsonArray history = rootObj.value(QStringLiteral("history")).toArray();
+	history.append(entry);
+	rootObj.insert(QStringLiteral("history"), history);
+
+	// Persist sidecar
+	QFile out(sidecarPath);
+	if (!out.open(QIODevice::WriteOnly)) {
+		qWarning() << "ImageProcessingStateMachine::appendHistoryToSidecar: failed to open" << sidecarPath;
 		return false;
 	}
-	// append history entry
-	if (!appendHistoryToSidecar(outPath, QStringLiteral("crop"), params)) {
-		qWarning() << "ImageProcessingStateMachine: failed to append history to sidecar for" << outPath;
-		// not fatal
-	}
-	m_lastDerivedPath = outPath;
+	QJsonDocument outDoc(rootObj);
+	out.write(outDoc.toJson(QJsonDocument::Indented));
+	out.close();
 	return true;
 }
 

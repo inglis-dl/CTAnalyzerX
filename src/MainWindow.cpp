@@ -8,6 +8,7 @@
 //#include "VolumeRotationWidget.h"   // removed: rotation widget handled via WorkflowPanelWidget now
 #include "JsonSettings.h"
 #include "WorkflowPanelWidget.h"
+#include "CropExporter.h"
 
 #include <QFileDialog>
 #include <QMessageBox>
@@ -37,6 +38,8 @@
 #include <QColor>
 #include <QPalette>
 #include <QTimer>
+#include <QtConcurrent/QtConcurrent> // <--- add for background save
+#include <QDir>
 
 #include <vtkVersion.h>   // VTK version macros
 #include <vtkEventQtSlotConnect.h>
@@ -182,28 +185,11 @@ MainWindow::MainWindow(QWidget* parent)
 			this, &MainWindow::onProcessingRequestLoadImage);
 	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestDefineCrop,
 			this, &MainWindow::onProcessingRequestDefineCrop);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestApplyCrop,
-			this, &MainWindow::onProcessingRequestApplyCrop);
 	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestLoadCropped,
 			this, &MainWindow::onProcessingRequestLoadCropped);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestPlaceFiducials,
-			this, &MainWindow::onProcessingRequestPlaceFiducials);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestStartInteractiveRotation,
-			this, &MainWindow::onProcessingRequestStartInteractiveRotation);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestApplyRotation,
-			this, &MainWindow::onProcessingRequestApplyRotation);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestLoadRotated,
-			this, &MainWindow::onProcessingRequestLoadRotated);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestComputeThreshold,
-			this, &MainWindow::onProcessingRequestComputeThreshold);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestSegment,
-			this, &MainWindow::onProcessingRequestSegment);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestSaveSegment,
-			this, &MainWindow::onProcessingRequestSaveSegment);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::finished,
-			this, &MainWindow::onProcessingFinished);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::error,
-			this, &MainWindow::onProcessingError);
+	// State-machine-driven automatic save of cropped volume
+	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestSaveCropped,
+			this, &MainWindow::onProcessingRequestSaveCropped);
 
 	// Replace ad-hoc lambda: use the centralized updateUiForState handler.
 	connect(m_processingStateMachine, &ImageProcessingStateMachine::stateChanged,
@@ -233,34 +219,80 @@ MainWindow::MainWindow(QWidget* parent)
 		// Load image button -> open file dialog (same as ActionOpen)
 		connect(m_workflowPanelWidget, &WorkflowPanelWidget::loadImageRequested, this, &MainWindow::onActionOpen);
 
-		// When user clicks "Define Crop" we only enable the Apply button (user must click Apply to proceed)
-		connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested, this, [this]() {
-			if (m_workflowPanelWidget) {
-				m_workflowPanelWidget->setApplyCropEnabled(true);
-				// Keep define enabled so user can re-open box if needed
-			}
-		});
+		// Define Crop: no longer enable an Apply button (Apply removed from UI).
+		// Keep any required behavior in the CropController/WorkflowPanelWidget (Save enabling is handled there).
 
-		// When user clicks "Apply Crop" drive the state machine transition directly via QStateMachine.
-		// This leverages the QState transitions instead of emitting the intermediate notify slot here.
-		if (m_processingStateMachine) {
-			m_processingStateMachine->addExternalTransition(
-				ImageProcessingStateMachine::DefiningCrop,
-				ImageProcessingStateMachine::ApplyingCrop,
-				m_workflowPanelWidget,
-				SIGNAL(applyCropRequested()));
+		// Save cropped request -> prompt for path and start save worker
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested, this, [this]() {
+			if (!m_cropExporter) {
+				statusBar()->showMessage(tr("No crop exporter available"), 5000);
+				return;
+			}
+
+			// The CropExporter uses the input file path (set when opening the image)
+			// to create an automatic output filename. Call apply() to perform crop+write.
+			// CropExporter emits writeStarted/writeProgress/writeFinished which are
+			// connected to MainWindow to update the loader UI.
+			m_cropExporter->apply();
+		});
+	}
+
+	// Instantiate CropExporter (stateless w.r.t. stakeholders). MainWindow performs the wiring.
+	if (!m_cropExporter) {
+		m_cropExporter = new CropExporter(this);
+
+		// Panel -> exporter: extents only (Apply removed; Save triggers export)
+		if (m_workflowPanelWidget) {
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
+					m_cropExporter, &CropExporter::setCropRegion, Qt::UniqueConnection);
+			// do not connect applyCropRequested -> m_cropExporter->apply() any more
 		}
 
-		// Save cropped request -> prompt for path then (TODO) start save worker
-		connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested, this, [this]() {
-			QString out = QFileDialog::getSaveFileName(this, tr("Save Cropped Volume"), "", tr("NIfTI (*.nii *.nii.gz);;All Files (*)"));
-			if (out.isEmpty()) return;
-			// TODO: start save worker that writes the cropped file to 'out'.
-			// For now show a stub message and enable next workflow items after manual intervention.
-			QMessageBox::information(this, tr("Save Cropped"), tr("Cropped volume would be saved to:\n%1\n\n(Implement save worker.)").arg(out));
-			// After a real save completes, notify the state machine or directly advance:
-			// m_processingStateMachine->notifyCroppedLoaded();
-		});
+		// MainWindow hooks: show loader/progress like ImageLoader
+		connect(m_cropExporter, &CropExporter::writeStarted, this, &MainWindow::showProgressStart, Qt::QueuedConnection);
+		connect(m_cropExporter, &CropExporter::writeProgress, this, &MainWindow::showProgressValue, Qt::QueuedConnection);
+		connect(m_cropExporter, &CropExporter::writeFinished, this, [this](const QString& path, bool success, const QString& msg) {
+			// always hide loader
+			this->showProgressEnd();
+
+			if (success && !path.isEmpty()) {
+				addToRecentFiles(path);
+				writeSettings();
+
+				// Show full path of saved .nii in the status bar
+				statusBar()->showMessage(tr("Saved cropped volume: %1").arg(path), 8000);
+
+				// Automatically load the produced cropped volume into the Lightbox
+				// and update the workflow UI: disable cropping and enable fiducials.
+				// openFile will set the image pipeline and update the lightbox.
+				openFile(path);
+
+				// disable cropping UI and enable fiducials panel
+				if (m_workflowPanelWidget) {
+					m_workflowPanelWidget->setCroppingEnabled(false);
+					m_workflowPanelWidget->setFiducialsEnabled(true);
+				}
+
+				// Tell the state machine the crop was applied and loaded so it can continue the workflow.
+				// notifyCropApplied() triggers the DefiningCrop -> LoadingCropped transition.
+				// notifyCroppedLoaded() triggers LoadingCropped -> PlacingFiducials transition.
+				if (m_processingStateMachine) {
+					m_processingStateMachine->notifyCropApplied();
+					m_processingStateMachine->notifyCroppedLoaded();
+				}
+			}
+			else {
+				// show failure reason
+				statusBar()->showMessage(tr("Crop write failed: %1").arg(msg), 6000);
+			}
+		}, Qt::QueuedConnection);
+
+		// Forward sidecar requests to ImageProcessingStateMachine (it owns sidecar persistence)
+		if (m_processingStateMachine) {
+			connect(m_cropExporter, &CropExporter::sidecarUpdateRequested,
+					m_processingStateMachine, &ImageProcessingStateMachine::writeCropSidecarForOutput,
+					Qt::QueuedConnection);
+		}
 	}
 
 	setupPanelConnections();
@@ -760,6 +792,12 @@ void MainWindow::openFile(const QString& filePath)
 		// Update recent files list
 		addToRecentFiles(filePath);
 		writeSettings();
+
+		// Inform exporter about input pipeline and path so it can auto-generate output names later.
+		if (m_cropExporter && m_imageLoader) {
+			m_cropExporter->setInputConnection(m_imageLoader->GetOutputPort());
+			m_cropExporter->setInputFilePath(filePath);
+		}
 	}
 }
 
@@ -777,25 +815,25 @@ void MainWindow::onVtkStartEvent()
 {
 	// If we're already on the GUI thread update UI directly, otherwise queue it.
 	if (QThread::currentThread() == this->thread()) {
-		showLoaderStart();
+		showProgressStart();
 		// Ensure the progress bar is painted immediately while the read is running.
 		progressBar->update();
 		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	}
 	else {
-		QMetaObject::invokeMethod(this, "showLoaderStart", Qt::QueuedConnection);
+		QMetaObject::invokeMethod(this, "showProgressStart", Qt::QueuedConnection);
 	}
 }
 
 void MainWindow::onVtkEndEvent()
 {
 	if (QThread::currentThread() == this->thread()) {
-		showLoaderEnd();
+		showProgressEnd();
 		progressBar->update();
 		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	}
 	else {
-		QMetaObject::invokeMethod(this, "showLoaderEnd", Qt::QueuedConnection);
+		QMetaObject::invokeMethod(this, "showProgressEnd", Qt::QueuedConnection);
 	}
 }
 
@@ -809,13 +847,13 @@ void MainWindow::onVtkProgressEvent()
 	// is blocking the event loop. Otherwise use a queued invocation.
 	if (QThread::currentThread() == this->thread()) {
 		// Throttle client-side if needed (keep it responsive), but do immediate update.
-		setLoaderProgress(value);
+		showProgressValue(value);
 		progressBar->update();
 		// brief event pump so the widget repaints while the blocking read continues
 		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	}
 	else {
-		QMetaObject::invokeMethod(this, "setLoaderProgress", Qt::QueuedConnection, Q_ARG(int, value));
+		QMetaObject::invokeMethod(this, "showProgressValue", Qt::QueuedConnection, Q_ARG(int, value));
 	}
 }
 
@@ -902,20 +940,20 @@ void MainWindow::dropEvent(QDropEvent* event)
 	event->acceptProposedAction();
 }
 
-void MainWindow::setLoaderProgress(int percent)
+void MainWindow::showProgressValue(int percent)
 {
 	progressBar->setValue(percent);
 	progressBar->setVisible(true);
 }
 
-void MainWindow::showLoaderStart()
+void MainWindow::showProgressStart()
 {
 	progressBar->setValue(0);
 	progressBar->setVisible(true);
 	progressBar->setEnabled(true);
 }
 
-void MainWindow::showLoaderEnd()
+void MainWindow::showProgressEnd()
 {
 	progressBar->setValue(100);
 	progressBar->setVisible(false);
@@ -946,7 +984,7 @@ void MainWindow::onProcessingRequestLoadImage()
 		qDebug() << "ImageProcessingStateMachine requested load image but input path is empty.";
 
 		// Ensure loader UI is hidden if no path (openFile won't be called)
-		showLoaderEnd();
+		showProgressEnd();
 		return;
 	}
 
@@ -957,7 +995,7 @@ void MainWindow::onProcessingRequestLoadImage()
 	}
 
 	// Ensure loader UI is visible
-	showLoaderStart();
+	showProgressStart();
 
 	// Perform the actual load using existing helper (synchronous)
 	openFile(path);
@@ -972,7 +1010,7 @@ void MainWindow::onProcessingRequestLoadImage()
 	}
 
 	// Stop loader UI (openFile and VTK events may already have toggled this; safe to call)
-	showLoaderEnd();
+	showProgressEnd();
 
 	if (success) {
 		// Do not manipulate WorkflowPanelWidget here — UI state is centrally driven
@@ -1007,13 +1045,26 @@ void MainWindow::onProcessingRequestDefineCrop()
 	// TODO: show/raise cropping UI and wire completion to m_processingStateMachine->notifyCropDefined()
 }
 
-void MainWindow::onProcessingRequestApplyCrop()
+void MainWindow::onProcessingRequestSaveCropped()
 {
-	// Apply crop should start a worker that creates a cropped temporary file,
-	// then call m_processingStateMachine->notifyCropApplied() or notifyFailed(...)
-	statusBar()->showMessage(tr("StateMachine: applying crop (starting worker)"), 4000);
-	qDebug() << "StateMachine requested: apply crop";
-	// TODO: start crop worker; on completion call notifyCropApplied()/notifyFailed()
+	// Automatic save requested by the state machine.
+	if (!m_processingStateMachine) return;
+	if (!m_cropExporter) {
+		statusBar()->showMessage(tr("No crop exporter available"), 5000);
+		return;
+	}
+
+	const QString inputPath = m_processingStateMachine->inputFilePath();
+	if (inputPath.isEmpty()) {
+		statusBar()->showMessage(tr("StateMachine requested save but no input path is set"), 5000);
+		return;
+	}
+
+	// The CropExporter will auto-generate an output filename based on the input file path.
+	// Show loader and call apply() synchronously; CropExporter emits progress/finished signals.
+	showProgressStart();
+	m_cropExporter->apply();
+	// writeFinished handler (connected earlier) will hide the loader and handle post-save actions.
 }
 
 void MainWindow::onProcessingRequestLoadCropped()
@@ -1076,7 +1127,7 @@ void MainWindow::onProcessingRequestSaveSegment()
 void MainWindow::onProcessingFinished()
 {
 	// Stop any loader UI
-	showLoaderEnd();
+	showProgressEnd();
 
 	// Do not directly drive WorkflowPanelWidget here. UI updates are performed by
 	// updateUiForState() in response to the state machine's stateChanged() signal.
@@ -1094,7 +1145,7 @@ void MainWindow::onProcessingFinished()
 void MainWindow::onProcessingError(const QString& reason)
 {
 	// Stop loader visuals
-	showLoaderEnd();
+	showProgressEnd();
 
 	qDebug() << "ImageProcessingStateMachine error:" << reason;
 	QMessageBox::critical(this, tr("Processing Error"), reason);
@@ -1138,7 +1189,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 			m_workflowPanelWidget->applyState(s, imgPresent);
 		}
 		// Hide loader if idle
-		showLoaderEnd();
+		showProgressEnd();
 		break;
 
 		case ImageProcessingStateMachine::LoadingImage:
@@ -1150,7 +1201,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
 		}
-		showLoaderStart();
+		showProgressStart();
 		break;
 
 		case ImageProcessingStateMachine::DefiningCrop:
@@ -1162,10 +1213,9 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
 		}
-		showLoaderEnd();
+		showProgressEnd();
 		break;
 
-		case ImageProcessingStateMachine::ApplyingCrop:
 		case ImageProcessingStateMachine::ApplyingRotation:
 		case ImageProcessingStateMachine::ComputingThreshold:
 		case ImageProcessingStateMachine::Segmenting:
@@ -1178,7 +1228,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
 		}
-		showLoaderStart();
+		showProgressStart();
 		break;
 
 		case ImageProcessingStateMachine::PlacingFiducials:
@@ -1190,7 +1240,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
 		}
-		showLoaderEnd();
+		showProgressEnd();
 		break;
 
 		case ImageProcessingStateMachine::InteractiveRotation:
@@ -1201,7 +1251,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
 		}
-		showLoaderEnd();
+		showProgressEnd();
 		break;
 
 		default:
@@ -1213,7 +1263,28 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
 		}
-		showLoaderEnd();
+		showProgressEnd();
 		break;
 	}
+
+	// Map enum to human-readable name for the status bar
+	const char* name = "Unknown";
+	switch (s) {
+		case ImageProcessingStateMachine::Idle: name = "Idle"; break;
+		case ImageProcessingStateMachine::LoadingImage: name = "Loading Image"; break;
+		case ImageProcessingStateMachine::DefiningCrop: name = "Defining Crop"; break;
+		case ImageProcessingStateMachine::LoadingCropped: name = "Loading Cropped"; break;
+		case ImageProcessingStateMachine::PlacingFiducials: name = "Placing Fiducials"; break;
+		case ImageProcessingStateMachine::InteractiveRotation: name = "Interactive Rotation"; break;
+		case ImageProcessingStateMachine::ApplyingRotation: name = "Applying Rotation"; break;
+		case ImageProcessingStateMachine::LoadingRotated: name = "Loading Rotated"; break;
+		case ImageProcessingStateMachine::ComputingThreshold: name = "Computing Threshold"; break;
+		case ImageProcessingStateMachine::Segmenting: name = "Segmenting"; break;
+		case ImageProcessingStateMachine::SavingSegment: name = "Saving Segment"; break;
+		case ImageProcessingStateMachine::Completed: name = "Completed"; break;
+		case ImageProcessingStateMachine::ErrorState: name = "Error"; break;
+		default: name = "Unknown"; break;
+	}
+	// Show a short status bar message describing the current workflow state.
+	statusBar()->showMessage(tr("Workflow: %1").arg(QString::fromUtf8(name)), 2500);
 }

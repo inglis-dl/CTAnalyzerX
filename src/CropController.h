@@ -36,9 +36,6 @@ signals:
 	// emitted when user toggles the Define button (enter/exit define mode)
 	void defineCropToggled(bool on);
 
-	// user requests to apply the crop (Apply button)
-	void applyCropRequested();
-
 	// user requests to save the cropped volume (Save button)
 	void saveCroppedRequested();
 
@@ -49,7 +46,7 @@ signals:
 
 private slots:
 	void on_defineButton_toggled(bool checked);
-	void on_applyButton_clicked();
+	// on_applyButton_clicked removed: Apply step eliminated; use Save only.
 	void on_resetButton_clicked();
 	void on_saveButton_clicked();
 
@@ -62,4 +59,5 @@ private:
 	Ui::CropController ui;
 	void setSiblingControlsEnabled(bool on);
 	void updateLabels();
+	void updateSaveButtonState(); // helper added/used by implementation
 };

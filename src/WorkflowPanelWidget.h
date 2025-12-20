@@ -71,9 +71,9 @@ signals:
 	// High-level workflow actions driven by the panel controls
 	void loadImageRequested();
 	void defineCropRequested();
-	void applyCropRequested();
+	// applyCropRequested removed: Apply step eliminated in favor of Save-only flow.
 	void loadCroppedRequested();
-	void saveCroppedRequested(); // new: request to save cropped volume (user chooses path)
+	void saveCroppedRequested(); // request to save cropped volume (user chooses path)
 
 	// forwarded cropping region (real-time updates from CropController)
 	void croppingRegionChanged(int xMin, int xMax,
@@ -96,7 +96,7 @@ private slots:
 	// UI handlers for placeholder buttons
 	void onLoadImageClicked();
 	void onDefineCropClicked();
-	void onApplyCropClicked();
+	// onApplyCropClicked removed: Apply step eliminated.
 	void onLoadCroppedClicked();
 	void onSaveCroppedClicked();
 
@@ -126,7 +126,6 @@ private:
 	CollapsibleGroupBox* m_grpCropping = nullptr;
 	QWidget* m_croppingContainer = nullptr;
 	QPushButton* m_btnDefineCrop = nullptr;
-	QPushButton* m_btnApplyCrop = nullptr;
 	QPushButton* m_btnSaveCropped = nullptr; // new
 	QPushButton* m_btnLoadCropped = nullptr;
 

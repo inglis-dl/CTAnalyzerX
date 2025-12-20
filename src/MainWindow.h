@@ -18,7 +18,7 @@ namespace Ui {
 class vtkImageData;
 class ImageLoader;
 class vtkEventQtSlotConnect;
-// forward declare - workflow panel (left)
+class CropExporter;
 class WorkflowPanelWidget;
 
 class MainWindow : public QMainWindow
@@ -50,14 +50,14 @@ private slots:
 	void onVtkStartEvent();
 	void onVtkEndEvent();
 	void onVtkProgressEvent();
-	void setLoaderProgress(int percent);
-	void showLoaderStart();
-	void showLoaderEnd();
+	void showProgressValue(int percent);
+	void showProgressStart();
+	void showProgressEnd();
 
 	// ImageProcessingStateMachine integration slots
 	void onProcessingRequestLoadImage();
 	void onProcessingRequestDefineCrop();
-	void onProcessingRequestApplyCrop();
+	void onProcessingRequestSaveCropped();
 	void onProcessingRequestLoadCropped();
 	void onProcessingRequestPlaceFiducials();
 	void onProcessingRequestStartInteractiveRotation();
@@ -97,6 +97,9 @@ private:
 
 	// Image processing state machine
 	ImageProcessingStateMachine* m_processingStateMachine = nullptr;
+
+	// Crop exporter (signal/slot driven, no direct ownership of UI/loader/state machine pointers)
+	CropExporter* m_cropExporter = nullptr;
 
 	// Note: VolumeControlsWidget / VolumeRotationWidget usage has been removed
 	// per refactor to use WorkflowPanelWidget (left) and LightboxWidget (right).
