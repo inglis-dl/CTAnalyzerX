@@ -1,5 +1,4 @@
-#ifndef MAINWINDOW_H
-#define MAINWINDOW_H
+#pragma once
 
 #include <QMainWindow>
 #include <QStringList>
@@ -37,7 +36,7 @@ protected:
 	void keyPressEvent(QKeyEvent* event) override;
 	void dragEnterEvent(QDragEnterEvent* event) override;
 	void dropEvent(QDropEvent* event) override;
-	void closeEvent(QCloseEvent* event) override; // persist settings on close
+	void closeEvent(QCloseEvent* event) override;
 	void showEvent(QShowEvent* e) override;
 
 private slots:
@@ -56,6 +55,8 @@ private slots:
 
 	// ImageProcessingStateMachine integration slots
 	void onProcessingRequestLoadImage();
+	// Slot invoked when state machine asks MainWindow to open a specific image (project load)
+	void onProcessingRequestOpenImage(const QString& path);
 	void onProcessingRequestDefineCrop();
 	void onProcessingRequestSaveCropped();
 	void onProcessingRequestLoadCropped();
@@ -73,9 +74,19 @@ private:
 	void setupPanelConnections();
 	void addToRecentFiles(const QString& filePath);
 	void updateRecentFilesMenu();
+	// Verify and prune recent caches at startup
+	void verifySettings();                 // one-time call on first show
+	void verifyRecentFiles();              // prune recentFiles list
+	void verifyRecentProjects();           // prune recentProjects list
 	void loadRecentFiles();
 	void saveRecentFiles();
 	void openFile(const QString& filePath);
+
+	// Helper used by both state-machine-driven loads and project-driven opens.
+	// - path: file to open
+	// - showProgress: when true, show loader UI and disable top-level actions.
+	// Returns true if the image was loaded successfully and the state machine was notified.
+	bool openAndNotifyImageLoaded(const QString& path, bool showProgress);
 
 	// JSON-backed settings helpers
 	void readSettings();
@@ -86,6 +97,13 @@ private:
 
 	Ui::MainWindow* ui;
 	QStringList recentFiles;
+
+	// Projects (JSON sidecar) support
+	QStringList recentProjects;                  // most-recent first
+	QMenu* m_projectsMenu = nullptr;
+	// Ensure verifySettings runs once when the main window is first shown.
+	bool m_settingsVerified = false;
+
 	vtkSmartPointer<vtkImageData> currentImageData;
 	vtkSmartPointer<vtkEventQtSlotConnect> vtkConnections;
 	vtkSmartPointer<ImageLoader> m_imageLoader = nullptr;
@@ -101,8 +119,12 @@ private:
 	// Crop exporter (signal/slot driven, no direct ownership of UI/loader/state machine pointers)
 	CropExporter* m_cropExporter = nullptr;
 
-	// Note: VolumeControlsWidget / VolumeRotationWidget usage has been removed
-	// per refactor to use WorkflowPanelWidget (left) and LightboxWidget (right).
-};
+	// Projects menu helpers
+	void addToRecentProjects(const QString& projectPath);
+	void updateRecentProjectsMenu();
+	void clearRecentProjects();
+	void openProjectFile(const QString& sidecarPath);
 
-#endif // MAINWINDOW_H
+	// Slot invoked when state-machine indicates a project was loaded (so we can add to recents)
+	void onProjectLoaded(const QString& projectPath);
+};

@@ -1,12 +1,13 @@
 #pragma once
 
 #include <QObject>
-#include <QStateMachine>
-#include <QState>
-#include <QFinalState>
+#include <QJsonObject>
 #include <atomic>
-#include <QString>
-#include <QJsonObject> // new
+
+class QStateMachine;
+class QState;
+class QFinalState;
+class QAbstractState;
 
 class ImageProcessingStateMachine : public QObject
 {
@@ -14,16 +15,16 @@ class ImageProcessingStateMachine : public QObject
 public:
 	enum State {
 		Idle = 0,
-		LoadingImage,         // step 1
-		DefiningCrop,         // step 2 (UI to define crop)
-		LoadingCropped,       // step 3 (load & display cropped)  <-- ApplyingCrop removed
-		PlacingFiducials,     // step 4
-		InteractiveRotation,  // step 5 (interactive via widget)
-		ApplyingRotation,     // step 6 (apply rotation + save)
-		LoadingRotated,       // step 6b (reload rotated)
-		ComputingThreshold,   // step 7 (Otsu/histogram)
-		Segmenting,           // step 8 (region growing / isolate)
-		SavingSegment,        // step 9 (save result)
+		LoadingImage,
+		DefiningCrop,
+		LoadingCropped,
+		PlacingFiducials,
+		InteractiveRotation,
+		ApplyingRotation,
+		LoadingRotated,
+		ComputingThreshold,
+		Segmenting,
+		SavingSegment,
 		Completed,
 		ErrorState
 	};
@@ -45,14 +46,19 @@ public:
 	// New: sidecar / provenance helpers (owned by state machine)
 	// Read the JSON sidecar for the current input file into internal state
 	bool readSidecarForInput();
+	// Load a project JSON (sidecar) file and drive UI consumers via signals:
+	//  - requestOpenImage(path) -> MainWindow should open the image at path
+	//  - suggestedState(State) -> consumers (MainWindow / WorkflowPanelWidget) may update UI for next step
+	//  - projectLoaded(sidecarPath) -> project was parsed and is considered active
+	// Returns true if the project file was parsed successfully.
+	bool loadProjectSidecarFile(const QString& sidecarPath);
 	// Convenience: write a crop sidecar for an output derived image and append history
 	bool writeCropSidecarForOutput(const QString& outPath, const QJsonObject& params);
 	// Append a workflow step entry to an image's sidecar history
+	// This will schedule an asynchronous write and return true if scheduled.
 	bool appendHistoryToSidecar(const QString& imagePath, const QString& stepName, const QJsonObject& params);
 
 	// Add an external signal->state transition so UI widgets can drive the state machine directly.
-	// Example usage:
-	//   addExternalTransition(DefiningCrop, LoadingCropped, widget, SIGNAL(someSignal()));
 	bool addExternalTransition(State from, State to, QObject* sender, const char* signal);
 
 	// Query last derived path produced by this state machine (if any)
@@ -100,11 +106,10 @@ signals:
 	void requestDefineCrop();
 	// New: request the application to automatically save the cropped volume
 	void requestSaveCropped();
-	// requestApplyCrop removed (Apply step no longer part of state machine)
 	void requestLoadCropped();
 	void requestPlaceFiducials();
 	void requestStartInteractiveRotation();
-	void requestApplyRotation();   // should create rotated tmp file
+	void requestApplyRotation();
 	void requestLoadRotated();
 	void requestComputeThreshold();
 	void requestSegment();
@@ -117,12 +122,21 @@ signals:
 	// New: broadcast when internal state changes
 	void stateChanged(ImageProcessingStateMachine::State newState);
 
+	// New: sidecar persistence notifications (emitted when async write completes or fails)
+	void sidecarWritten(const QString& sidecarPath);
+	void sidecarWriteFailed(const QString& imagePath, const QString& reason);
+	// New: request UI to open a specific image file (path may be derived output or original source)
+	void requestOpenImage(const QString& imagePath);
+	// New: suggest a UI workflow state to be displayed (does not change internal QStateMachine state)
+	void suggestedState(ImageProcessingStateMachine::State suggested);
+	// Emitted when a project JSON (sidecar) is successfully loaded/parsed
+	void projectLoaded(const QString& projectPath);
+
 private:
 	QStateMachine* m_machine = nullptr;
 	QState* m_idle = nullptr;
 	QState* m_loading = nullptr;
 	QState* m_definingCrop = nullptr;
-	// m_applyingCrop removed
 	QState* m_loadingCropped = nullptr;
 	QState* m_placingFiducials = nullptr;
 	QState* m_interactiveRotation = nullptr;
