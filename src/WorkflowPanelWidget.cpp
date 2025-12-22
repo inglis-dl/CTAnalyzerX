@@ -232,9 +232,17 @@ void WorkflowPanelWidget::setCroppingEnabled(bool on)
 {
 	if (!m_grpCropping) return;
 
-	// If UI provided a CropController, forward enable/disable via that widget.
+	// Do NOT force the CropController's Define button ON when enabling the cropping group.
+	// We want the group to be available (user may press Define) but the Define button
+	// should remain OFF until the user explicitly toggles it.
+	// However, when disabling cropping we must ensure the CropController's Define
+	// button is also turned off to keep state consistent.
 	if (auto* c = qobject_cast<CropController*>(m_customCroppingWidget.data())) {
-		c->onExternalCroppingChanged(on);
+		if (!on) {
+			// Only propagate when disabling so the Define button becomes unchecked.
+			c->onExternalCroppingChanged(false);
+		}
+		// If enabling, do not call onExternalCroppingChanged(true) here.
 	}
 
 	// Keep legacy button pointers in sync if present
@@ -494,7 +502,6 @@ void WorkflowPanelWidget::setWindowLevelController(WindowLevelController* contro
 			this, &WorkflowPanelWidget::windowLevelAdjusted, Qt::UniqueConnection);
 }
 
-// New: let panel own forwarding to LightboxWidget for real-time cropping
 void WorkflowPanelWidget::setLightboxWidget(LightboxWidget* lightbox)
 {
 	// no-op if identical
@@ -507,6 +514,9 @@ void WorkflowPanelWidget::setLightboxWidget(LightboxWidget* lightbox)
 		// disconnect Lightbox extents -> CropController if previously connected
 		if (auto* crop = qobject_cast<CropController*>(m_customCroppingWidget.data())) {
 			disconnect(m_lightbox, &LightboxWidget::imageExtentsChanged, crop, &CropController::setRangeSliders);
+			// Also disconnect define/save wiring if previously connected
+			disconnect(crop, &CropController::defineCropToggled, nullptr, nullptr);
+			disconnect(crop, &CropController::saveCroppedRequested, nullptr, nullptr);
 		}
 		m_lightbox.clear();
 	}
@@ -523,5 +533,19 @@ void WorkflowPanelWidget::setLightboxWidget(LightboxWidget* lightbox)
 	if (auto* crop = qobject_cast<CropController*>(m_customCroppingWidget.data())) {
 		connect(m_lightbox, &LightboxWidget::imageExtentsChanged,
 				crop, &CropController::setRangeSliders, Qt::UniqueConnection);
+
+		// Connect the controller's outline visibility request to each view.
+		if (auto* xy = m_lightbox->getXYView()) {
+			connect(crop, &CropController::requestOutlineVisibility, xy, &SliceView::setOutlineVisible, Qt::UniqueConnection);
+		}
+		if (auto* xz = m_lightbox->getXZView()) {
+			connect(crop, &CropController::requestOutlineVisibility, xz, &SliceView::setOutlineVisible, Qt::UniqueConnection);
+		}
+		if (auto* yz = m_lightbox->getYZView()) {
+			connect(crop, &CropController::requestOutlineVisibility, yz, &SliceView::setOutlineVisible, Qt::UniqueConnection);
+		}
+		if (auto* vol = m_lightbox->getVolumeView()) {
+			connect(crop, &CropController::requestOutlineVisibility, vol, &VolumeView::setOutlineVisible, Qt::UniqueConnection);
+		}
 	}
 }

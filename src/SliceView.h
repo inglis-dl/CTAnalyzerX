@@ -118,6 +118,9 @@ private:
 	bool m_outlineVisible = false;
 	QColor m_outlineColor = QColor(255, 0, 0);
 
+	bool m_requestedCroppingEnabled = false;
+	int  m_requestedCroppingRegion[6] = { 0, -1, 0, -1, 0, -1 };
+
 	QLineEdit* m_editSliceIndex = nullptr;
 	QLabel* m_labelMinSlice = nullptr;
 	QLabel* m_labelMaxSlice = nullptr;

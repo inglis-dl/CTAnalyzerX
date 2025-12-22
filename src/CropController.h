@@ -44,9 +44,11 @@ signals:
 							  int yMin, int yMax,
 							  int zMin, int zMax);
 
+	// request views toggle outline visibility (connected to SliceView::setOutlineVisible)
+	void requestOutlineVisibility(bool visible);
+
 private slots:
 	void on_defineButton_toggled(bool checked);
-	// on_applyButton_clicked removed: Apply step eliminated; use Save only.
 	void on_resetButton_clicked();
 	void on_saveButton_clicked();
 
@@ -59,5 +61,5 @@ private:
 	Ui::CropController ui;
 	void setSiblingControlsEnabled(bool on);
 	void updateLabels();
-	void updateSaveButtonState(); // helper added/used by implementation
+	void updateSaveButtonState();
 };

@@ -82,12 +82,18 @@ void CropController::onExternalCroppingChanged(bool enabled)
 	QSignalBlocker guard(ui.defineButton);
 	ui.defineButton->setChecked(enabled);
 	setSiblingControlsEnabled(enabled);
+
+	// Keep outlines in sync with external cropping state
+	emit requestOutlineVisibility(enabled);
 }
 
 void CropController::on_defineButton_toggled(bool checked)
 {
 	setSiblingControlsEnabled(checked);
 	emit defineCropToggled(checked);
+
+	// Let views show/hide outline actors when define mode changes.
+	emit requestOutlineVisibility(checked);
 }
 
 void CropController::on_resetButton_clicked()
@@ -110,6 +116,10 @@ void CropController::on_resetButton_clicked()
 
 void CropController::on_saveButton_clicked()
 {
+	// Turn outlines off before committing the save so views won't request out-of-range data
+	// while the new image is written/loaded.
+	emit requestOutlineVisibility(false);
+
 	// Save is the single commit action now.
 	emit saveCroppedRequested();
 }
@@ -174,7 +184,7 @@ void CropController::updateLabels()
 	ui.zMaxLabel->setText(QString::number(ui.zRangeSlider->maximumValue()));
 }
 
-// New helper: enable Save only when:
+// enable Save only when:
 // - Define mode is active (ui.defineButton checked),
 // - the selected extents produce positive dimensions on each axis,
 // - AND the selected extents are strictly smaller than the full image extents on at least one axis.

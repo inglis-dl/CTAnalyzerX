@@ -411,6 +411,17 @@ void SliceView::updateData()
 	computeShiftScaleFromInput();
 	cacheImageGeometry();
 
+	if (m_requestedCroppingRegion) {
+		m_requestedCroppingRegion[0] = m_extent[0];
+		m_requestedCroppingRegion[1] = m_extent[1];
+		m_requestedCroppingRegion[2] = m_extent[2];
+		m_requestedCroppingRegion[3] = m_extent[3];
+		m_requestedCroppingRegion[4] = m_extent[4];
+		m_requestedCroppingRegion[5] = m_extent[5];
+
+	}
+	m_requestedCroppingEnabled = false;
+
 	// Ensure mapper orientation matches current view as soon as input exists
 	switch (m_viewOrientation) {
 		case VIEW_ORIENTATION_YZ: m_sliceMapper->SetOrientationToX(); break;
@@ -881,7 +892,7 @@ void SliceView::onInteractorWindowLevel(vtkObject* caller)
 	prop->SetColorLevel(newLevel);
 	iren->Render();
 
-	// Convert mapped -> native domain (inverse of (native + shift)*scale)
+	// Convert mapped -> native domain (inverse of (native + shift) * scale)
 	const double lowerMapped = newLevel - 0.5 * std::fabs(newWindow);
 	const double upperMapped = newLevel + 0.5 * std::fabs(newWindow);
 	const double lowerNative = (lowerMapped / m_scalarScale) - m_scalarShift;
@@ -1126,8 +1137,18 @@ void SliceView::restoreDerivedViewState()
 
 void SliceView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax)
 {
+	// Ensure we execute on GUI thread; queue if called from another thread.
+	if (QThread::currentThread() != this->thread()) {
+		QMetaObject::invokeMethod(this, "setCroppingRegion", Qt::QueuedConnection,
+								  Q_ARG(int, xMin), Q_ARG(int, xMax), Q_ARG(int, yMin),
+								  Q_ARG(int, yMax), Q_ARG(int, zMin), Q_ARG(int, zMax));
+		return;
+	}
+
+	// Basic guards
 	if (!m_sliceMapper || !m_imageData) return;
 
+	// Normalize & clamp requested region to current image extents.
 	auto clampNormalize = [](int& lo, int& hi, int loB, int hiB) {
 		lo = std::clamp(lo, loB, hiB);
 		hi = std::clamp(hi, loB, hiB);
@@ -1135,31 +1156,78 @@ void SliceView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zM
 		if (lo == hi) {
 			if (hi < hiB) ++hi;
 			else if (lo > loB) --lo;
-
 		}
 		};
 	clampNormalize(xMin, xMax, m_extent[0], m_extent[1]);
 	clampNormalize(yMin, yMax, m_extent[2], m_extent[3]);
 	clampNormalize(zMin, zMax, m_extent[4], m_extent[5]);
 
-	// Set cropping region on the slice mapper (index-space). vtkImageSliceMapper honors Cropping.
-	int cr[6] = { xMin, xMax, yMin, yMax, zMin, zMax };
-	m_sliceMapper->SetCropping(true);
-	m_sliceMapper->SetCroppingRegion(cr);
-	m_sliceMapper->Update();
+	// Store the requested region (non-destructive even when outline is hidden)
+	m_requestedCroppingRegion[0] = xMin;
+	m_requestedCroppingRegion[1] = xMax;
+	m_requestedCroppingRegion[2] = yMin;
+	m_requestedCroppingRegion[3] = yMax;
+	m_requestedCroppingRegion[4] = zMin;
+	m_requestedCroppingRegion[5] = zMax;
+	m_requestedCroppingEnabled = true;
 
+	// Apply immediately only if outline visible (otherwise cached for later)
 	if (m_outlineVisible) {
-		m_outlineSource->Modified();
-		m_outlineSource->Update();
-	}
+		m_sliceMapper->SetCropping(true);
+		m_sliceMapper->SetCroppingRegion(m_requestedCroppingRegion);
+		m_sliceMapper->Update();
 
-	render();
+		if (m_outlineSource) {
+			m_outlineSource->Modified();
+			m_outlineSource->Update();
+		}
+		// Refresh display
+		render();
+	}
 }
 
 void SliceView::setOutlineVisible(bool visible)
 {
+	// Ensure we execute on GUI thread; queue if called from another thread.
+	if (QThread::currentThread() != this->thread()) {
+		QMetaObject::invokeMethod(this, "setOutlineVisible", Qt::QueuedConnection, Q_ARG(bool, visible));
+		return;
+	}
+
+	if (!m_outlineActor || !m_sliceMapper) {
+		// Still set the boolean so callers get consistent state even if actor/mapper missing.
+		m_outlineVisible = visible;
+		return;
+	}
+
+	// Toggle actor visibility first (fast)
 	m_outlineActor->SetVisibility(visible);
 	m_outlineVisible = visible;
+
+	// When showing the outline, re-apply any previously requested cropping region.
+	// When hiding, disable cropping but preserve the requested region in memory.
+	if (visible) {
+		if (m_requestedCroppingEnabled) {
+			m_sliceMapper->SetCropping(true);
+			m_sliceMapper->SetCroppingRegion(m_requestedCroppingRegion);
+		}
+		else {
+			// No explicit region requested -> keep cropping disabled to avoid surprising clipping.
+			m_sliceMapper->SetCropping(false);
+		}
+		// Update outline geometry now that cropping state is correct.
+		if (m_outlineSource) {
+			m_outlineSource->Modified();
+			m_outlineSource->Update();
+		}
+	}
+	else {
+		// Hide outline: disable cropping but do NOT overwrite the cached requested region.
+		m_sliceMapper->SetCropping(false);
+	}
+
+	// Ensure mapper updates and refresh display.
+	m_sliceMapper->Update();
 	render();
 }
 
