@@ -398,8 +398,18 @@ void MainWindow::setupPanelConnections()
 	// Other view-mode sync left intact where only lightbox is required
 		// Keep WorkflowPanelWidget informed of cropping-enabled changes coming from VolumeView
 	if (m_workflowPanelWidget && ui->lightboxWidget->getVolumeView()) {
-		connect(ui->lightboxWidget->getVolumeView(), &VolumeView::croppingEnabledChanged,
+		VolumeView* vol = ui->lightboxWidget->getVolumeView();
+
+		connect(vol, &VolumeView::croppingEnabledChanged,
 				m_workflowPanelWidget, &WorkflowPanelWidget::setCroppingEnabled, Qt::UniqueConnection);
+
+		// Show outline when user enters "define crop" mode (panel-level request)
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
+				vol, [vol]() { vol->setCropOutlineVisible(true); }, Qt::UniqueConnection);
+
+		// Hide outline when user requests Save (crop completed / save initiated)
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
+				vol, [vol]() { vol->setCropOutlineVisible(false); }, Qt::UniqueConnection);
 	}
 }
 

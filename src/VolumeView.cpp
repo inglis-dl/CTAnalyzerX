@@ -34,6 +34,7 @@
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkActor.h>
+#include <vtkVolumeOutlineSource.h>
 
 #include <cmath> // added for std::lround
 
@@ -117,20 +118,38 @@ VolumeView::VolumeView(QWidget* parent)
 	}
 
 	// at end of createSliceOutlineActors(), after XY/XZ/YZ props are prepared
-	if (m_orthoPlanes) {
-		vtkActor* ax = m_orthoPlanes->GetOutlineActorX(); // X: YZ plane
-		vtkActor* ay = m_orthoPlanes->GetOutlineActorY(); // Y: XZ plane
-		vtkActor* az = m_orthoPlanes->GetOutlineActorZ(); // Z: XY plane
-		if (ax) {
-			ax->GetProperty()->SetColor(1.0, 0.0, 0.0);
-		}
-		if (ay) {
-			ay->GetProperty()->SetColor(0.0, 1.0, 0.0);
-		}
-		if (az) {
-			az->GetProperty()->SetColor(0.0, 0.0, 1.0);
-		}
+	vtkActor* ax = m_orthoPlanes->GetOutlineActorX(); // X: YZ plane
+	vtkActor* ay = m_orthoPlanes->GetOutlineActorY(); // Y: XZ plane
+	vtkActor* az = m_orthoPlanes->GetOutlineActorZ(); // Z: XY plane
+	if (ax) {
+		ax->GetProperty()->SetColor(1.0, 0.0, 0.0);
 	}
+	if (ay) {
+		ay->GetProperty()->SetColor(0.0, 1.0, 0.0);
+	}
+	if (az) {
+		az->GetProperty()->SetColor(0.0, 0.0, 1.0);
+	}
+
+	m_cropOutlineSource = vtkSmartPointer<vtkVolumeOutlineSource>::New();
+	m_cropOutlineMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+	m_cropOutlineActor = vtkSmartPointer<vtkActor>::New();
+
+	m_cropOutlineSource->SetVolumeMapper(m_mapper);
+	m_cropOutlineSource->GenerateOutlineOn();
+	m_cropOutlineSource->GenerateFacesOff();
+	m_cropOutlineSource->SetColor(1, 0, 0);
+
+	m_cropOutlineMapper->SetInputConnection(m_cropOutlineSource->GetOutputPort());
+	m_cropOutlineMapper->ScalarVisibilityOff();
+
+	m_cropOutlineActor->SetMapper(m_cropOutlineMapper);
+
+	m_cropOutlineVisible = false;
+	m_cropOutlineActor->SetVisibility(m_cropOutlineVisible);
+	m_cropOutlineActor->GetProperty()->SetColor(1, 0, 0);
+
+	m_renderer->AddViewProp(m_cropOutlineActor);
 }
 
 VolumeView::~VolumeView()
@@ -481,6 +500,8 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 		physMin[1], physMax[1],
 		physMin[2], physMax[2]
 	);
+
+	m_cropOutlineSource->Update();
 
 	render();
 }
@@ -1032,3 +1053,9 @@ void VolumeView::writeSettings() const
 	settings.sync();
 }
 
+void VolumeView::setCropOutlineVisible(bool visible)
+{
+	m_cropOutlineActor->SetVisibility(visible);
+	m_cropOutlineVisible = visible;
+	render();
+}
