@@ -403,9 +403,19 @@ void LightboxWidget::setCroppingRegion(int xMin, int xMax,
 	//  - YZ view is the X-axis slice
 	//  - XZ view is the Y-axis slice
 	//  - XY view is the Z-axis slice
-	setYZSlice(xCenter);
-	setXZSlice(yCenter);
-	setXYSlice(zCenter);
+	// Only change a view's current slice if it falls outside the requested crop region.
+	if (auto* yz = getYZView()) {
+		const int cur = yz->getSliceIndex();
+		if (cur < xMin || cur > xMax) setYZSlice(xCenter);
+	}
+	if (auto* xz = getXZView()) {
+		const int cur = xz->getSliceIndex();
+		if (cur < yMin || cur > yMax) setXZSlice(yCenter);
+	}
+	if (auto* xy = getXYView()) {
+		const int cur = xy->getSliceIndex();
+		if (cur < zMin || cur > zMax) setXYSlice(zCenter);
+	}
 }
 
 // Utility: map a child frame geometry into this widget's coordinate system

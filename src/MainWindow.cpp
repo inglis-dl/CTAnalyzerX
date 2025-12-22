@@ -389,27 +389,50 @@ void MainWindow::setupPanelConnections()
 		ui->lightboxWidget->setWindowLevelController(wlController);
 	}
 
-
 	// Let the WorkflowPanelWidget own the live connection to the Lightbox for cropping updates.
 	if (m_workflowPanelWidget && ui->lightboxWidget) {
 		m_workflowPanelWidget->setLightboxWidget(ui->lightboxWidget);
-	}
 
-	// Other view-mode sync left intact where only lightbox is required
-		// Keep WorkflowPanelWidget informed of cropping-enabled changes coming from VolumeView
-	if (m_workflowPanelWidget && ui->lightboxWidget->getVolumeView()) {
-		VolumeView* vol = ui->lightboxWidget->getVolumeView();
+		// XY slice
+		if (auto* xy = ui->lightboxWidget->getXYView()) {
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
+					xy, [xy]() { xy->setOutlineVisible(true); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
+					xy, [xy]() { xy->setOutlineVisible(false); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
+					xy, &SliceView::setCroppingRegion, Qt::UniqueConnection);
+		}
+		// XZ slice
+		if (auto* xz = ui->lightboxWidget->getXZView()) {
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
+					xz, [xz]() { xz->setOutlineVisible(true); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
+					xz, [xz]() { xz->setOutlineVisible(false); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
+					xz, &SliceView::setCroppingRegion, Qt::UniqueConnection);
+		}
+		// YZ slice
+		if (auto* yz = ui->lightboxWidget->getYZView()) {
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
+					yz, [yz]() { yz->setOutlineVisible(true); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
+					yz, [yz]() { yz->setOutlineVisible(false); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
+					yz, &SliceView::setCroppingRegion, Qt::UniqueConnection);
+		}
 
-		connect(vol, &VolumeView::croppingEnabledChanged,
-				m_workflowPanelWidget, &WorkflowPanelWidget::setCroppingEnabled, Qt::UniqueConnection);
+		if (auto* vol = ui->lightboxWidget->getVolumeView()) {
+			connect(vol, &VolumeView::croppingEnabledChanged,
+					m_workflowPanelWidget, &WorkflowPanelWidget::setCroppingEnabled, Qt::UniqueConnection);
 
-		// Show outline when user enters "define crop" mode (panel-level request)
-		connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
-				vol, [vol]() { vol->setCropOutlineVisible(true); }, Qt::UniqueConnection);
+			// Show outline when user enters "define crop" mode (panel-level request)
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
+					vol, [vol]() { vol->setOutlineVisible(true); }, Qt::UniqueConnection);
 
-		// Hide outline when user requests Save (crop completed / save initiated)
-		connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
-				vol, [vol]() { vol->setCropOutlineVisible(false); }, Qt::UniqueConnection);
+			// Hide outline when user requests Save (crop completed / save initiated)
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
+					vol, [vol]() { vol->setOutlineVisible(false); }, Qt::UniqueConnection);
+		}
 	}
 }
 
@@ -638,6 +661,7 @@ void MainWindow::writeSettings()
 		qWarning() << "writeSettings: failed to commit settings file:" << path;
 	}
 }
+
 void MainWindow::loadRecentFiles()
 {
 	// Backwards-compatible wrapper: delegate to JSON-backed settings

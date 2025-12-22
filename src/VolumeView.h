@@ -33,7 +33,9 @@ class VolumeView : public ImageFrameWidget
 	Q_OBJECT
 		Q_PROPERTY(bool orthoPlanesVisible READ orthoPlanesVisible WRITE setOrthoPlanesVisible NOTIFY orthoPlanesVisibleChanged)
 		Q_PROPERTY(bool shadingEnabled READ shadingEnabled WRITE setShadingEnabled)
-		Q_PROPERTY(bool cropOutlineVisible READ cropOutlineVisible WRITE setCropOutlineVisible NOTIFY cropOutlineVisibleChanged)
+		Q_PROPERTY(bool outlineVisible READ outlineVisible WRITE setOutlineVisible)
+		Q_PROPERTY(QColor outlineColor READ outlineColor WRITE setOutlineColor NOTIFY outlineColorChanged)
+
 
 public:
 	explicit VolumeView(QWidget* parent = nullptr);
@@ -52,7 +54,8 @@ public:
 	void updateSlicePlanes(int x, int y, int z);
 
 	bool orthoPlanesVisible() const { return m_orthoPlanesVisible; }
-	bool cropOutlineVisible() const { return m_cropOutlineVisible; }
+	bool outlineVisible() const { return m_outlineVisible; }
+	QColor outlineColor() const { return m_outlineColor; }
 
 	bool shadingEnabled() const { return m_shadingEnabled; }
 	void setShadingEnabled(bool on);
@@ -63,12 +66,13 @@ signals:
 	void orthoPlanesVisibleChanged(bool visible);
 	// Emitted when the effective cropping enabled state changes (e.g. reset to false on new image)
 	void croppingEnabledChanged(bool enabled);
-	void cropOutlineVisibleChanged(bool visible);
+	void outlineColorChanged(const QColor& color);
 
 public slots:
 	// Expose as a slot so UI widgets (e.g., VolumeControlsWidget) can connect directly
 	void setOrthoPlanesVisible(bool visible);
-	void setCropOutlineVisible(bool visible);
+	void setOutlineVisible(bool visible);
+	void setOutlineColor(const QColor& color);
 
 	void setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 	void resetCamera() override;
@@ -100,10 +104,11 @@ private:
 	vtkSmartPointer<vtkPiecewiseFunction>      m_actualScalarOpacity;
 	vtkSmartPointer<vtkPiecewiseFunction>      m_scalarOpacity;
 
-	vtkSmartPointer<vtkVolumeOutlineSource> m_cropOutlineSource;
-	vtkSmartPointer<vtkPolyDataMapper>   m_cropOutlineMapper;
-	vtkSmartPointer<vtkActor>            m_cropOutlineActor;
-	bool m_cropOutlineVisible = false;
+	vtkSmartPointer<vtkVolumeOutlineSource> m_outlineSource;
+	vtkSmartPointer<vtkPolyDataMapper>   m_outlineMapper;
+	vtkSmartPointer<vtkActor>            m_outlineActor;
+	bool m_outlineVisible = false;
+	QColor m_outlineColor = QColor(255, 0, 0);
 
 	void updateMappedOpacityFromActual();
 	void updateMappedColorsFromActual();

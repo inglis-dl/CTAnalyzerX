@@ -2,6 +2,7 @@
 #include "ui_SliceView.h"
 #include "SunkenSliderStyle.h"
 #include "MenuButton.h"
+#include "vtkSliceOutlineSource.h"
 
 #include <QAction>
 #include <QMenu>
@@ -18,26 +19,30 @@
 #include <QMouseEvent>
 #include <QTimer>
 #include <QDebug>
+#include <QThread>
+
 #include <cmath> // added for std::lround
 
+#include <vtkActor.h>
 #include <vtkAlgorithmOutput.h>
-#include <vtkRenderWindow.h>
+#include <vtkCamera.h>
+#include <vtkCommand.h>
+#include <vtkEventQtSlotConnect.h>
 #include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkRenderer.h>
 #include <vtkInteractorStyleImage.h>
 #include <vtkImageData.h>
-#include <vtkCamera.h>
-#include <vtkImageSliceMapper.h>
-#include <vtkImageSlice.h>
-#include <vtkStreamingDemandDrivenPipeline.h>
 #include <vtkInformation.h>
 #include <vtkImageProperty.h>
-#include <vtkEventQtSlotConnect.h>
-#include <vtkRenderWindowInteractor.h>
-#include <vtkCommand.h>
 #include <vtkImageShiftScale.h>
+#include <vtkImageSlice.h>
+#include <vtkImageSliceMapper.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkProperty.h>
+#include <vtkStreamingDemandDrivenPipeline.h>
+#include <vtkRenderer.h>
+#include <vtkRenderWindow.h>
+#include <vtkRenderWindowInteractor.h>
 
-#include <QThread>
 
 SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	: ImageFrameWidget(parent)
@@ -93,34 +98,33 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 
 	// Set interactor style after the widget created one for the renderWindow
 	if (auto* iren = m_renderWindow->GetInteractor()) {
-		interactorStyle = vtkSmartPointer<vtkInteractorStyleImage>::New();
-		interactorStyle->SetInteractionModeToImage2D();
-		interactorStyle->SetDefaultRenderer(m_renderer);
-		interactorStyle->AutoAdjustCameraClippingRangeOn();
+		m_interactorStyle = vtkSmartPointer<vtkInteractorStyleImage>::New();
+		m_interactorStyle->SetInteractionModeToImage2D();
+		m_interactorStyle->SetDefaultRenderer(m_renderer);
+		m_interactorStyle->AutoAdjustCameraClippingRangeOn();
 		// important: allow default WL behavior even when we observe
-		interactorStyle->SetHandleObservers(true);
-		iren->SetInteractorStyle(interactorStyle);
+		m_interactorStyle->SetHandleObservers(true);
+		iren->SetInteractorStyle(m_interactorStyle);
 	}
 
 	// Initialize slice mapper and image slice
-	sliceMapper = vtkSmartPointer<vtkImageSliceMapper>::New();
-	//sliceMapper->StreamingOn();
+	m_sliceMapper = vtkSmartPointer<vtkImageSliceMapper>::New();
 
-	imageSlice = vtkSmartPointer<vtkImageSlice>::New();
-	imageSlice->SetMapper(sliceMapper);
+	m_imageSlice = vtkSmartPointer<vtkImageSlice>::New();
+	m_imageSlice->SetMapper(m_sliceMapper);
 
-	imageProperty = imageSlice->GetProperty();
-	imageProperty->SetInterpolationTypeToLinear();
-	imageSlice->SetProperty(imageProperty);
+	m_imageProperty = m_imageSlice->GetProperty();
+	m_imageProperty->SetInterpolationTypeToLinear();
+	m_imageSlice->SetProperty(m_imageProperty);
 
 	// Enable automatic camera-facing for the slice
-	sliceMapper->SliceFacesCameraOff();
-	sliceMapper->SliceAtFocalPointOff();
+	m_sliceMapper->SliceFacesCameraOff();
+	m_sliceMapper->SliceAtFocalPointOff();
 
-	sliceMapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	m_sliceMapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
-	this->qvtkConnection = vtkSmartPointer<vtkEventQtSlotConnect>::New();
-	this->qvtkConnection->Connect(interactorStyle, vtkCommand::LeftButtonPressEvent,
+	m_qvtkConnection = vtkSmartPointer<vtkEventQtSlotConnect>::New();
+	m_qvtkConnection->Connect(m_interactorStyle, vtkCommand::LeftButtonPressEvent,
 		this, SLOT(trapSpin(vtkObject*)));
 
 	m_windowLevelStartPosition[0] = 0;
@@ -133,20 +137,20 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	m_windowLevelInitial[1] = 0.5; // Level
 
 	// Wire window-level lifecycle events from the interactor style.
-	if (interactorStyle) {
+	if (m_interactorStyle) {
 		// Reset event (already handled)
-		this->qvtkConnection->Connect(interactorStyle, vtkCommand::ResetWindowLevelEvent,
+		m_qvtkConnection->Connect(m_interactorStyle, vtkCommand::ResetWindowLevelEvent,
 			this, SLOT(onResetWindowLevel(vtkObject*)));
 
 		// Interactive WL (mouse-drag updates)
-		this->qvtkConnection->Connect(interactorStyle, vtkCommand::WindowLevelEvent,
+		m_qvtkConnection->Connect(m_interactorStyle, vtkCommand::WindowLevelEvent,
 			this, SLOT(onInteractorWindowLevel(vtkObject*)), nullptr, -1.0f);
 
 		// Start/End lifecycle so we can update UI and store baseline on end
-		this->qvtkConnection->Connect(interactorStyle, vtkCommand::StartWindowLevelEvent,
+		m_qvtkConnection->Connect(m_interactorStyle, vtkCommand::StartWindowLevelEvent,
 			this, SLOT(onInteractorStartWindowLevel(vtkObject*)), nullptr, -1.0f);
 
-		this->qvtkConnection->Connect(interactorStyle, vtkCommand::EndWindowLevelEvent,
+		m_qvtkConnection->Connect(m_interactorStyle, vtkCommand::EndWindowLevelEvent,
 			this, SLOT(onInteractorEndWindowLevel(vtkObject*)), nullptr, -1.0f);
 	}
 
@@ -161,6 +165,17 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	});
 
 	setTitle(orientationLabel(m_viewOrientation));
+
+	m_outlineSource = vtkSmartPointer<vtkSliceOutlineSource>::New();
+	m_outlineSource->SetSliceMapper(m_sliceMapper);
+	m_outlineMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+	m_outlineMapper->SetInputConnection(m_outlineSource->GetOutputPort());
+	m_outlineMapper->ScalarVisibilityOff();
+	m_outlineActor = vtkSmartPointer<vtkActor>::New();
+	m_outlineActor->SetMapper(m_outlineMapper);
+	m_outlineVisible = false;
+	m_outlineActor->SetVisibility(m_outlineVisible);
+	m_outlineActor->GetProperty()->SetColor(1.0, 0.0, 0.0); // red
 }
 
 void SliceView::createMenuAndActions()
@@ -216,13 +231,13 @@ void SliceView::setInterpolation(Interpolation newInterpolation)
 		m_interpolation = newInterpolation;
 		switch (m_interpolation) {
 			case Nearest:
-			imageProperty->SetInterpolationTypeToNearest();
+			m_imageProperty->SetInterpolationTypeToNearest();
 			break;
 			case Linear:
-			imageProperty->SetInterpolationTypeToLinear();
+			m_imageProperty->SetInterpolationTypeToLinear();
 			break;
 			case Cubic:
-			imageProperty->SetInterpolationTypeToCubic();
+			m_imageProperty->SetInterpolationTypeToCubic();
 			break;
 		}
 		render();
@@ -350,11 +365,11 @@ void SliceView::resetCamera()
 	const int keepSlice = m_currentSlice;
 
 	// Clear any transforms that could emulate flips/rotations
-	if (imageSlice) {
-		imageSlice->SetOrientation(0.0, 0.0, 0.0);
-		imageSlice->SetScale(1.0, 1.0, 1.0);
-		imageSlice->SetUserTransform(nullptr);
-		imageSlice->SetUserMatrix(nullptr);
+	if (m_imageSlice) {
+		m_imageSlice->SetOrientation(0.0, 0.0, 0.0);
+		m_imageSlice->SetScale(1.0, 1.0, 1.0);
+		m_imageSlice->SetUserTransform(nullptr);
+		m_imageSlice->SetUserMatrix(nullptr);
 	}
 
 	// Rebuild an orthogonal camera aligned with current orientation
@@ -398,15 +413,18 @@ void SliceView::updateData()
 
 	// Ensure mapper orientation matches current view as soon as input exists
 	switch (m_viewOrientation) {
-		case VIEW_ORIENTATION_YZ: sliceMapper->SetOrientationToX(); break;
-		case VIEW_ORIENTATION_XZ: sliceMapper->SetOrientationToY(); break;
+		case VIEW_ORIENTATION_YZ: m_sliceMapper->SetOrientationToX(); break;
+		case VIEW_ORIENTATION_XZ: m_sliceMapper->SetOrientationToY(); break;
 		case VIEW_ORIENTATION_XY:
-		default:                  sliceMapper->SetOrientationToZ(); break;
+		default:                  m_sliceMapper->SetOrientationToZ(); break;
 	}
 
 	if (!m_imageInitialized) {
-		m_renderer->AddViewProp(imageSlice);
-		imageSlice->PickableOn();
+		m_renderer->AddViewProp(m_imageSlice);
+		m_imageSlice->PickableOn();
+		if (!m_renderer->HasViewProp(m_outlineActor)) {
+			m_renderer->AddActor(m_outlineActor);
+		}
 		m_imageInitialized = true;
 	}
 
@@ -433,8 +451,8 @@ void SliceView::updateData()
 	const double mappedWindow = std::max(upperMapped - lowerMapped, 1.0);
 	const double mappedLevel = 0.5 * (upperMapped + lowerMapped);
 
-	imageProperty->SetColorWindow(mappedWindow);
-	imageProperty->SetColorLevel(mappedLevel);
+	m_imageProperty->SetColorWindow(mappedWindow);
+	m_imageProperty->SetColorLevel(mappedLevel);
 
 	// Emit native-domain signal so UI controls reflect the newly loaded image.
 	emit windowLevelChanged(baseWindowNative, baseLevelNative);
@@ -447,15 +465,6 @@ void SliceView::updateData()
 
 	// set the slice mapper slice
 	setSliceIndex(m_currentSlice);
-
-	/*
-	qDebug() << "[SliceView::updateData] m_imageData =" << static_cast<void*>(m_imageData);
-	qDebug() << "[SliceView::updateData] extent =" << m_extent[0] << m_extent[1] << m_extent[2] << m_extent[3] << m_extent[4] << m_extent[5];
-	qDebug() << "[SliceView::updateData] spacing =" << m_spacing[0] << m_spacing[1] << m_spacing[2];
-	qDebug() << "[SliceView::updateData] origin =" << m_origin[0] << m_origin[1] << m_origin[2];
-	if (sliceMapper) { sliceMapper->Update(); qDebug() << "[SliceView::updateData] mapper range:" << sliceMapper->GetSliceNumberMinValue() << sliceMapper->GetSliceNumberMaxValue(); }
-	qDebug() << "[SliceView::updateData] imageSlice added to renderer?" << (m_renderer && imageSlice ? m_renderer->HasViewProp(imageSlice) : false);
-	*/
 }
 
 void SliceView::updateCamera() {
@@ -519,17 +528,17 @@ void SliceView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation
 	setTitle(orientationLabel(m_viewOrientation));
 
 	// If no image/pipeline yet, just broadcast and return (avoid VTK errors).
-	if (!m_imageData || !sliceMapper || sliceMapper->GetNumberOfInputConnections(0) == 0) {
+	if (!m_imageData || !m_sliceMapper || m_sliceMapper->GetNumberOfInputConnections(0) == 0) {
 		notifyViewOrientationChanged(); // base helper
 		return;
 	}
 
 	// Update mapper orientation for the selected plane
 	switch (m_viewOrientation) {
-		case VIEW_ORIENTATION_YZ: sliceMapper->SetOrientationToX(); break; // z-y plane x normal
-		case VIEW_ORIENTATION_XZ: sliceMapper->SetOrientationToY(); break; // x-z plane y normal
+		case VIEW_ORIENTATION_YZ: m_sliceMapper->SetOrientationToX(); break; // z-y plane x normal
+		case VIEW_ORIENTATION_XZ: m_sliceMapper->SetOrientationToY(); break; // x-z plane y normal
 		case VIEW_ORIENTATION_XY:
-		default: sliceMapper->SetOrientationToZ(); break; // x-y plane z normal
+		default: m_sliceMapper->SetOrientationToZ(); break; // x-y plane z normal
 	}
 
 	// Recompute slice range and camera, then pick a visible slice (center)
@@ -543,11 +552,11 @@ void SliceView::setViewOrientation(ImageFrameWidget::ViewOrientation orientation
 
 void SliceView::updateSliceRange() {
 	// Guard against mapper without input to avoid VTK errors
-	if (!sliceMapper || sliceMapper->GetNumberOfInputConnections(0) == 0)
+	if (!m_sliceMapper || m_sliceMapper->GetNumberOfInputConnections(0) == 0)
 		return;
 
-	m_minSlice = sliceMapper->GetSliceNumberMinValue();
-	m_maxSlice = sliceMapper->GetSliceNumberMaxValue();
+	m_minSlice = m_sliceMapper->GetSliceNumberMinValue();
+	m_maxSlice = m_sliceMapper->GetSliceNumberMaxValue();
 
 	// Ensure current slice is inside the recovered/valid range
 	m_currentSlice = std::clamp(m_currentSlice, m_minSlice, m_maxSlice);
@@ -579,7 +588,7 @@ void SliceView::updateSliceRange() {
 void SliceView::updateSlice() {
 	if (!m_imageData) return;
 
-	sliceMapper->SetSliceNumber(m_currentSlice);
+	m_sliceMapper->SetSliceNumber(m_currentSlice);
 
 	int u = 0, v = 1, w = m_viewOrientation;
 	switch (w)
@@ -729,9 +738,9 @@ void SliceView::setWindowLevelNative(double window, double level)
 	const double mappedWindow = std::max(upperMapped - lowerMapped, 1.0);
 	const double mappedLevel = 0.5 * (upperMapped + lowerMapped);
 
-	if (imageProperty) {
-		imageProperty->SetColorWindow(mappedWindow);
-		imageProperty->SetColorLevel(mappedLevel);
+	if (m_imageProperty) {
+		m_imageProperty->SetColorWindow(mappedWindow);
+		m_imageProperty->SetColorLevel(mappedLevel);
 	}
 
 	// Update interactor style baseline so plain 'r' will restore this WL
@@ -751,14 +760,14 @@ void SliceView::setWindowLevelNative(double window, double level)
 void SliceView::resetWindowLevel()
 {
 	// Apply retained baseline: convert native baseline -> mapped domain in base class
-	if (!m_imageData || !imageProperty) return;
+	if (!m_imageData || !m_imageProperty) return;
 
 	const auto [windowMapped, levelMapped] = baselineMapped();
 	if (!std::isfinite(windowMapped) || !std::isfinite(levelMapped)) return;
 
 	// Apply mapped window/level to the image property (mapped domain)
-	imageProperty->SetColorWindow(windowMapped);
-	imageProperty->SetColorLevel(levelMapped);
+	m_imageProperty->SetColorWindow(windowMapped);
+	m_imageProperty->SetColorLevel(levelMapped);
 
 	// Ensure interactor style uses same baseline so plain 'r' restores it
 	updateInteractorWindowLevelBaseline();
@@ -779,13 +788,13 @@ void SliceView::resetWindowLevel()
 void SliceView::updateInteractorWindowLevelBaseline()
 {
 	// Update interactor style baseline to match the current image property WL
-	if (!m_imageData || !imageProperty || !interactorStyle) return;
+	if (!m_imageData || !m_imageProperty || !m_interactorStyle) return;
 
-	interactorStyle->SetDefaultRenderer(m_renderer);
-	interactorStyle->SetCurrentRenderer(m_renderer);
-	interactorStyle->SetCurrentImageNumber(-1);
-	interactorStyle->StartWindowLevel();
-	interactorStyle->EndWindowLevel();
+	m_interactorStyle->SetDefaultRenderer(m_renderer);
+	m_interactorStyle->SetCurrentRenderer(m_renderer);
+	m_interactorStyle->SetCurrentImageNumber(-1);
+	m_interactorStyle->StartWindowLevel();
+	m_interactorStyle->EndWindowLevel();
 }
 
 void SliceView::onResetWindowLevel(vtkObject* /*obj*/)
@@ -955,7 +964,7 @@ void SliceView::onEditorReturnPressed()
 // new method: install a shared vtkImageProperty (sharedProp may be the same instance across views)
 void SliceView::setSharedImageProperty(vtkImageProperty* sharedProp)
 {
-	if (!sharedProp || !imageSlice)
+	if (!sharedProp || !m_imageSlice)
 		return;
 
 	// Ensure execution on GUI thread. If we're called from another thread,
@@ -971,21 +980,21 @@ void SliceView::setSharedImageProperty(vtkImageProperty* sharedProp)
 
 	// Idempotent: if this view already uses the requested property, do nothing.
 	vtkImageProperty* safeProp = vtkImageProperty::SafeDownCast(sharedProp);
-	if (imageProperty == safeProp)
+	if (m_imageProperty == safeProp)
 		return;
 
 	// Install the shared property (atomic with respect to this object since we're on GUI thread)
-	imageSlice->SetProperty(sharedProp);
-	imageProperty = safeProp;
+	m_imageSlice->SetProperty(sharedProp);
+	m_imageProperty = safeProp;
 
 	// Update the interactor baseline synchronously (required for WL baseline correctness).
 	updateInteractorWindowLevelBaseline();
 
 	// Emit native-domain window/level so UI controls reflect the newly installed property.
 	// Convert mapped (vtkImageProperty) -> native domain (inverse of (native + shift) * scale).
-	if (imageProperty) {
-		const double mappedWindow = imageProperty->GetColorWindow();
-		const double mappedLevel = imageProperty->GetColorLevel();
+	if (m_imageProperty) {
+		const double mappedWindow = m_imageProperty->GetColorWindow();
+		const double mappedLevel = m_imageProperty->GetColorLevel();
 		const double lowerMapped = mappedLevel - 0.5 * std::fabs(mappedWindow);
 		const double upperMapped = mappedLevel + 0.5 * std::fabs(mappedWindow);
 		const double lowerNative = (lowerMapped / m_scalarScale) - m_scalarShift;
@@ -1043,9 +1052,9 @@ void SliceView::captureDerivedViewState()
 	m_savedSliceWorld[2] = savedWorld[2];
 
 	// Save mapped WL from the image property (if present)
-	if (imageProperty) {
-		m_savedMappedWindow = imageProperty->GetColorWindow();
-		m_savedMappedLevel = imageProperty->GetColorLevel();
+	if (m_imageProperty) {
+		m_savedMappedWindow = m_imageProperty->GetColorWindow();
+		m_savedMappedLevel = m_imageProperty->GetColorLevel();
 	}
 	else {
 		m_savedMappedWindow = std::numeric_limits<double>::quiet_NaN();
@@ -1060,7 +1069,7 @@ void SliceView::restoreDerivedViewState()
 	if (!m_hasSavedState) return;
 
 	// Ensure mapper ranges are up-to-date to compute valid min/max slice indices
-	if (sliceMapper) sliceMapper->Update();
+	if (m_sliceMapper) m_sliceMapper->Update();
 	updateSliceRange();
 
 	// Convert saved world point -> continuous index, then round to nearest slice index
@@ -1076,9 +1085,9 @@ void SliceView::restoreDerivedViewState()
 	setSliceIndex(restoredIndex);
 
 	// Restore mapped WL to the image property and update interactor baseline
-	if (imageProperty && std::isfinite(m_savedMappedWindow) && std::isfinite(m_savedMappedLevel)) {
-		imageProperty->SetColorWindow(m_savedMappedWindow);
-		imageProperty->SetColorLevel(m_savedMappedLevel);
+	if (m_imageProperty && std::isfinite(m_savedMappedWindow) && std::isfinite(m_savedMappedLevel)) {
+		m_imageProperty->SetColorWindow(m_savedMappedWindow);
+		m_imageProperty->SetColorLevel(m_savedMappedLevel);
 		updateInteractorWindowLevelBaseline();
 	}
 
@@ -1113,4 +1122,65 @@ void SliceView::restoreDerivedViewState()
 
 	// Clear saved flag
 	m_hasSavedState = false;
+}
+
+void SliceView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax)
+{
+	if (!m_sliceMapper || !m_imageData) return;
+
+	auto clampNormalize = [](int& lo, int& hi, int loB, int hiB) {
+		lo = std::clamp(lo, loB, hiB);
+		hi = std::clamp(hi, loB, hiB);
+		if (lo > hi) std::swap(lo, hi);
+		if (lo == hi) {
+			if (hi < hiB) ++hi;
+			else if (lo > loB) --lo;
+
+		}
+		};
+	clampNormalize(xMin, xMax, m_extent[0], m_extent[1]);
+	clampNormalize(yMin, yMax, m_extent[2], m_extent[3]);
+	clampNormalize(zMin, zMax, m_extent[4], m_extent[5]);
+
+	// Set cropping region on the slice mapper (index-space). vtkImageSliceMapper honors Cropping.
+	int cr[6] = { xMin, xMax, yMin, yMax, zMin, zMax };
+	m_sliceMapper->SetCropping(true);
+	m_sliceMapper->SetCroppingRegion(cr);
+	m_sliceMapper->Update();
+
+	if (m_outlineVisible) {
+		m_outlineSource->Modified();
+		m_outlineSource->Update();
+	}
+
+	render();
+}
+
+void SliceView::setOutlineVisible(bool visible)
+{
+	m_outlineActor->SetVisibility(visible);
+	m_outlineVisible = visible;
+	render();
+}
+
+void SliceView::setOutlineColor(const QColor& color)
+{
+	if (!m_outlineActor) return;
+
+	// Normalize QColor to vtk prop range [0..1]
+	const double r = color.redF();
+	const double g = color.greenF();
+	const double b = color.blueF();
+
+	vtkProperty* prop = m_outlineActor->GetProperty();
+	if (prop) {
+		prop->SetColor(r, g, b);
+	}
+	// update stored value and notify listeners if changed
+	if (m_outlineColor != color) {
+		m_outlineColor = color;
+		emit outlineColorChanged(m_outlineColor);
+	}
+	// If visible, refresh rendering to show change immediately
+	if (m_outlineVisible) render();
 }

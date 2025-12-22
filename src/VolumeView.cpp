@@ -131,25 +131,25 @@ VolumeView::VolumeView(QWidget* parent)
 		az->GetProperty()->SetColor(0.0, 0.0, 1.0);
 	}
 
-	m_cropOutlineSource = vtkSmartPointer<vtkVolumeOutlineSource>::New();
-	m_cropOutlineMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-	m_cropOutlineActor = vtkSmartPointer<vtkActor>::New();
+	m_outlineSource = vtkSmartPointer<vtkVolumeOutlineSource>::New();
+	m_outlineMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+	m_outlineActor = vtkSmartPointer<vtkActor>::New();
 
-	m_cropOutlineSource->SetVolumeMapper(m_mapper);
-	m_cropOutlineSource->GenerateOutlineOn();
-	m_cropOutlineSource->GenerateFacesOff();
-	m_cropOutlineSource->SetColor(1, 0, 0);
+	m_outlineSource->SetVolumeMapper(m_mapper);
+	m_outlineSource->GenerateOutlineOn();
+	m_outlineSource->GenerateFacesOff();
+	m_outlineSource->SetColor(1, 0, 0);
 
-	m_cropOutlineMapper->SetInputConnection(m_cropOutlineSource->GetOutputPort());
-	m_cropOutlineMapper->ScalarVisibilityOff();
+	m_outlineMapper->SetInputConnection(m_outlineSource->GetOutputPort());
+	m_outlineMapper->ScalarVisibilityOff();
 
-	m_cropOutlineActor->SetMapper(m_cropOutlineMapper);
+	m_outlineActor->SetMapper(m_outlineMapper);
 
-	m_cropOutlineVisible = false;
-	m_cropOutlineActor->SetVisibility(m_cropOutlineVisible);
-	m_cropOutlineActor->GetProperty()->SetColor(1, 0, 0);
+	m_outlineVisible = false;
+	m_outlineActor->SetVisibility(m_outlineVisible);
+	m_outlineActor->GetProperty()->SetColor(1, 0, 0);
 
-	m_renderer->AddViewProp(m_cropOutlineActor);
+	m_renderer->AddViewProp(m_outlineActor);
 }
 
 VolumeView::~VolumeView()
@@ -501,7 +501,7 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 		physMin[2], physMax[2]
 	);
 
-	m_cropOutlineSource->Update();
+	m_outlineSource->Update();
 
 	render();
 }
@@ -1053,9 +1053,31 @@ void VolumeView::writeSettings() const
 	settings.sync();
 }
 
-void VolumeView::setCropOutlineVisible(bool visible)
+void VolumeView::setOutlineVisible(bool visible)
 {
-	m_cropOutlineActor->SetVisibility(visible);
-	m_cropOutlineVisible = visible;
+	m_outlineActor->SetVisibility(visible);
+	m_outlineVisible = visible;
 	render();
+}
+
+void VolumeView::setOutlineColor(const QColor& color)
+{
+	if (!m_outlineActor) return;
+
+	// Normalize QColor to vtk prop range [0..1]
+	const double r = color.redF();
+	const double g = color.greenF();
+	const double b = color.blueF();
+
+	vtkProperty* prop = m_outlineActor->GetProperty();
+	if (prop) {
+		prop->SetColor(r, g, b);
+	}
+	// update stored value and notify listeners if changed
+	if (m_outlineColor != color) {
+		m_outlineColor = color;
+		emit outlineColorChanged(m_outlineColor);
+	}
+	// If visible, refresh rendering to show change immediately
+	if (m_outlineVisible) render();
 }

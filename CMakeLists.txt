@@ -176,6 +176,8 @@ set(SOURCES
      src/CropController.h
      src/CropExporter.cpp
      src/CropExporter.h
+     src/vtkSliceOutlineSource.cpp
+     src/vtkSliceOutlineSource.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early
