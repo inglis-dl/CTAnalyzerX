@@ -64,47 +64,34 @@
         </rect>
        </property>
        <item>
-        <widget class="CollapsibleGroupBox" name="grpLoad">
+        <widget class="CollapsibleGroupBox" name="grpInfo">
          <property name="title">
-          <string>Image</string>
+          <string>Info</string>
          </property>
-         <layout class="QVBoxLayout" name="loadLayout">
+         <layout class="QVBoxLayout" name="info`Layout">
           <property name="leftMargin">
-           <number>6</number>
+           <number>0</number>
           </property>
           <property name="topMargin">
-           <number>6</number>
+           <number>0</number>
           </property>
           <property name="rightMargin">
-           <number>6</number>
+           <number>0</number>
           </property>
           <property name="bottomMargin">
-           <number>6</number>
+           <number>0</number>
           </property>
           <item>
-           <widget class="QLabel" name="lblLoadPlaceholder">
-            <property name="text">
-             <string>Image loader / source selector will appear here.</string>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnLoadImage">
+           <widget class="ImageInfoWidget" name="imageInfo" native="true">
             <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+             <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
               <horstretch>0</horstretch>
               <verstretch>0</verstretch>
              </sizepolicy>
             </property>
-            <property name="text">
-             <string>Load Image...</string>
-            </property>
            </widget>
           </item>
-         </layout>
+         </layout>		 
         </widget>
        </item>
        <item>
@@ -377,6 +364,12 @@
    <class>CollapsibleGroupBox</class>
    <extends>QGroupBox</extends>
    <header>CollapsibleGroupBox.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ImageInforWidget</class>
+   <extends>QWidget</extends>
+   <header>ImageInfoWidget.h</header>
    <container>1</container>
   </customwidget>
   <customwidget>

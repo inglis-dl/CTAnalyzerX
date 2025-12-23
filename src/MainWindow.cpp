@@ -8,13 +8,14 @@
 #include "JsonSettings.h"
 #include "WorkflowPanelWidget.h"
 #include "CropExporter.h"
+#include "ImageInfoWidget.h"
 
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QDateTime>
 #include <QSettings>
 #include <QDebug>
-#include <QtConcurrent/QtConcurrent> // <--- add for background save
+#include <QtConcurrent/QtConcurrent>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QDragEnterEvent>
@@ -174,15 +175,10 @@ MainWindow::MainWindow(QWidget* parent)
 	// Ensure UI initially reflects the machine's starting state
 	updateUiForState(m_processingStateMachine->currentState());
 
-	// Note: removed local m_processingActive bookkeeping. MainWindow queries the state machine
-	// via isActive()/stateChanged() if needed. Keep UI updates driven from finished/error/canceled signals.
-
-	// Optional: respond to stateChanged for UI hints (not required, shown as example)
 	connect(m_processingStateMachine, &ImageProcessingStateMachine::stateChanged, this, [this](ImageProcessingStateMachine::State s) {
-		// simple UI gating: disable Open while machine is active (LoadingImage..SavingSegment)
 		bool active = (s != ImageProcessingStateMachine::Idle && s != ImageProcessingStateMachine::Completed && s != ImageProcessingStateMachine::ErrorState);
-		ui->actionOpen->setEnabled(!active);
-		// optionally also gate other actions if desired:
+		// Keep "Open" enabled at all times per product requirement.
+		// Only gate "Save" (or other actions) while the machine is active.
 		ui->actionSave->setEnabled(!active);
 	});
 
@@ -268,6 +264,15 @@ MainWindow::MainWindow(QWidget* parent)
 	}
 
 	setupPanelConnections();
+
+	// Connect ImageLoader's JSON metadata emitter to the ImageInfoWidget (if present)
+// The WorkflowPanelWidget owns the ImageInfoWidget instance (m_imageInfo).
+	if (m_imageLoader && m_workflowPanelWidget && m_workflowPanelWidget->imageInfo()) {
+		if (auto emitter = m_imageLoader->metaEmitter()) {
+			connect(emitter, &ImageLoaderMetaEmitter::metaUpdated,
+					m_workflowPanelWidget->imageInfo(), &ImageInfoWidget::updateFromMeta, Qt::QueuedConnection);
+		}
+	}
 
 	// Load settings (geometry, recent files, appearance) using JsonSettings-backed QSettings
 	readSettings();
@@ -1076,7 +1081,6 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		case ImageProcessingStateMachine::Idle:
 		case ImageProcessingStateMachine::Completed:
 		case ImageProcessingStateMachine::ErrorState:
-		ui->actionOpen->setEnabled(true);
 		ui->actionSave->setEnabled(imgPresent);
 		// Enable/disable workflow groups depending on whether an image is present
 		if (m_workflowPanelWidget) {
@@ -1088,7 +1092,6 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 
 		case ImageProcessingStateMachine::LoadingImage:
 		// Block UI while loading
-		ui->actionOpen->setEnabled(false);
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
@@ -1098,7 +1101,6 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 
 		case ImageProcessingStateMachine::DefiningCrop:
 		// Let user interact with cropping controls only
-		ui->actionOpen->setEnabled(false);
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
@@ -1111,7 +1113,6 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		case ImageProcessingStateMachine::Segmenting:
 		case ImageProcessingStateMachine::SavingSegment:
 		// Long-running workers - disable interactive UI and show loader
-		ui->actionOpen->setEnabled(false);
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
@@ -1121,7 +1122,6 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 
 		case ImageProcessingStateMachine::PlacingFiducials:
 		// Enable fiducials placement UI
-		ui->actionOpen->setEnabled(false);
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
@@ -1130,7 +1130,6 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		break;
 
 		case ImageProcessingStateMachine::InteractiveRotation:
-		ui->actionOpen->setEnabled(false);
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);
@@ -1140,7 +1139,6 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 
 		default:
 		// conservative fallback: disable risky UI
-		ui->actionOpen->setEnabled(false);
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
 			m_workflowPanelWidget->applyState(s, imgPresent);

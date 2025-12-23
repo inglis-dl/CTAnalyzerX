@@ -31,6 +31,7 @@ public:
 signals:
 	void requestLoadViewSettings();
 	void requestSaveViewSettings();
+	void imageLoaded(vtkImageData* image, const QString& filePath);
 
 protected:
 	void keyPressEvent(QKeyEvent* event) override;
@@ -104,7 +105,6 @@ private:
 	// Ensure verifySettings runs once when the main window is first shown.
 	bool m_settingsVerified = false;
 
-	vtkSmartPointer<vtkImageData> currentImageData;
 	vtkSmartPointer<vtkEventQtSlotConnect> vtkConnections;
 	vtkSmartPointer<ImageLoader> m_imageLoader = nullptr;
 	QProgressBar* progressBar = nullptr;

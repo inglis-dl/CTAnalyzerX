@@ -2,9 +2,23 @@
 #define IMAGELOADER_H
 
 #include <QString>
+#include <QJsonObject>
+#include <memory>
+#include <vector>
+
 #include <vtkSmartPointer.h>
 #include <vtkImageAlgorithm.h>
 #include <vtkImageData.h>
+#include <QObject>
+#include <vtkCallbackCommand.h> // added for callback storage
+
+class ImageLoaderMetaEmitter : public QObject {
+	Q_OBJECT
+public:
+	using QObject::QObject;
+signals:
+	void metaUpdated(const QJsonObject& meta);
+};
 
 class ImageLoader : public vtkImageAlgorithm {
 public:
@@ -29,6 +43,12 @@ public:
 	// Add this method for file type detection
 	static bool CanReadFile(const QString& filePath);
 
+	void setJsonMeta(const QJsonObject& meta);
+	const QJsonObject& jsonMeta() const { return m_jsonMeta; }
+
+	// Accessor for meta emitter so consumers can connect to metadata updates
+	ImageLoaderMetaEmitter* metaEmitter() const { return m_metaEmitter.get(); }
+
 protected:
 	ImageLoader();
 	~ImageLoader() override = default;
@@ -46,6 +66,14 @@ protected:
 
 	int RequestData(vtkInformation*, vtkInformationVector**, vtkInformationVector*) override;
 
+protected:
+	// JSON metadata to broadcast to UI consumers
+	QJsonObject m_jsonMeta;
+
+	// Helper emitter to send Qt signals without making ImageLoader a QObject
+	std::unique_ptr<ImageLoaderMetaEmitter> m_metaEmitter;
+
+
 private:
 	QString inputPath;
 	ImageType type;
@@ -55,13 +83,16 @@ private:
 
 	vtkSmartPointer<vtkImageData> LoadScancoISQ();
 	vtkSmartPointer<vtkImageData> LoadDICOM();
-	vtkSmartPointer<vtkImageData> LoadNIfTI();
+	vtkSmartPointer<vtkImageData> LoadNIfNI();
 
 	// Cached reader instance used for both RequestInformation and RequestData
 	vtkSmartPointer<vtkImageAlgorithm> cachedReader;
 
 	// Ensure cachedReader exists and is configured for current path/type
 	void EnsureReaderInitialized();
+
+	// Callback storage to keep vtkCallbackCommand instances alive while observers exist
+	std::vector<vtkSmartPointer<vtkCallbackCommand>> m_callbacks;
 
 	ImageLoader(const ImageLoader&) = delete;
 	void operator=(const ImageLoader&) = delete;

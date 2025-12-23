@@ -11,10 +11,13 @@
 
 class LightboxWidget; // forward
 class WindowLevelController; // forward
+class ImageInfoWidget;
+class vtkImageData;
 
 class WorkflowPanelWidget : public QWidget
 {
 	Q_OBJECT
+
 public:
 	explicit WorkflowPanelWidget(QWidget* parent = nullptr);
 
@@ -56,6 +59,8 @@ public:
 
 	// Accessor for the controller placed in the UI (if any).
 	WindowLevelController* windowLevelController() const { return m_windowLevelController; }
+
+	ImageInfoWidget* imageInfo() const { return m_imageInfo; }
 
 	// Let the panel own/drive real-time cropping updates to a LightboxWidget.
 	// Panel does NOT take ownership of the lightbox; it merely connects its
@@ -119,9 +124,9 @@ private:
 	QWidget* m_scrollContent = nullptr;
 
 	// Groups + placeholder containers
-	CollapsibleGroupBox* m_grpLoad = nullptr;
-	QWidget* m_loadContainer = nullptr;
-	QPushButton* m_btnLoadImage = nullptr;
+	CollapsibleGroupBox* m_grpInfo = nullptr;
+	QWidget* m_infoContainer = nullptr;
+	ImageInfoWidget* m_imageInfo = nullptr;
 
 	CollapsibleGroupBox* m_grpCropping = nullptr;
 	QWidget* m_croppingContainer = nullptr;
