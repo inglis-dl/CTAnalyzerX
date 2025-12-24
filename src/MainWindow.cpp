@@ -1075,6 +1075,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		};
 
 	const bool imgPresent = hasImage();
+	bool derived = m_processingStateMachine ? m_processingStateMachine->inputIsDerived() : false;
 
 	// Default: enable/disable top-level actions based on whether the machine is idle/completed/error
 	switch (s) {
@@ -1084,7 +1085,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		ui->actionSave->setEnabled(imgPresent);
 		// Enable/disable workflow groups depending on whether an image is present
 		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent);
+			m_workflowPanelWidget->applyState(s, imgPresent, derived);
 		}
 		// Hide loader if idle
 		showProgressEnd();
@@ -1094,7 +1095,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		// Block UI while loading
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent);
+			m_workflowPanelWidget->applyState(s, imgPresent, derived);
 		}
 		showProgressStart();
 		break;
@@ -1103,7 +1104,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		// Let user interact with cropping controls only
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent);
+			m_workflowPanelWidget->applyState(s, imgPresent, derived);
 		}
 		showProgressEnd();
 		break;
@@ -1115,7 +1116,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		// Long-running workers - disable interactive UI and show loader
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent);
+			m_workflowPanelWidget->applyState(s, imgPresent, derived);
 		}
 		showProgressStart();
 		break;
@@ -1124,7 +1125,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		// Enable fiducials placement UI
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent);
+			m_workflowPanelWidget->applyState(s, imgPresent, derived);
 		}
 		showProgressEnd();
 		break;
@@ -1132,7 +1133,7 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		case ImageProcessingStateMachine::InteractiveRotation:
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent);
+			m_workflowPanelWidget->applyState(s, imgPresent, derived);
 		}
 		showProgressEnd();
 		break;
@@ -1141,32 +1142,16 @@ void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
 		// conservative fallback: disable risky UI
 		ui->actionSave->setEnabled(false);
 		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent);
+			m_workflowPanelWidget->applyState(s, imgPresent, derived);
 		}
 		showProgressEnd();
 		break;
 	}
 
-	// Map enum to human-readable name for the status bar
-	const char* name = "Unknown";
-	switch (s) {
-		case ImageProcessingStateMachine::Idle: name = "Idle"; break;
-		case ImageProcessingStateMachine::LoadingImage: name = "Loading Image"; break;
-		case ImageProcessingStateMachine::DefiningCrop: name = "Defining Crop"; break;
-		case ImageProcessingStateMachine::LoadingCropped: name = "Loading Cropped"; break;
-		case ImageProcessingStateMachine::PlacingFiducials: name = "Placing Fiducials"; break;
-		case ImageProcessingStateMachine::InteractiveRotation: name = "Interactive Rotation"; break;
-		case ImageProcessingStateMachine::ApplyingRotation: name = "Applying Rotation"; break;
-		case ImageProcessingStateMachine::LoadingRotated: name = "Loading Rotated"; break;
-		case ImageProcessingStateMachine::ComputingThreshold: name = "Computing Threshold"; break;
-		case ImageProcessingStateMachine::Segmenting: name = "Segmenting"; break;
-		case ImageProcessingStateMachine::SavingSegment: name = "Saving Segment"; break;
-		case ImageProcessingStateMachine::Completed: name = "Completed"; break;
-		case ImageProcessingStateMachine::ErrorState: name = "Error"; break;
-		default: name = "Unknown"; break;
-	}
+	QString statusMsg = tr("Workflow: %1").arg(ImageProcessingStateMachine::stateToString(s));
+
 	// Show a short status bar message describing the current workflow state.
-	statusBar()->showMessage(tr("Workflow: %1").arg(QString::fromUtf8(name)), 2500);
+	statusBar()->showMessage(statusMsg, 2500);
 }
 
 // One-time verification of recent caches invoked when the main window is first shown.

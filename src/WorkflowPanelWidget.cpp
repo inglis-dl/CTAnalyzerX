@@ -399,7 +399,7 @@ void WorkflowPanelWidget::setSaveCroppedEnabled(bool on)
 // New: centralized expand/collapse policy driven by state machine state.
 // NOTE: this only updates the visual collapsed/expanded state of the group boxes.
 // Enabling/disabling of controls remains the responsibility of the caller (MainWindow).
-void WorkflowPanelWidget::applyState(ImageProcessingStateMachine::State s, bool imagePresent)
+void WorkflowPanelWidget::applyState(ImageProcessingStateMachine::State s, bool imagePresent, bool inputDerived)
 {
 	bool enableCropping = false;
 	bool enableRotation = false;
@@ -413,14 +413,32 @@ void WorkflowPanelWidget::applyState(ImageProcessingStateMachine::State s, bool 
 		case ImageProcessingStateMachine::Idle:
 		case ImageProcessingStateMachine::Completed:
 		case ImageProcessingStateMachine::ErrorState:
-		// When idle/completed/error: workflow groups become available only when an image is present.
-		enableCropping = imagePresent;
-		enableRotation = imagePresent;
-		enableSegmentation = imagePresent;
-		enableFiducials = imagePresent;
-
-		// Expand cropping by default when image present; keep appearance accessible as well.
-		expand = imagePresent ? ExpandTarget::Cropping : ExpandTarget::None;
+		// When idle/completed/error: behavior differs for project-derived vs normal images.
+		// - If the input is derived (part of a running/previous project) enable the full workflow
+		//   so the user may continue processing (rotation/segmentation/fiducials).
+		// - For plain images (not derived) only enable cropping (and appearance/info).
+		if (imagePresent) {
+			if (inputDerived) {
+				enableCropping = true;
+				enableRotation = true;
+				enableSegmentation = true;
+				enableFiducials = true;
+				// when derived, still highlight cropping by default (keeps previous UX)
+				expand = ExpandTarget::Cropping;
+			}
+			else {
+				// Non-derived image: only cropping + info/appearance should be available initially.
+				enableCropping = true;
+				enableRotation = false;
+				enableSegmentation = false;
+				enableFiducials = false;
+				expand = ExpandTarget::Cropping;
+			}
+		}
+		else {
+			// no image: nothing enabled
+			expand = ExpandTarget::None;
+		}
 		break;
 
 		case ImageProcessingStateMachine::LoadingImage:
@@ -463,6 +481,17 @@ void WorkflowPanelWidget::applyState(ImageProcessingStateMachine::State s, bool 
 	setRotationEnabled(enableRotation);
 	setSegmentationEnabled(enableSegmentation);
 	setFiducialsEnabled(enableFiducials);
+
+	// Appearance group is always available; ensure it is visible/open when image present.
+	setAppearanceEnabled(true);
+
+	// Optionally adjust which group is visually expanded. We already setCollapsed in the
+	// individual enable helpers, but in case we want to force a particular focus we can:
+	// (Keep minimal behavior: ensure cropping expanded when requested and other groups collapsed if not enabled.)
+	if (expand == ExpandTarget::Cropping && m_grpCropping) m_grpCropping->setCollapsed(!enableCropping);
+	if (expand == ExpandTarget::Rotation && m_grpRotation) m_grpRotation->setCollapsed(!enableRotation);
+	if (expand == ExpandTarget::Fiducials && m_grpFiducials) m_grpFiducials->setCollapsed(!enableFiducials);
+	if (expand == ExpandTarget::Segmentation && m_grpSegmentation) m_grpSegmentation->setCollapsed(!enableSegmentation);
 }
 
 void WorkflowPanelWidget::setWindowLevelController(WindowLevelController* controller)

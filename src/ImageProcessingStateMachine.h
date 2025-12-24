@@ -65,6 +65,8 @@ public:
 	QString lastDerivedPath() const { return m_lastDerivedPath; }
 	bool inputIsDerived() const { return m_isDerived; }
 
+	static QString stateToString(State s);
+
 public slots:
 	// External control
 	void start();

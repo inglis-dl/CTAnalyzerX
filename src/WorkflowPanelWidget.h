@@ -38,10 +38,11 @@ public:
 	bool isAppearanceEnabled() const;
 
 	// New: centralize expand/collapse + enable/disable policy driven by state machine
-	// Accepts the ImageProcessingStateMachine::State and a flag indicating whether
-	// a valid image is present. This method both enables/disables the workflow
-	// groups and updates their collapsed/expanded visual state.
-	void applyState(ImageProcessingStateMachine::State s, bool imagePresent);
+	// Accepts the ImageProcessingStateMachine::State, a flag indicating whether a
+	// valid image is present, and a flag indicating whether the input image is
+	// derived from the current project. The derived flag controls whether advanced
+	// workflow groups (rotation / segmentation / fiducials) should be enabled.
+	void applyState(ImageProcessingStateMachine::State s, bool imagePresent, bool inputDerived);
 
 	// Insert real widgets into the placeholders (ownership is NOT transferred;
 	// the widget will be reparented to the placeholder area).

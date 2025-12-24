@@ -327,42 +327,64 @@ QAbstractState* ImageProcessingStateMachine::stateForEnum(State s) const
 
 bool ImageProcessingStateMachine::readSidecarForInput()
 {
-	// No-op if input path not set
-	if (m_inputFile.isEmpty()) return false;
-
-	// Read canonical sidecar (JsonUtils only reads canonical path; no legacy checks)
-	QJsonObject doc = JsonUtils::readJsonSidecar(m_inputFile);
-	if (doc.isEmpty()) {
-		m_sidecar = QJsonObject();
-		m_isDerived = false;
-		m_derivedFrom.clear();
-		m_lastDerivedPath.clear();
-		return false;
-	}
-
-	// Store parsed sidecar
-	m_sidecar = doc;
-
-	// Default flags
+	// Reset previous sidecar-derived state first.
+	m_sidecar = QJsonObject();
 	m_isDerived = false;
 	m_derivedFrom.clear();
 	m_lastDerivedPath.clear();
 
-	// If operations array present, inspect last operation for provenance
-	if (doc.contains(QStringLiteral("operations")) && doc.value(QStringLiteral("operations")).isArray()) {
-		QJsonArray ops = doc.value(QStringLiteral("operations")).toArray();
-		if (!ops.isEmpty()) {
-			QJsonObject lastOp = ops.last().toObject();
-			const QString status = lastOp.value(QStringLiteral("status")).toString().toLower();
-			const QString derived = lastOp.value(QStringLiteral("derived")).toString();
-			if (!derived.isEmpty() && status == QStringLiteral("completed") && QFile::exists(derived)) {
-				m_isDerived = true;
-				m_lastDerivedPath = derived;
-				if (doc.contains(QStringLiteral("source")) && doc.value(QStringLiteral("source")).isString()) {
-					m_derivedFrom = doc.value(QStringLiteral("source")).toString();
+	if (m_inputFile.isEmpty()) return false;
+
+	// Use canonical sidecar location logic from JsonUtils (AppData/projects/<base>.json)
+	QJsonObject side = JsonUtils::readJsonSidecar(m_inputFile);
+	if (side.isEmpty()) {
+		// No sidecar found for this image -> not derived
+		m_isDerived = false;
+		return false;
+	}
+
+	// Store sidecar in state machine
+	m_sidecar = side;
+
+	// Two canonical cases:
+	// 1) Sidecar that describes a derived image: JsonUtils::writeCropSidecar writes "source" at top-level.
+	//    In this case the sidecar file is associated with the derived image and contains "source".
+	// 2) Sidecar that is a project for a source image: no top-level "source" key (or it may carry operations).
+	//
+	// Use presence of "source" to decide derived vs non-derived.
+	if (m_sidecar.contains(QStringLiteral("source")) && m_sidecar.value(QStringLiteral("source")).isString()) {
+		m_isDerived = true;
+		m_derivedFrom = m_sidecar.value(QStringLiteral("source")).toString();
+		// record that this sidecar belongs to the current input file
+		m_lastDerivedPath = m_inputFile;
+	}
+	else {
+		// Not a derived-image sidecar; treat as project sidecar for the source image.
+		m_isDerived = false;
+
+		// Optionally record lastDerivedPath if project's operations reference derived outputs.
+		// Look for operations[].derived equal to some known value (not required for derived detection).
+		if (m_sidecar.contains(QStringLiteral("operations")) && m_sidecar.value(QStringLiteral("operations")).isArray()) {
+			QJsonArray ops = m_sidecar.value(QStringLiteral("operations")).toArray();
+			for (const QJsonValue& v : ops) {
+				if (!v.isObject()) continue;
+				QJsonObject op = v.toObject();
+				if (op.contains(QStringLiteral("derived")) && op.value(QStringLiteral("derived")).isString()) {
+					// remember last derived path referenced (useful bookkeeping)
+					m_lastDerivedPath = op.value(QStringLiteral("derived")).toString();
+					// do NOT mark m_isDerived true because the current input is the project/source image
+					// (we only mark derived when the sidecar itself indicates "source").
 				}
 			}
 		}
+	}
+
+	// Optionally notify listeners that a project-sidecar is present for this image.
+	// Keep decision conservative: emit projectLoaded only when this sidecar looks like a project (i.e., not "source")
+	if (!m_isDerived) {
+		// Emit projectLoaded with the canonical sidecar path so MainWindow can add to recents.
+		const QString sidecarPath = JsonUtils::sidecarPathForImage(m_inputFile);
+		emit projectLoaded(sidecarPath);
 	}
 
 	return true;
@@ -482,4 +504,24 @@ bool ImageProcessingStateMachine::writeCropSidecarForOutput(const QString& outPa
 	const QString sidecar = JsonUtils::sidecarPathForImage(outPath);
 	emit sidecarWritten(sidecar);
 	return true;
+}
+
+QString ImageProcessingStateMachine::stateToString(State s)
+{
+	switch (s) {
+		case Idle: return QStringLiteral("Idle");
+		case LoadingImage: return QStringLiteral("LoadingImage");
+		case DefiningCrop: return QStringLiteral("DefiningCrop");
+		case LoadingCropped: return QStringLiteral("LoadingCropped");
+		case PlacingFiducials: return QStringLiteral("PlacingFiducials");
+		case InteractiveRotation: return QStringLiteral("InteractiveRotation");
+		case ApplyingRotation: return QStringLiteral("ApplyingRotation");
+		case LoadingRotated: return QStringLiteral("LoadingRotated");
+		case ComputingThreshold: return QStringLiteral("ComputingThreshold");
+		case Segmenting: return QStringLiteral("Segmenting");
+		case SavingSegment: return QStringLiteral("SavingSegment");
+		case Completed: return QStringLiteral("Completed");
+		case ErrorState: return QStringLiteral("ErrorState");
+		default: return QStringLiteral("Unknown");
+	}
 }
