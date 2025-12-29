@@ -5,8 +5,19 @@
 #include <QResource> // optional, quiets some compilers
 
 #include <vtkAutoInit.h>
-VTK_MODULE_INIT(vtkRenderingVolumeOpenGL2);
 
+// Explicitly initialize required VTK modules for static builds.
+// Core OpenGL rendering backend:
+VTK_MODULE_INIT(vtkRenderingOpenGL2);
+// 2D context (charts, vtkContextView, vtkContextDevice2D):
+VTK_MODULE_INIT(vtkRenderingContextOpenGL2);
+// Volume rendering backend (you already had this one):
+VTK_MODULE_INIT(vtkRenderingVolumeOpenGL2);
+// Optional but commonly used:
+VTK_MODULE_INIT(vtkInteractionStyle);
+VTK_MODULE_INIT(vtkRenderingFreeType);
+// NOTE: Do NOT init vtkRenderingQt here unless you also link that module.
+// VTK_MODULE_INIT(vtkRenderingQt);
 
 int main(int argc, char* argv[]) {
 

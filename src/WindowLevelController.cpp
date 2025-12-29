@@ -19,9 +19,7 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 	m_debounce->setInterval(60);
 
 	auto maybeEmitInteractive = [this]() {
-		if (ui.m_chkInteractive && ui.m_chkInteractive->isChecked()) {
-			m_debounce->start();
-		}
+		m_debounce->start();
 		};
 
 	connect(m_debounce, &QTimer::timeout, this, [this]() {
@@ -42,17 +40,6 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 	connect(ui.m_btnReset, &QPushButton::clicked, this, [this]() {
 		emit requestResetWindowLevel();
 	});
-
-	// Forward checkbox toggles to interested parties
-	if (ui.m_chkInteractive) {
-		connect(ui.m_chkInteractive, &QCheckBox::toggled, this, [this](bool on) {
-			// If interactive was turned off, cancel any pending emission.
-			if (!on && m_debounce->isActive()) {
-				m_debounce->stop();
-			}
-			emit interactiveToggled(on);
-		});
-	}
 }
 
 void WindowLevelController::setWindow(double w)
@@ -70,20 +57,8 @@ void WindowLevelController::setLevel(double l)
 	ui.m_spinLevel->setValue(l);
 }
 
-void WindowLevelController::setInteractive(bool interactive)
-{
-	if (!ui.m_chkInteractive) return;
-	// update checkbox programmatically (this will emit interactiveToggled via connected signal)
-	ui.m_chkInteractive->setChecked(interactive);
-}
-
 void WindowLevelController::setDebounceInterval(int ms)
 {
 	if (!m_debounce) return;
 	m_debounce->setInterval(ms);
-}
-
-bool WindowLevelController::interactive() const
-{
-	return ui.m_chkInteractive ? ui.m_chkInteractive->isChecked() : false;
 }
