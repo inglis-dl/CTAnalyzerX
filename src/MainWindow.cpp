@@ -392,6 +392,13 @@ void MainWindow::setupPanelConnections()
 	// Register the controller instance with the Lightbox so it can wire propagation.
 	if (wlController) {
 		ui->lightboxWidget->setWindowLevelController(wlController);
+
+		// Ensure the controller participates in global load/save settings hooks
+		connect(this, &MainWindow::requestLoadViewSettings, wlController, &WindowLevelController::readSettings, Qt::UniqueConnection);
+		connect(this, &MainWindow::requestSaveViewSettings, wlController, &WindowLevelController::writeSettings, Qt::UniqueConnection);
+
+		// Load controller settings immediately so UI reflects persisted state early
+		wlController->readSettings();
 	}
 
 	// Let the WorkflowPanelWidget own the live connection to the Lightbox for cropping updates.

@@ -5,6 +5,7 @@
 #include "WindowLevelController.h"
 #include "WindowLevelBridge.h"
 
+#include <vtkAlgorithmOutput.h>
 #include <vtkImageSinusoidSource.h>
 #include <vtkSmartPointer.h>
 #include <vtkImageProperty.h>
@@ -18,11 +19,9 @@
 #include <array>
 #include <cmath>
 #include <QColor>
-
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
-
 #include <QGridLayout>
 #include <QLayoutItem>
 
@@ -297,6 +296,10 @@ void LightboxWidget::setImageData(vtkImageData* image)
 		if (ui.YZView) ui.YZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
+	}
+
+	if (m_wlController) {
+		m_wlController->setImageData(image);
 	}
 }
 
@@ -620,6 +623,28 @@ void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port, bool newImg)
 		if (ui.YZView) ui.YZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
+	}
+
+	if (m_wlController) {
+		vtkImageData* image = nullptr;
+		if (port) {
+			vtkAlgorithm* producer = port->GetProducer();
+			if (producer) {
+				// Try to read the producer's current output data object without forcing a pipeline update.
+				vtkDataObject* out = producer->GetOutputDataObject(port->GetIndex());
+				image = vtkImageData::SafeDownCast(out);
+
+				// Fallback: if output is not a concrete vtkImageData, attempt to update the producer
+				// and re-check. This forces pipeline execution which may be expensive, so it's only
+				// done as a fallback.
+				if (!image) {
+					producer->Update();
+					out = producer->GetOutputDataObject(port->GetIndex());
+					image = vtkImageData::SafeDownCast(out);
+				}
+			}
+		}
+		m_wlController->setImageData(image); // image may be nullptr if concrete data is unavailable
 	}
 }
 
