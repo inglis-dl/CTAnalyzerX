@@ -29,9 +29,8 @@
 #include <QtCharts/QValueAxis>
 #include <QSizePolicy>
 #include <QEvent>
-
-#include <cmath>
-#include <vector>
+#include <QVBoxLayout>
+#include "RangeSlider.h"
 
 using namespace QtCharts;
 
@@ -125,11 +124,20 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 		m_chartView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 		// Ensure the placeholder has a zero-margin layout and add the view.
 		if (!ui.m_view->layout()) {
-			auto layout = new QHBoxLayout(ui.m_view);
+			// stack chart above slider
+			auto layout = new QVBoxLayout(ui.m_view);
 			layout->setContentsMargins(0, 0, 0, 0);
 			layout->setSpacing(0);
 			layout->setSizeConstraint(QLayout::SetNoConstraint);
+			// create slider below the chart
+			m_slider = new RangeSlider(Qt::Horizontal, ui.m_view);
+			m_slider->setRange(0, 0);
+			m_slider->setValues(0, 0);
+			m_slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+			m_slider->setFixedHeight(18);
+
 			layout->addWidget(m_chartView, 1);
+			layout->addWidget(m_slider, 0);
 		}
 		else {
 			// ensure zero margins / no spacing on the existing layout
@@ -146,8 +154,31 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 			else {
 				lay->addWidget(m_chartView);
 			}
+
+			// add slider to existing layout as the next widget (attempt to place below if layout is vertical)
+			m_slider = new RangeSlider(Qt::Horizontal, ui.m_view);
+			m_slider->setRange(0, 0);
+			m_slider->setValues(0, 0);
+			m_slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+			m_slider->setFixedHeight(18);
+			if (auto box = qobject_cast<QBoxLayout*>(lay)) {
+				box->addWidget(m_slider, /*stretch*/ 0);
+			}
+			else {
+				lay->addWidget(m_slider);
+			}
 		}
 		m_chartView->show();
+
+		// wire slider -> x axis zooming
+		if (m_slider) {
+			connect(m_slider, &RangeSlider::valuesChanged, this, [this](int minPos, int maxPos) {
+				if (m_axisX && m_chart) {
+					m_axisX->setRange(double(minPos), double(maxPos));
+					m_chart->update();
+				}
+			});
+		}
 
 		// arrange for the plot area to be resized to the entire view:
 		// - install an event filter so we can react to view/placeholder resizes
@@ -380,6 +411,16 @@ void WindowLevelController::redrawHistogram()
 		}
 	}
 
+	// update slider range / selection to match current displayBins
+	if (m_slider) {
+		const int maxPos = (displayBins > 0) ? (displayBins - 1) : 0;
+		// set slider overall range (inherited from QSlider) and RangeSlider values
+		m_slider->setMinimum(0);
+		m_slider->setMaximum(maxPos);
+		// set full-range selection by default (user can then drag handles)
+		m_slider->setValues(0, maxPos);
+	}
+
 	// If filterPeak is enabled, mask out the largest peak so it doesn't dominate the display
 	if (m_filterPeak && !displayValues.empty()) {
 		// find index of maximum
@@ -408,10 +449,6 @@ void WindowLevelController::redrawHistogram()
 		qvals.append(qreal(v));
 
 	m_barSet->append(qvals);
-
-	// Attach axes (only needed once, but harmless)
-	m_barSeries->attachAxis(m_axisX);
-	m_barSeries->attachAxis(m_axisY);
 
 	// --- QValueAxis update ---
 	if (m_axisX)

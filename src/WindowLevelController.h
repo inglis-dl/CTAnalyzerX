@@ -21,6 +21,7 @@ namespace QtCharts {
 
 class vtkImageData;
 class vtkImageHistogram;
+class RangeSlider;
 
 class WindowLevelController : public QWidget
 {
@@ -84,6 +85,8 @@ private:
 	QAction* m_actFilterPeak = nullptr;
 	// store the filter state
 	bool m_filterPeak = false;
+
+	RangeSlider* m_slider = nullptr;
 
 	// Draw/redraw histogram using current m_histo input + scale
 	void redrawHistogram();
