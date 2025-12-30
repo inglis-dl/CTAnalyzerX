@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QList>
 #include <QParallelAnimationGroup>
+#include <QJsonObject> // added for metaReady signal
 
 class SliceView;
 class VolumeView;
@@ -57,6 +58,9 @@ public slots:
 signals:
 	// Forwarded extents notifications from child views (same format as ImageFrameWidget)
 	void imageExtentsChanged(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
+
+	// Emit JSON metadata for the current/default image so ImageInfoWidget can update.
+	void metaReady(const QJsonObject& meta);
 
 private slots:
 	// Handle maximize/restore requests from child frames

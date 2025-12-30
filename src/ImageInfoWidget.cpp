@@ -102,6 +102,16 @@ QString ImageInfoWidget::formatPoint(const double p[3]) const
 		.arg(QString::number(p[0]), QString::number(p[1]), QString::number(p[2]));
 }
 
+QString ImageInfoWidget::formatSpacing(const double s[3]) const
+{
+	const double eps = 1e-6;
+	if (std::fabs(s[0] - s[1]) < eps && std::fabs(s[0] - s[2]) < eps) {
+		return QString::number(s[0]);
+	}
+	return QStringLiteral("(%1,%2,%3)")
+		.arg(QString::number(s[0]), QString::number(s[1]), QString::number(s[2]));
+}
+
 void ImageInfoWidget::setFileOnly(const QString& filePath)
 {
 	if (filePath.isEmpty()) {
@@ -253,7 +263,14 @@ void ImageInfoWidget::updateFromMeta(const QJsonObject& meta)
 		QJsonArray a = meta.value(QStringLiteral("spacing")).toArray();
 		if (a.size() >= 3) {
 			double p[3] = { a.at(0).toDouble(1.0), a.at(1).toDouble(1.0), a.at(2).toDouble(1.0) };
-			ui->labelSpacingValue->setText(formatPoint(p));
+			// Determine units from meta; default to "mm" when unknown/absent.
+			QString units = QStringLiteral("mm");
+			if (meta.contains(QStringLiteral("units"))) {
+				const QString u = meta.value(QStringLiteral("units")).toString().trimmed();
+				if (!u.isEmpty()) units = u;
+			}
+
+			ui->labelSpacingValue->setText(formatSpacing(p) + QStringLiteral(" ") + units);
 		}
 	}
 }

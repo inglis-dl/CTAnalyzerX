@@ -44,4 +44,5 @@ private:
 	QString formatRange(double minv, double maxv) const;
 	QString formatDims(int dims[3]) const;
 	QString formatPoint(const double p[3]) const;
+	QString formatSpacing(const double s[3]) const;
 };

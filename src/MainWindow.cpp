@@ -266,12 +266,19 @@ MainWindow::MainWindow(QWidget* parent)
 	setupPanelConnections();
 
 	// Connect ImageLoader's JSON metadata emitter to the ImageInfoWidget (if present)
-// The WorkflowPanelWidget owns the ImageInfoWidget instance (m_imageInfo).
+	// The WorkflowPanelWidget owns the ImageInfoWidget instance (m_imageInfo).
 	if (m_imageLoader && m_workflowPanelWidget && m_workflowPanelWidget->imageInfo()) {
 		if (auto emitter = m_imageLoader->metaEmitter()) {
 			connect(emitter, &ImageLoaderMetaEmitter::metaUpdated,
 					m_workflowPanelWidget->imageInfo(), &ImageInfoWidget::updateFromMeta, Qt::QueuedConnection);
 		}
+	}
+
+	// Connect LightboxWidget's default-image metaReady signal to ImageInfoWidget so
+	// the info panel shows metadata for the synthetic default image too.
+	if (ui->lightboxWidget && m_workflowPanelWidget && m_workflowPanelWidget->imageInfo()) {
+		connect(ui->lightboxWidget, &LightboxWidget::metaReady,
+		m_workflowPanelWidget->imageInfo(), &ImageInfoWidget::updateFromMeta, Qt::QueuedConnection);
 	}
 
 	// Load settings (geometry, recent files, appearance) using JsonSettings-backed QSettings

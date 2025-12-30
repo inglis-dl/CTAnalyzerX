@@ -23,9 +23,9 @@
 #include <vtkNIFTIReader.h>
 #include <vtkCallbackCommand.h>
 #include <vtkAlgorithm.h>
+#include <vtkNIFTIHeader.h>
 
 #include <iostream>
-
 
 // VTK object factory macro
 vtkStandardNewMacro(ImageLoader);
@@ -181,8 +181,66 @@ static QString extractDateFromDICOM(vtkDICOMReader* reader, const QString& direc
 	return QString();
 }
 
+static QString detectUnitsFromDICOM(vtkDICOMReader* reader)
+{
+	if (!reader) return QString();
+
+	vtkDICOMMetaData* meta = reader->GetMetaData();
+	if (!meta) return QString();
+
+	// Common tags that imply distances in mm:
+	// PixelSpacing (0028,0030), ImagerPixelSpacing (0018,1164),
+	// SpacingBetweenSlices (0018,0088), SliceThickness (0018,0050)
+	vtkDICOMTag tPixel(0x0028, 0x0030);
+	vtkDICOMTag tImager(0x0018, 0x1164);
+	vtkDICOMTag tSpacingBetween(0x0018, 0x0088);
+	vtkDICOMTag tSliceThickness(0x0018, 0x0050);
+
+	if (meta->Find(tPixel) != meta->End() ||
+		meta->Find(tImager) != meta->End() ||
+		meta->Find(tSpacingBetween) != meta->End() ||
+		meta->Find(tSliceThickness) != meta->End()) {
+		return QStringLiteral("mm");
+	}
+
+	return QString();
+}
+
+static QString detectUnitsFromScanco(vtkScancoCTReader* reader)
+{
+	// scancodump prints element sizes with [mm] in the reference — assume mm
+	(void)reader;
+	return QStringLiteral("mm");
+}
+
+static QString detectUnitsFromNIfTI(vtkNIFTIReader* reader)
+{
+	if (!reader) return QString();
+
+	vtkNIFTIHeader* hdrObj = reader->GetNIFTIHeader();
+	if (!hdrObj) return QString();
+
+	int xyzt = hdrObj->GetXYZTUnits();
+
+	// low 3 bits = spatial units (same semantics as nifti: 1=m,2=mm,3=um)
+	switch (xyzt & 0x7) {
+		case vtkNIFTIHeader::UnitsMeter:
+		return QStringLiteral("m");
+		case vtkNIFTIHeader::UnitsMM:
+		return QStringLiteral("mm");
+		case vtkNIFTIHeader::UnitsMicron:
+		return QStringLiteral("um");
+		default:
+		return QString();
+	}
+}
+
 // Helper to populate m_jsonMeta from a vtkImageData output and emit it
-static void populateAndEmitMeta(ImageLoader* loader, vtkImageData* img, const QString& inputPath, const QString& fileType, const QString& explicitDate = QString())
+static void populateAndEmitMeta(ImageLoader* loader, vtkImageData* img,
+	const QString& inputPath,
+	const QString& fileType,
+	const QString& explicitDate = QString(),
+	const QString& units = QString())
 {
 	if (!loader) return;
 
@@ -246,6 +304,10 @@ static void populateAndEmitMeta(ImageLoader* loader, vtkImageData* img, const QS
 		}
 	}
 
+	if (!units.isEmpty()) {
+		meta.insert(QStringLiteral("units"), units);
+	}
+
 	loader->setJsonMeta(meta);
 	if (loader->metaEmitter()) {
 		// emit signal to interested Qt consumers
@@ -304,7 +366,8 @@ vtkSmartPointer<vtkImageData> ImageLoader::LoadScancoISQ() {
 	vtkImageData* out = reader->GetOutput();
 	// Populate JSON meta and emit with Scanco-provided date if available
 	QString scDate = extractDateFromScanco(reader);
-	populateAndEmitMeta(this, out, inputPath, QStringLiteral("ISQ/Scanco"), scDate);
+	QString units = detectUnitsFromScanco(reader);
+	populateAndEmitMeta(this, out, inputPath, QStringLiteral("ISQ/Scanco"), scDate, units);
 
 	return reader->GetOutput();
 }
@@ -343,8 +406,11 @@ vtkSmartPointer<vtkImageData> ImageLoader::LoadDICOM() {
 	// Attempt to extract acquisition datetime from DICOM metadata, otherwise filesystem fallback.
 	QString dateStr = extractDateFromDICOM(reader, directoryPath, inputPath);
 
+	// Best-effort units detection from DICOM metadata (assume mm when tags exist).
+	QString units = detectUnitsFromDICOM(reader);
+
 	// Populate JSON meta and emit
-	populateAndEmitMeta(this, out, inputPath, QStringLiteral("DICOM"), dateStr);
+	populateAndEmitMeta(this, out, inputPath, QStringLiteral("DICOM"), dateStr, units);
 
 	return reader->GetOutput();
 }
@@ -361,7 +427,10 @@ vtkSmartPointer<vtkImageData> ImageLoader::LoadNIfNI()
 	vtkImageData* out = reader->GetOutput();
 
 	// NIfTI header lacks a standardized acquisition datetime; fall back to filesystem timestamp
-	populateAndEmitMeta(this, out, inputPath, QStringLiteral("NIFTI"));
+	// NIfTI header: best-effort detection of spatial units
+	QString units = detectUnitsFromNIfTI(reader);
+
+	populateAndEmitMeta(this, out, inputPath, QStringLiteral("NIFTI"), QString(), units);
 
 	return reader->GetOutput();
 }
@@ -518,15 +587,21 @@ int ImageLoader::RequestData(
 	// Determine fileType and any explicit date available from specific readers.
 	QString fileType;
 	QString explicitDate;
+	QString units;
+
 	switch (this->type) {
 		case ImageLoader::ImageType::ScancoISQ:
 		fileType = QStringLiteral("ISQ/Scanco");
 		if (auto sc = vtkScancoCTReader::SafeDownCast(this->cachedReader)) {
 			explicitDate = extractDateFromScanco(sc);
+			units = detectUnitsFromScanco(sc);
 		}
 		break;
 		case ImageLoader::ImageType::NIFTI:
 		fileType = QStringLiteral("NIFTI");
+		if (auto nr = vtkNIFTIReader::SafeDownCast(this->cachedReader)) {
+			units = detectUnitsFromNIfTI(nr);
+		}
 		break;
 		default: // DICOM
 		fileType = QStringLiteral("DICOM");
@@ -534,11 +609,12 @@ int ImageLoader::RequestData(
 			QFileInfo fi(this->inputPath);
 			QString directoryPath = fi.isDir() ? this->inputPath : fi.absolutePath();
 			explicitDate = extractDateFromDICOM(dr, directoryPath, this->inputPath);
+			units = detectUnitsFromDICOM(dr);
 		}
 		break;
 	}
 
-	populateAndEmitMeta(this, img, this->inputPath, fileType, explicitDate);
+	populateAndEmitMeta(this, img, this->inputPath, fileType, explicitDate, units);
 
 	outInfo->Set(vtkDataObject::DATA_OBJECT(), img);
 	return 1;

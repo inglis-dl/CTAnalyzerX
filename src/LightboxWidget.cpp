@@ -24,6 +24,9 @@
 #include <QMimeData>
 #include <QGridLayout>
 #include <QLayoutItem>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QDateTime>
 
 
 namespace {
@@ -280,6 +283,65 @@ void LightboxWidget::setDefaultImage()
 		// Fallback: attach as a pipeline connection if output is not a concrete image.
 		setInputConnection(sinusoid->GetOutputPort(), true);
 	}
+
+	// Build JSON metadata for the synthetic default image and emit so ImageInfoWidget can update.
+	QJsonObject meta;
+	meta.insert(QStringLiteral("fileName"), QStringLiteral("memory"));
+	meta.insert(QStringLiteral("fileType"), QStringLiteral("Synthetic (sinusoid)"));
+	meta.insert(QStringLiteral("date"), QDateTime::currentDateTime().toString(Qt::ISODate));
+
+	if (img) {
+		// scalar range
+		double range[2] = { 0.0, 0.0 };
+		img->GetScalarRange(range);
+		QJsonArray rangeA;
+		rangeA.append(range[0]);
+		rangeA.append(range[1]);
+		meta.insert(QStringLiteral("range"), rangeA);
+
+		// dimensions
+		int dims[3] = { 0, 0, 0 };
+		img->GetDimensions(dims);
+		QJsonArray dimsA;
+		dimsA.append(dims[0]);
+		dimsA.append(dims[1]);
+		dimsA.append(dims[2]);
+		meta.insert(QStringLiteral("dims"), dimsA);
+
+		// origin
+		double origin[3] = { 0.0, 0.0, 0.0 };
+		img->GetOrigin(origin);
+		QJsonArray originA;
+		originA.append(origin[0]);
+		originA.append(origin[1]);
+		originA.append(origin[2]);
+		meta.insert(QStringLiteral("origin"), originA);
+
+		// spacing
+		double spacing[3] = { 1.0, 1.0, 1.0 };
+		img->GetSpacing(spacing);
+		QJsonArray spacingA;
+		spacingA.append(spacing[0]);
+		spacingA.append(spacing[1]);
+		spacingA.append(spacing[2]);
+		meta.insert(QStringLiteral("spacing"), spacingA);
+
+		// scalar type
+		const char* st = img->GetScalarTypeAsString();
+		if (st && *st) meta.insert(QStringLiteral("scalarType"), QString::fromUtf8(st));
+		else meta.insert(QStringLiteral("scalarType"), QStringLiteral("unknown"));
+	}
+	else {
+		// fallback placeholders if concrete data is not available
+		meta.insert(QStringLiteral("range"), QJsonArray{ 0.0, 0.0 });
+		meta.insert(QStringLiteral("dims"), QJsonArray{ 0, 0, 0 });
+		meta.insert(QStringLiteral("origin"), QJsonArray{ 0.0, 0.0, 0.0 });
+		meta.insert(QStringLiteral("spacing"), QJsonArray{ 1.0, 1.0, 1.0 });
+		meta.insert(QStringLiteral("scalarType"), QStringLiteral("unknown"));
+	}
+
+	// Emit the metadata so consumers (ImageInfoWidget) can call updateFromMeta.
+	emit metaReady(meta);
 }
 
 void LightboxWidget::setImageData(vtkImageData* image)
