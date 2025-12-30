@@ -1,20 +1,26 @@
 #pragma once
 
 #include <QWidget>
+#include <QTimer>
 #include <QPainterPath>
 
 #include "ui_WindowLevelController.h"
 #include <vtkSmartPointer.h>
 
+QT_FORWARD_DECLARE_CLASS(QMenu)
+QT_FORWARD_DECLARE_CLASS(QActionGroup)
+QT_FORWARD_DECLARE_CLASS(QAction)
 
-class QTimer;
+namespace QtCharts {
+	class QChartView;
+	class QChart;
+	class QBarSeries;
+	class QBarSet;
+	class QValueAxis;
+}
+
 class vtkImageData;
 class vtkImageHistogram;
-class QMenu;
-class QActionGroup;
-class QAction;
-class QGraphicsScene;
-class QGraphicsPathItem;
 
 class WindowLevelController : public QWidget
 {
@@ -58,10 +64,13 @@ private:
 
 	vtkSmartPointer<vtkImageHistogram> m_histo;
 
-	// cached scene and polygon item so we only update the polygon
-	QGraphicsScene* m_scene = nullptr;
-	QGraphicsPathItem* m_pathItem = nullptr;
-	QPainterPath m_path;
+	// Qt Charts members (replace QGraphics path approach)
+	QtCharts::QChartView* m_chartView = nullptr;
+	QtCharts::QChart* m_chart = nullptr;
+	QtCharts::QBarSeries* m_barSeries = nullptr;
+	QtCharts::QBarSet* m_barSet = nullptr;
+	QtCharts::QValueAxis* m_axisX = nullptr;
+	QtCharts::QValueAxis* m_axisY = nullptr;
 
 	// context menu for the histogram view
 	QMenu* m_viewMenu = nullptr;
@@ -69,4 +78,11 @@ private:
 
 	// Draw/redraw histogram using current m_histo input + scale
 	void redrawHistogram();
+
+	// Ensure chart plot area fills the view without subclassing QChartView
+	void adjustChartPlotArea();
+
+protected:
+	// install event filter on m_chartView / placeholder to react to resizes
+	bool eventFilter(QObject* watched, QEvent* event) override;
 };

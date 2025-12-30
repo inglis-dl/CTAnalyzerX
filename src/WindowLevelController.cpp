@@ -7,14 +7,12 @@
 #include <QLabel>
 #include <QTimer>
 #include <QSignalBlocker>
-#include <QGraphicsView>
-#include <QGraphicsScene>
-#include <QGraphicsPathItem>
-#include <QPen>
 #include <QMenu>
 #include <QActionGroup>
 #include <QAction>
 #include <QSettings>
+#include <QBrush>
+#include <QColor>
 
 #include "JsonSettings.h"
 
@@ -22,6 +20,20 @@
 #include <vtkImageHistogram.h>
 #include <vtkIdTypeArray.h>
 #include <vtkSmartPointer.h>
+#include <vtkDataObject.h>
+
+#include <QtCharts/QChartView>
+#include <QtCharts/QChart>
+#include <QtCharts/QBarSeries>
+#include <QtCharts/QBarSet>
+#include <QtCharts/QValueAxis>
+#include <QSizePolicy>
+#include <QEvent>
+
+#include <cmath>
+#include <vector>
+
+using namespace QtCharts;
 
 WindowLevelController::WindowLevelController(QWidget* parent)
 	: QWidget(parent)
@@ -58,7 +70,97 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 
 	m_histo = vtkSmartPointer<vtkImageHistogram>::New();
 
-	// Prepare cached scene + painter path so redraws only update lines
+	// Setup Qt Charts in the placeholder `ui.m_view` (works when `m_view` is a QWidget placeholder)
+	if (ui.m_view) {
+
+		// Series and axes
+		m_barSet = new QBarSet(QString());
+		m_barSet->setColor(QColor("#404040"));        // dark gray
+		m_barSet->setBorderColor(Qt::transparent);    // no outline
+
+		m_barSeries = new QBarSeries();
+		m_barSeries->append(m_barSet);
+		m_barSeries->setBarWidth(1.0); // full width bars, no gaps
+		m_barSeries->setLabelsVisible(false);
+
+		m_chart = new QChart();
+		m_chart->legend()->hide();
+		m_chart->addSeries(m_barSeries);
+		m_chart->setBackgroundRoundness(0);
+		m_chart->setBackgroundVisible(true);
+		m_chart->setBackgroundBrush(QBrush(QColor("#e0e0e0")));   // light gray
+		m_chart->setPlotAreaBackgroundVisible(true);
+		m_chart->setPlotAreaBackgroundBrush(QBrush(QColor("#e0e0e0")));
+		m_chart->setMargins(QMargins(0, 0, 0, 0));
+
+
+		m_axisX = new QValueAxis();
+		m_axisY = new QValueAxis();
+
+		m_axisX->setLabelsVisible(false); // hide many labels if many bins
+		m_axisX->setGridLineVisible(false);
+		m_axisX->setLineVisible(false);
+		m_axisX->setTickCount(0);      // hide ticks
+		m_axisX->setMinorTickCount(0); // hide minor ticks
+
+		m_axisY->setLabelsVisible(false); // hide many labels if many bins
+		m_axisY->setGridLineVisible(false);
+		m_axisY->setLineVisible(false);
+		m_axisY->setTickCount(0);      // hide ticks
+		m_axisY->setMinorTickCount(0); // hide minor ticks
+
+		m_chart->addAxis(m_axisX, Qt::AlignBottom);
+		m_chart->addAxis(m_axisY, Qt::AlignLeft);
+		m_barSeries->attachAxis(m_axisX);
+		m_barSeries->attachAxis(m_axisY);
+
+		// Create view and place it into placeholder
+		// Use a layout so the chart fills the placeholder and resizes correctly.
+		m_chartView = new QChartView(m_chart);
+		m_chartView->setRenderHint(QPainter::Antialiasing);
+		m_chartView->setContentsMargins(0, 0, 0, 0);
+		m_chartView->setStyleSheet("background: transparent; border: none; padding: 0px; margin: 0px;");
+
+
+		m_chartView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+		// Ensure the placeholder has a zero-margin layout and add the view.
+		if (!ui.m_view->layout()) {
+			auto layout = new QHBoxLayout(ui.m_view);
+			layout->setContentsMargins(0, 0, 0, 0);
+			layout->setSpacing(0);
+			layout->setSizeConstraint(QLayout::SetNoConstraint);
+			layout->addWidget(m_chartView, 1);
+		}
+		else {
+			// ensure zero margins / no spacing on the existing layout
+			QLayout* lay = ui.m_view->layout();
+			lay->setContentsMargins(0, 0, 0, 0);
+			lay->setSpacing(0);
+			lay->setSizeConstraint(QLayout::SetNoConstraint);
+
+			// If the existing layout is a QBoxLayout (QHBoxLayout/QVBoxLayout),
+			// we can specify a stretch factor to force the chart to fill.
+			if (auto box = qobject_cast<QBoxLayout*>(lay)) {
+				box->addWidget(m_chartView, /*stretch*/ 1);
+			}
+			else {
+				lay->addWidget(m_chartView);
+			}
+		}
+		m_chartView->show();
+
+		// arrange for the plot area to be resized to the entire view:
+		// - install an event filter so we can react to view/placeholder resizes
+		m_chartView->installEventFilter(this);
+		ui.m_view->installEventFilter(this);
+		// - and run once after construction to set initial plot area
+		QTimer::singleShot(0, this, [this]() { adjustChartPlotArea(); });
+
+		// Bar styling: dark gray
+		QBrush barBrush(QColor(0x44, 0x44, 0x44));
+		m_barSet->setBrush(barBrush);
+	}
+
 	// Prepare context menu for the histogram view (ui.m_view)
 	if (ui.m_view) {
 		ui.m_view->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -106,13 +208,6 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 			const int val = act->data().toInt();
 			setHistogramScale(val);
 		});
-
-		m_scene = new QGraphicsScene(this);
-		ui.m_view->setScene(m_scene);
-
-		// create an empty path item and keep pointer for fast updates (open polyline)
-		m_pathItem = m_scene->addPath(m_path, QPen(Qt::black));
-		m_pathItem->setBrush(Qt::NoBrush);
 	}
 }
 
@@ -162,8 +257,7 @@ void WindowLevelController::setImageData(vtkImageData* image)
 	if (!image || !ui.m_view)  // adjust member name to your .ui
 		return;
 
-	// Do NOT rely on m_lastImage; set the input on m_histo and let redrawHistogram
-	// obtain the input from the m_histo instance.
+	// Set the input on the histogram filter. redrawHistogram will query it.
 	m_histo->SetInputData(image);
 	m_histo->AutomaticBinningOn();
 
@@ -180,19 +274,14 @@ void WindowLevelController::setImageData(vtkImageData* image)
 
 void WindowLevelController::redrawHistogram()
 {
-	// Ensure we have a histogram filter with an attached concrete input vtkImageData
-	if (!m_histo || !ui.m_view)
+	if (!m_histo || !ui.m_view || !m_chartView)
 		return;
 
-	// Try to obtain the input data object from the histogram algorithm.
-	vtkDataObject* inObj = m_histo->GetInputDataObject(0, 0);
-	vtkImageData* image = vtkImageData::SafeDownCast(inObj);
-	if (!image) {
-		// No concrete image attached to histogram - nothing to draw.
+	vtkImageData* image =
+		vtkImageData::SafeDownCast(m_histo->GetInputDataObject(0, 0));
+	if (!image)
 		return;
-	}
 
-	// Ensure histogram is up-to-date for the current input and histogram parameters.
 	m_histo->Update();
 
 	vtkIdTypeArray* hArr = m_histo->GetHistogram();
@@ -201,74 +290,96 @@ void WindowLevelController::redrawHistogram()
 
 	const int nBins = hArr->GetNumberOfTuples();
 
-	// Generate scaled counts array according to histogram scale (linear/log/sqrt).
-	// We compute scaledCounts separately and use it to find the peak for normalization.
-	std::vector<double> scaledCounts;
-	scaledCounts.resize(nBins);
+	std::vector<double> scaledCounts(nBins);
+	int scaleMode = m_histo->GetHistogramImageScale();
 
-	// Determine scale mode from vtkImageHistogram enum (client-side)
-	int scaleMode = m_histo->GetHistogramImageScale(); // 0=Linear,1=Log,2=Sqrt
-
-	for (int i = 0; i < nBins; ++i) {
-		const vtkIdType rawCount = hArr->GetValue(i);
+	for (int i = 0; i < nBins; ++i)
+	{
+		vtkIdType raw = hArr->GetValue(i);
 		double s = 0.0;
-		switch (scaleMode) {
+
+		switch (scaleMode)
+		{
 			case vtkImageHistogram::Log:
-			// log(0) is undefined; map 0 -> 0, otherwise natural log
-			s = (rawCount > 0) ? std::log(static_cast<double>(rawCount)) : 0.0;
+			s = (raw > 0) ? std::log(double(raw)) : 0.0;
 			break;
 			case vtkImageHistogram::Sqrt:
-			s = std::sqrt(static_cast<double>(rawCount));
+			s = std::sqrt(double(raw));
 			break;
-			case vtkImageHistogram::Linear:
 			default:
-			s = static_cast<double>(rawCount);
+			s = double(raw);
 			break;
 		}
 		scaledCounts[i] = s;
 	}
 
-	// Find peak from scaled counts for normalization
 	double maxScaled = 0.0;
-	for (int i = 0; i < nBins; ++i) {
-		if (scaledCounts[i] > maxScaled) maxScaled = scaledCounts[i];
-	}
+	for (double v : scaledCounts)
+		if (v > maxScaled) maxScaled = v;
+
 	if (maxScaled <= 0.0)
 		return;
 
-	// Use cached scene and polygon item if available; create lazily if missing.
-	if (!m_scene) {
-		m_scene = ui.m_view->scene();
-		if (!m_scene) {
-			m_scene = new QGraphicsScene(this);
-			ui.m_view->setScene(m_scene);
+	const int maxDisplayBins = 2048;
+	int displayBins = std::min(nBins, maxDisplayBins);
+
+	std::vector<double> displayValues(displayBins, 0.0);
+
+	if (displayBins == nBins)
+	{
+		displayValues = scaledCounts;
+	}
+	else
+	{
+		const double step = double(nBins) / double(displayBins);
+		for (int b = 0; b < displayBins; ++b)
+		{
+			int start = int(std::floor(b * step));
+			int end = int(std::floor((b + 1) * step));
+			if (end <= start) end = start + 1;
+
+			double peak = 0.0;
+			for (int j = start; j < end && j < nBins; ++j)
+				peak = std::max(peak, scaledCounts[j]);
+
+			displayValues[b] = peak;
 		}
 	}
 
-	const QSizeF vpSize = ui.m_view->viewport()->size();
-	const double w = vpSize.width() > 0 ? vpSize.width() : 256.0;
-	const double h = vpSize.height() > 0 ? vpSize.height() : 128.0;
+	double dispMax = 0.0;
+	for (double v : displayValues)
+		if (v > dispMax) dispMax = v;
+	if (dispMax <= 0.0) dispMax = 1.0;
 
-	// Build an open QPainterPath: moveTo(first) then lineTo(...) for each subsequent point.
-	m_path.clear();
-	if (nBins > 0) {
-		const double x0 = (nBins > 1) ? (w * 0 / double(nBins - 1)) : 0.0;
-		const double y0 = h * (1.0 - (scaledCounts[0] / maxScaled));
-		m_path.moveTo(x0, y0);
-		for (int i = 1; i < nBins; ++i) {
-			const double x = (nBins > 1) ? (w * i / double(nBins - 1)) : 0.0;
-			const double y = h * (1.0 - (scaledCounts[i] / maxScaled));
-			m_path.lineTo(x, y);
-		}
-	}
+	if (!m_barSeries)
+		return;
 
-	// Update path item (open polyline — QPainterPath is not closed unless closeSubpath() is called)
-	m_pathItem->setPath(m_path);
+	if (m_barSeries->count() > 0)
+		m_barSet->remove(0, m_barSet->count());
 
-	// Update the scene rect so the view scales correctly
-	m_scene->setSceneRect(0, 0, w, h);
-	// Optional: ensure view repaints
-	ui.m_view->viewport()->update();
+	QList<qreal> qvals;
+	qvals.reserve(displayBins);
+	for (double v : displayValues)
+		qvals.append(qreal(v));
+
+	m_barSet->append(qvals);
+
+	// Attach axes (only needed once, but harmless)
+	m_barSeries->attachAxis(m_axisX);
+	m_barSeries->attachAxis(m_axisY);
+
+	// --- QValueAxis update ---
+	if (m_axisX)
+		m_axisX->setRange(0.0, double(displayBins));
+
+	if (m_axisY)
+		m_axisY->setRange(0.0, dispMax);
+
+	// Bars fill each numeric bin
+	m_barSeries->setBarWidth(1.0);
+
+	m_chart->update();
+	m_chartView->repaint();
 }
 
 void WindowLevelController::writeSettings()
@@ -292,4 +403,25 @@ void WindowLevelController::readSettings()
 	settings.endGroup();
 
 	setHistogramScale(s);
+}
+
+void WindowLevelController::adjustChartPlotArea()
+{
+	if (!m_chart || !m_chartView) return;
+	// use the chart view's viewport size (pixels) and set plot area to fill it
+	const QSize vsz = m_chartView->viewport() ? m_chartView->viewport()->size() : m_chartView->size();
+	if (vsz.isEmpty()) return;
+	m_chart->setPlotArea(QRectF(0.0, 0.0, qreal(vsz.width()), qreal(vsz.height())));
+}
+
+bool WindowLevelController::eventFilter(QObject* watched, QEvent* event)
+{
+	if (event->type() == QEvent::Resize) {
+		if (watched == m_chartView || watched == ui.m_view) {
+			// schedule update to allow layouts to settle
+			QTimer::singleShot(0, this, [this]() { adjustChartPlotArea(); });
+		}
+	}
+	// let base class handle other processing
+	return QObject::eventFilter(watched, event);
 }
