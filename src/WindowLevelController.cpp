@@ -190,16 +190,33 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 		aLinear->setChecked(true);
 		m_histo->SetHistogramImageScale(vtkImageHistogram::Linear);
 
+		// --- add separator + "Filter peak" toggle action ---
+		m_viewMenu->addSeparator();
+		m_actFilterPeak = new QAction(tr("Filter peak"), m_viewMenu);
+		m_actFilterPeak->setCheckable(true);
+		m_actFilterPeak->setChecked(m_filterPeak);
+		m_viewMenu->addAction(m_actFilterPeak);
+
+		// connect toggling the action to the property
+		connect(m_actFilterPeak, &QAction::toggled, this, [this](bool checked) {
+			setFilterPeak(checked);
+		});
+
 		connect(ui.m_view, &QWidget::customContextMenuRequested, this, [this](const QPoint& pt) {
 			if (!m_viewMenu || !ui.m_view) return;
 			// ensure QAction checked state matches current scale
 			const int cur = m_histo ? m_histo->GetHistogramImageScale() : vtkImageHistogram::Linear;
 			for (QAction* act : m_viewMenu->actions()) {
+				// actions used for histogram scale have valid data() integers
 				if (act->data().isValid() && act->data().toInt() == cur) {
 					act->setChecked(true);
 					break;
 				}
 			}
+			// ensure filter state is reflected
+			if (m_actFilterPeak)
+				m_actFilterPeak->setChecked(m_filterPeak);
+
 			m_viewMenu->exec(ui.m_view->mapToGlobal(pt));
 		});
 
@@ -250,6 +267,23 @@ void WindowLevelController::setHistogramScale(int s)
 	redrawHistogram();
 
 	emit histogramScaleChanged(s);
+}
+
+// Filter peak property accessors
+bool WindowLevelController::filterPeak() const
+{
+	return m_filterPeak;
+}
+
+void WindowLevelController::setFilterPeak(bool v)
+{
+	if (m_filterPeak == v) return;
+	m_filterPeak = v;
+	// update action checked state if present (avoid loops)
+	if (m_actFilterPeak && m_actFilterPeak->isChecked() != v)
+		m_actFilterPeak->setChecked(v);
+	// re-render histogram with filter applied/removed
+	redrawHistogram();
 }
 
 void WindowLevelController::setImageData(vtkImageData* image)
@@ -346,6 +380,17 @@ void WindowLevelController::redrawHistogram()
 		}
 	}
 
+	// If filterPeak is enabled, mask out the largest peak so it doesn't dominate the display
+	if (m_filterPeak && !displayValues.empty()) {
+		// find index of maximum
+		std::size_t maxIdx = 0;
+		for (std::size_t i = 1; i < displayValues.size(); ++i) {
+			if (displayValues[i] > displayValues[maxIdx]) maxIdx = i;
+		}
+		// zero it out (remove its influence). This choice is simple and effective.
+		displayValues[maxIdx] = 0.0;
+	}
+
 	double dispMax = 0.0;
 	for (double v : displayValues)
 		if (v > dispMax) dispMax = v;
@@ -389,6 +434,8 @@ void WindowLevelController::writeSettings()
 
 	settings.beginGroup("WindowLevelController");
 	settings.setValue("histogramScale", histogramScale());
+	// persist filter preference optionally:
+	settings.setValue("filterPeak", filterPeak());
 	settings.endGroup();
 	settings.sync();
 }
@@ -400,9 +447,11 @@ void WindowLevelController::readSettings()
 
 	settings.beginGroup("WindowLevelController");
 	const int s = settings.value("histogramScale", vtkImageHistogram::Linear).toInt();
+	const bool f = settings.value("filterPeak", false).toBool();
 	settings.endGroup();
 
 	setHistogramScale(s);
+	setFilterPeak(f);
 }
 
 void WindowLevelController::adjustChartPlotArea()

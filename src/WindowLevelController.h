@@ -26,6 +26,7 @@ class WindowLevelController : public QWidget
 {
 	Q_OBJECT
 		Q_PROPERTY(int histogramScale READ histogramScale WRITE setHistogramScale NOTIFY histogramScaleChanged)
+		Q_PROPERTY(bool filterPeak READ filterPeak WRITE setFilterPeak)
 
 public:
 	explicit WindowLevelController(QWidget* parent = nullptr);
@@ -47,6 +48,10 @@ public Q_SLOTS:
 	// Histogram scale accessor
 	int histogramScale() const;
 	void setHistogramScale(int s);
+
+	// Filter peak accessor
+	bool filterPeak() const;
+	void setFilterPeak(bool v);
 
 Q_SIGNALS:
 	// interactive (fires while user adjusts when InteractiveApply is enabled)
@@ -75,14 +80,17 @@ private:
 	// context menu for the histogram view
 	QMenu* m_viewMenu = nullptr;
 	QActionGroup* m_viewMenuGroup = nullptr;
+	// action for the new "Filter peak" toggle
+	QAction* m_actFilterPeak = nullptr;
+	// store the filter state
+	bool m_filterPeak = false;
 
 	// Draw/redraw histogram using current m_histo input + scale
 	void redrawHistogram();
 
-	// Ensure chart plot area fills the view without subclassing QChartView
+	// Ensure plot area fills view (implemented in cpp)
 	void adjustChartPlotArea();
 
 protected:
-	// install event filter on m_chartView / placeholder to react to resizes
 	bool eventFilter(QObject* watched, QEvent* event) override;
 };

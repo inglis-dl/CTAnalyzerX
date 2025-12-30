@@ -81,7 +81,7 @@ endif()
 
 find_package(Qt${VTK_QT_VERSION} 
     CONFIG 
-	REQUIRED COMPONENTS Core Gui Widgets)
+	REQUIRED COMPONENTS Core Gui Widgets Charts)
 
 # ------------------------
 # Versioning
@@ -134,8 +134,6 @@ set(SOURCES
      src/ImageLoader.h
      src/SliceView.cpp
      src/SliceView.h
-    # src/ViewFactory.cpp 
-    # src/ViewFactory.h
      src/VolumeView.cpp 
      src/VolumeView.h
      src/VolumeControlsWidget.cpp 
@@ -236,6 +234,7 @@ target_link_libraries(${PROJECT_NAME}
         Qt${VTK_QT_VERSION}::Core
         Qt${VTK_QT_VERSION}::Gui
         Qt${VTK_QT_VERSION}::Widgets
+        Qt${VTK_QT_VERSION}::Charts
         ${VTK_LIBRARIES}
         ${ITK_LIBRARIES}
         VTK::DICOM
