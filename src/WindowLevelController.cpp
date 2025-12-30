@@ -9,7 +9,7 @@
 #include <QSignalBlocker>
 #include <QGraphicsView>
 #include <QGraphicsScene>
-#include <QPolygonF>
+#include <QGraphicsPathItem>
 #include <QPen>
 #include <QMenu>
 #include <QActionGroup>
@@ -56,9 +56,9 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 		emit requestResetWindowLevel();
 	});
 
-
 	m_histo = vtkSmartPointer<vtkImageHistogram>::New();
 
+	// Prepare cached scene + painter path so redraws only update lines
 	// Prepare context menu for the histogram view (ui.m_view)
 	if (ui.m_view) {
 		ui.m_view->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -106,6 +106,13 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 			const int val = act->data().toInt();
 			setHistogramScale(val);
 		});
+
+		m_scene = new QGraphicsScene(this);
+		ui.m_view->setScene(m_scene);
+
+		// create an empty path item and keep pointer for fast updates (open polyline)
+		m_pathItem = m_scene->addPath(m_path, QPen(Qt::black));
+		m_pathItem->setBrush(Qt::NoBrush);
 	}
 }
 
@@ -144,10 +151,8 @@ void WindowLevelController::setHistogramScale(int s)
 
 	m_histo->SetHistogramImageScale(s);
 
-	// Recompute/redraw histogram with same last image if available
-	if (m_lastImage) {
-		setImageData(m_lastImage);
-	}
+	// Redraw histogram from whatever input is currently attached to m_histo.
+	redrawHistogram();
 
 	emit histogramScaleChanged(s);
 }
@@ -157,10 +162,8 @@ void WindowLevelController::setImageData(vtkImageData* image)
 	if (!image || !ui.m_view)  // adjust member name to your .ui
 		return;
 
-	// keep a reference for future re-render when scale changes
-	m_lastImage = image;
-
-	// Compute histogram via vtkImageHistogram (non-interactive, once per image)
+	// Do NOT rely on m_lastImage; set the input on m_histo and let redrawHistogram
+	// obtain the input from the m_histo instance.
 	m_histo->SetInputData(image);
 	m_histo->AutomaticBinningOn();
 
@@ -170,6 +173,26 @@ void WindowLevelController::setImageData(vtkImageData* image)
 	m_histo->SetMaximumNumberOfBins(static_cast<int>(range[1] - range[0]));
 	m_histo->SetBinOrigin(range[0]);
 	m_histo->GenerateHistogramImageOff();
+
+	// Now compute and draw using the histogram object's input
+	redrawHistogram();
+}
+
+void WindowLevelController::redrawHistogram()
+{
+	// Ensure we have a histogram filter with an attached concrete input vtkImageData
+	if (!m_histo || !ui.m_view)
+		return;
+
+	// Try to obtain the input data object from the histogram algorithm.
+	vtkDataObject* inObj = m_histo->GetInputDataObject(0, 0);
+	vtkImageData* image = vtkImageData::SafeDownCast(inObj);
+	if (!image) {
+		// No concrete image attached to histogram - nothing to draw.
+		return;
+	}
+
+	// Ensure histogram is up-to-date for the current input and histogram parameters.
 	m_histo->Update();
 
 	vtkIdTypeArray* hArr = m_histo->GetHistogram();
@@ -178,42 +201,74 @@ void WindowLevelController::setImageData(vtkImageData* image)
 
 	const int nBins = hArr->GetNumberOfTuples();
 
-	// Find peak for normalization
-	vtkIdType maxCount = 0;
+	// Generate scaled counts array according to histogram scale (linear/log/sqrt).
+	// We compute scaledCounts separately and use it to find the peak for normalization.
+	std::vector<double> scaledCounts;
+	scaledCounts.resize(nBins);
+
+	// Determine scale mode from vtkImageHistogram enum (client-side)
+	int scaleMode = m_histo->GetHistogramImageScale(); // 0=Linear,1=Log,2=Sqrt
+
 	for (int i = 0; i < nBins; ++i) {
-		vtkIdType c = hArr->GetValue(i);
-		if (c > maxCount)
-			maxCount = c;
+		const vtkIdType rawCount = hArr->GetValue(i);
+		double s = 0.0;
+		switch (scaleMode) {
+			case vtkImageHistogram::Log:
+			// log(0) is undefined; map 0 -> 0, otherwise natural log
+			s = (rawCount > 0) ? std::log(static_cast<double>(rawCount)) : 0.0;
+			break;
+			case vtkImageHistogram::Sqrt:
+			s = std::sqrt(static_cast<double>(rawCount));
+			break;
+			case vtkImageHistogram::Linear:
+			default:
+			s = static_cast<double>(rawCount);
+			break;
+		}
+		scaledCounts[i] = s;
 	}
-	if (maxCount <= 0)
+
+	// Find peak from scaled counts for normalization
+	double maxScaled = 0.0;
+	for (int i = 0; i < nBins; ++i) {
+		if (scaledCounts[i] > maxScaled) maxScaled = scaledCounts[i];
+	}
+	if (maxScaled <= 0.0)
 		return;
 
-	// Prepare scene
-	QGraphicsScene* scene = ui.m_view->scene();
-	if (!scene) {
-		scene = new QGraphicsScene(ui.m_view);
-		ui.m_view->setScene(scene);
+	// Use cached scene and polygon item if available; create lazily if missing.
+	if (!m_scene) {
+		m_scene = ui.m_view->scene();
+		if (!m_scene) {
+			m_scene = new QGraphicsScene(this);
+			ui.m_view->setScene(m_scene);
+		}
 	}
-	scene->clear();
 
 	const QSizeF vpSize = ui.m_view->viewport()->size();
 	const double w = vpSize.width() > 0 ? vpSize.width() : 256.0;
 	const double h = vpSize.height() > 0 ? vpSize.height() : 128.0;
 
-	// Draw as simple polyline
-	QPolygonF poly;
-	poly.reserve(nBins);
-	for (int i = 0; i < nBins; ++i) {
-		const vtkIdType c = hArr->GetValue(i);
-		const double x = (nBins > 1) ? (w * i / double(nBins - 1)) : 0.0;
-		const double y = h * (1.0 - double(c) / double(maxCount)); // invert Y
-		poly.append(QPointF(x, y));
+	// Build an open QPainterPath: moveTo(first) then lineTo(...) for each subsequent point.
+	m_path.clear();
+	if (nBins > 0) {
+		const double x0 = (nBins > 1) ? (w * 0 / double(nBins - 1)) : 0.0;
+		const double y0 = h * (1.0 - (scaledCounts[0] / maxScaled));
+		m_path.moveTo(x0, y0);
+		for (int i = 1; i < nBins; ++i) {
+			const double x = (nBins > 1) ? (w * i / double(nBins - 1)) : 0.0;
+			const double y = h * (1.0 - (scaledCounts[i] / maxScaled));
+			m_path.lineTo(x, y);
+		}
 	}
 
-	QPen pen(Qt::black);
-	pen.setWidthF(1.0);
-	scene->addPolygon(poly, pen);
-	scene->setSceneRect(0, 0, w, h);
+	// Update path item (open polyline — QPainterPath is not closed unless closeSubpath() is called)
+	m_pathItem->setPath(m_path);
+
+	// Update the scene rect so the view scales correctly
+	m_scene->setSceneRect(0, 0, w, h);
+	// Optional: ensure view repaints
+	ui.m_view->viewport()->update();
 }
 
 void WindowLevelController::writeSettings()

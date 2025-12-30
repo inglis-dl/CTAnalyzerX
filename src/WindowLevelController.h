@@ -1,8 +1,11 @@
 #pragma once
+
 #include <QWidget>
+#include <QPainterPath>
 
 #include "ui_WindowLevelController.h"
 #include <vtkSmartPointer.h>
+
 
 class QTimer;
 class vtkImageData;
@@ -10,6 +13,8 @@ class vtkImageHistogram;
 class QMenu;
 class QActionGroup;
 class QAction;
+class QGraphicsScene;
+class QGraphicsPathItem;
 
 class WindowLevelController : public QWidget
 {
@@ -52,9 +57,16 @@ private:
 	QTimer* m_debounce = nullptr;
 
 	vtkSmartPointer<vtkImageHistogram> m_histo;
-	vtkSmartPointer<vtkImageData> m_lastImage;
+
+	// cached scene and polygon item so we only update the polygon
+	QGraphicsScene* m_scene = nullptr;
+	QGraphicsPathItem* m_pathItem = nullptr;
+	QPainterPath m_path;
 
 	// context menu for the histogram view
 	QMenu* m_viewMenu = nullptr;
 	QActionGroup* m_viewMenuGroup = nullptr;
+
+	// Draw/redraw histogram using current m_histo input + scale
+	void redrawHistogram();
 };
