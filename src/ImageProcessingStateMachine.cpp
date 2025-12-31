@@ -403,7 +403,64 @@ bool ImageProcessingStateMachine::appendHistoryToSidecar(const QString& imagePat
 		meta = QJsonObject();
 	}
 
-	// Build new operation entry
+	// If this operation is a computed primary threshold for a source image,
+	// ensure the sidecar records the canonical source image so reopening the
+	// project will load the correct primary image later.
+	const QString canonicalSource = QFileInfo(imagePath).absoluteFilePath();
+	if (stepName == QStringLiteral("compute_primary_threshold")) {
+		// Ensure top-level "source" is present and points to the primary image
+		if (!meta.contains(QStringLiteral("source")) || meta.value(QStringLiteral("source")).toString() != canonicalSource) {
+			meta.insert(QStringLiteral("source"), canonicalSource);
+		}
+
+		// Also append a descriptive "load_primary_image" operation if not already present
+		// so the operations[] history documents that the project is associated with the given source.
+		bool needAddLoadOp = true;
+		if (meta.contains(QStringLiteral("operations")) && meta.value(QStringLiteral("operations")).isArray()) {
+			QJsonArray existingOps = meta.value(QStringLiteral("operations")).toArray();
+			if (!existingOps.isEmpty()) {
+				QJsonObject last = existingOps.last().toObject();
+				const QString lastName = last.value(QStringLiteral("name")).toString().toLower();
+				if (lastName == QStringLiteral("load_primary_image")) {
+					QJsonObject lastParams = last.value(QStringLiteral("parameters")).toObject();
+					if (lastParams.value(QStringLiteral("source")).toString() == canonicalSource) {
+						needAddLoadOp = false;
+					}
+				}
+			}
+		}
+
+		if (needAddLoadOp) {
+			QJsonObject loadOp;
+			loadOp.insert(QStringLiteral("name"), QStringLiteral("load_primary_image"));
+			loadOp.insert(QStringLiteral("status"), QStringLiteral("completed"));
+			loadOp.insert(QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+			loadOp.insert(QStringLiteral("parameters"), QJsonObject({ { QStringLiteral("source"), canonicalSource } }));
+
+			// Append into operations array (create if missing)
+			QJsonArray ops;
+			if (meta.contains(QStringLiteral("operations")) && meta.value(QStringLiteral("operations")).isArray()) {
+				ops = meta.value(QStringLiteral("operations")).toArray();
+			}
+			// Avoid duplicating identical trailing op (extra guard)
+			bool duplicate = false;
+			if (!ops.isEmpty()) {
+				QJsonObject last = ops.last().toObject();
+				if (last.value(QStringLiteral("name")).toString() == loadOp.value(QStringLiteral("name")).toString()) {
+					QJsonObject lastParams = last.value(QStringLiteral("parameters")).toObject();
+					const QByteArray lastParamsJson = QJsonDocument(lastParams).toJson(QJsonDocument::Compact);
+					const QByteArray newParamsJson = QJsonDocument(loadOp.value(QStringLiteral("parameters")).toObject()).toJson(QJsonDocument::Compact);
+					if (lastParamsJson == newParamsJson) duplicate = true;
+				}
+			}
+			if (!duplicate) {
+				ops.append(loadOp);
+				meta.insert(QStringLiteral("operations"), ops);
+			}
+		}
+	}
+
+	// Build new operation entry for the requested step (threshold or others)
 	QJsonObject entry;
 	entry.insert(QStringLiteral("name"), stepName);
 
@@ -415,12 +472,28 @@ bool ImageProcessingStateMachine::appendHistoryToSidecar(const QString& imagePat
 	else if (params.contains(QStringLiteral("output")) && params.value(QStringLiteral("output")).isString())
 		derived = params.value(QStringLiteral("output")).toString();
 
+	// Determine status:
+	// - If operation produced a derived path, mark completed.
+	// - Special-case: operations that record meaningful parameters (e.g., a computed threshold)
+	//   should be marked completed even if they don't produce a derived file.
+	QString status;
 	if (!derived.isEmpty()) {
-		entry.insert(QStringLiteral("status"), QStringLiteral("completed"));
+		status = QStringLiteral("completed");
+	}
+	else if (stepName == QStringLiteral("compute_primary_threshold") || params.contains(QStringLiteral("threshold"))) {
+		// Computed threshold is a finished operation even without a derived file.
+		status = QStringLiteral("completed");
+	}
+	else {
+		status = QStringLiteral("pending");
+	}
+
+	if (!derived.isEmpty()) {
+		entry.insert(QStringLiteral("status"), status);
 		entry.insert(QStringLiteral("derived"), derived);
 	}
 	else {
-		entry.insert(QStringLiteral("status"), QStringLiteral("pending"));
+		entry.insert(QStringLiteral("status"), status);
 	}
 
 	entry.insert(QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
@@ -524,4 +597,39 @@ QString ImageProcessingStateMachine::stateToString(State s)
 		case ErrorState: return QStringLiteral("ErrorState");
 		default: return QStringLiteral("Unknown");
 	}
+}
+
+bool ImageProcessingStateMachine::sidecarHasPrimaryThreshold() const
+{
+	// If no input file known, nothing to check
+	if (m_inputFile.isEmpty()) return false;
+
+	// Prefer cached in-memory sidecar if present, otherwise read the canonical sidecar on disk.
+	QJsonObject side;
+	if (!m_sidecar.isEmpty()) {
+		side = m_sidecar;
+	}
+	else {
+		side = JsonUtils::readJsonSidecar(m_inputFile);
+	}
+
+	if (side.isEmpty()) return false;
+
+	if (!side.contains(QStringLiteral("operations")) || !side.value(QStringLiteral("operations")).isArray())
+		return false;
+
+	QJsonArray ops = side.value(QStringLiteral("operations")).toArray();
+	for (const QJsonValue& v : ops) {
+		if (!v.isObject()) continue;
+		QJsonObject op = v.toObject();
+		// Check explicit name + threshold param
+		const QString name = op.value(QStringLiteral("name")).toString().toLower();
+		const QJsonObject params = op.value(QStringLiteral("parameters")).toObject();
+		if (name == QStringLiteral("compute_primary_threshold") && params.contains(QStringLiteral("threshold")))
+			return true;
+		// Accept any op that records a 'threshold' parameter (conservative)
+		if (params.contains(QStringLiteral("threshold")))
+			return true;
+	}
+	return false;
 }

@@ -9,7 +9,10 @@
 #include "WorkflowPanelWidget.h"
 #include "CropExporter.h"
 #include "ImageInfoWidget.h"
+#include "PrimaryThresholdWorker.h"
+#include "JsonUtils.h"
 
+#include <QThread>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QDateTime>
@@ -1403,6 +1406,91 @@ bool MainWindow::openAndNotifyImageLoaded(const QString& path, bool showProgress
 		m_processingStateMachine->setInputFilePath(path);
 		m_processingStateMachine->readSidecarForInput();
 		m_processingStateMachine->notifyImageLoaded();
+
+		// If this is a primary (non-derived) input image, compute an automatic primary threshold
+		// asynchronously and append it to the project's sidecar history.
+		//
+		// First: consult the canonical JSON sidecar and skip compute if a threshold already exists.
+		if (!m_processingStateMachine->inputIsDerived() && m_imageLoader && m_imageLoader->GetOutput()) {
+
+			bool thresholdExists = m_processingStateMachine->sidecarHasPrimaryThreshold();
+
+			if (thresholdExists) {
+				// Sidecar already records a primary threshold — skip costly recompute.
+				statusBar()->showMessage(tr("Primary threshold present in project sidecar — skipping recompute"), 3000);
+			}
+			else {
+				// No threshold recorded: run asynchronous compute and append result to sidecar via state machine.
+				vtkImageData* vtkImg = m_imageLoader->GetOutput();
+
+				// Create worker + thread
+				PrimaryThresholdWorker* worker = new PrimaryThresholdWorker();
+				QThread* workerThread = new QThread(this);
+				worker->moveToThread(workerThread);
+
+				// Start compute when thread starts. Use a lambda so we avoid QMetaType issues with vtkImageData*.
+				connect(workerThread, &QThread::started, worker, [worker, vtkImg]() {
+					worker->compute(vtkImg, nullptr);
+				}, Qt::QueuedConnection);
+
+				// Handle successful computation -> append to sidecar history asynchronously
+				connect(worker, &PrimaryThresholdWorker::computeFinished, this,
+						[this, path](bool ok, double threshold) {
+							if (ok) {
+								QJsonObject params;
+								params.insert(QStringLiteral("threshold"), threshold);
+								// step name chosen to be descriptive; change if project schema expects a specific key
+								const QString stepName = QStringLiteral("compute_primary_threshold");
+								if (m_processingStateMachine) {
+									const bool scheduled = m_processingStateMachine->appendHistoryToSidecar(path, stepName, params);
+									if (scheduled) {
+										statusBar()->showMessage(tr("Primary threshold computed and scheduled for project sidecar"), 3000);
+									}
+									else {
+										statusBar()->showMessage(tr("Primary threshold computed but failed to schedule sidecar update"), 3000);
+									}
+								}
+							}
+							else {
+								statusBar()->showMessage(tr("Primary threshold computation returned invalid result"), 3000);
+							}
+						}, Qt::QueuedConnection);
+
+				// Progress and lifecycle connections
+				connect(worker, &PrimaryThresholdWorker::computeStarted, this, &MainWindow::showProgressStart, Qt::QueuedConnection);
+				connect(worker, &PrimaryThresholdWorker::computeProgress, this, &MainWindow::showProgressValue, Qt::QueuedConnection);
+				// keep existing computeFinished handler that appends sidecar; also ensure UI hides progress when finished
+				connect(worker, &PrimaryThresholdWorker::computeFinished, this, &MainWindow::showProgressEnd, Qt::QueuedConnection);
+
+				// existing error/cancel handlers remain (they can also hide progress if desirable)
+				connect(worker, &PrimaryThresholdWorker::computeError, this, [this](const QString& reason) {
+					qWarning() << "PrimaryThresholdWorker error:" << reason;
+					this->showProgressEnd();
+					statusBar()->showMessage(tr("Primary threshold compute error: %1").arg(reason), 5000);
+				}, Qt::QueuedConnection);
+
+				connect(worker, &PrimaryThresholdWorker::computeCanceled, this, [this]() {
+					this->showProgressEnd();
+					statusBar()->showMessage(tr("Primary threshold computation canceled"), 2000);
+				}, Qt::QueuedConnection);
+
+				// Ensure the thread quits when worker finishes or errors
+				connect(worker, &PrimaryThresholdWorker::computeFinished, workerThread, &QThread::quit, Qt::QueuedConnection);
+				connect(worker, &PrimaryThresholdWorker::computeError, workerThread, &QThread::quit, Qt::QueuedConnection);
+				connect(worker, &PrimaryThresholdWorker::computeCanceled, workerThread, &QThread::quit, Qt::QueuedConnection);
+
+				// Clean up objects when thread finishes
+				connect(workerThread, &QThread::finished, worker, &QObject::deleteLater, Qt::QueuedConnection);
+				connect(workerThread, &QThread::finished, workerThread, &QObject::deleteLater, Qt::QueuedConnection);
+
+				// Provide simple UI feedback while computing
+				connect(workerThread, &QThread::started, this, &MainWindow::showProgressStart, Qt::QueuedConnection);
+				connect(workerThread, &QThread::finished, this, &MainWindow::showProgressEnd, Qt::QueuedConnection);
+
+				// Start worker thread
+				workerThread->start();
+			}
+		}
 	}
 
 	if (showProgress) {

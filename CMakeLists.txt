@@ -178,6 +178,8 @@ set(SOURCES
      src/vtkSliceOutlineSource.h
      src/ImageInfoWidget.cpp
      src/ImageInfoWidget.h
+     src/PrimaryThresholdWorker.cpp
+     src/PrimaryThresholdWorker.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early

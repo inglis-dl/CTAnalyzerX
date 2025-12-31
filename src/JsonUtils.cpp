@@ -122,12 +122,18 @@ namespace JsonUtils
 	// Create a canonical crop sidecar that uses the new "operations" array model.
 	bool writeCropSidecar(const QString& outImagePath, const QString& sourceImagePath, const QJsonObject& parameters)
 	{
-		// Top-level meta
-		QJsonObject meta;
+		// Read existing canonical sidecar for this project (mapped from outImagePath).
+		// If none exists, start a new meta object and let writeJsonSidecar ensure headers.
+		QJsonObject meta = readJsonSidecar(outImagePath);
+		if (meta.isEmpty()) {
+			meta = QJsonObject();
+		}
+
+		// Ensure top-level source and timestamp reflect this crop operation.
 		meta.insert(QStringLiteral("source"), sourceImagePath);
 		meta.insert(QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
 
-		// Operation object describing the completed crop
+		// Create the crop operation entry
 		QJsonObject op;
 		op.insert(QStringLiteral("name"), QStringLiteral("crop"));
 		op.insert(QStringLiteral("status"), QStringLiteral("completed"));
@@ -135,12 +141,43 @@ namespace JsonUtils
 		op.insert(QStringLiteral("derived"), outImagePath);
 		op.insert(QStringLiteral("parameters"), parameters);
 
+		// Load existing operations array (if any) and append the new op, avoiding exact duplicates.
 		QJsonArray ops;
-		ops.append(op);
-		meta.insert(QStringLiteral("operations"), ops);
+		if (meta.contains(QStringLiteral("operations")) && meta.value(QStringLiteral("operations")).isArray()) {
+			ops = meta.value(QStringLiteral("operations")).toArray();
+		}
 
-		// Persist canonical project JSON (JsonUtils::writeJsonSidecar will ensure 'tool' is present)
-		return writeJsonSidecar(outImagePath, meta);
+		bool isDuplicate = false;
+		if (!ops.isEmpty()) {
+			QJsonObject last = ops.last().toObject();
+			const QString lastName = last.value(QStringLiteral("name")).toString();
+			const QString lastDerived = last.value(QStringLiteral("derived")).toString();
+			QJsonObject lastParams = last.value(QStringLiteral("parameters")).toObject();
+
+			const bool sameName = (lastName == QStringLiteral("crop"));
+			const bool sameDerived = (lastDerived == outImagePath);
+
+			const QByteArray lastParamsJson = QJsonDocument(lastParams).toJson(QJsonDocument::Compact);
+			const QByteArray newParamsJson = QJsonDocument(parameters).toJson(QJsonDocument::Compact);
+			const bool sameParams = (lastParamsJson == newParamsJson);
+
+			if (sameName && sameDerived && sameParams) {
+				isDuplicate = true;
+			}
+		}
+
+		if (!isDuplicate) {
+			ops.append(op);
+			meta.insert(QStringLiteral("operations"), ops);
+		}
+
+		// Persist merged sidecar (writeJsonSidecar ensures 'tool' header and atomic write).
+		const bool ok = writeJsonSidecar(outImagePath, meta);
+		if (!ok) {
+			qWarning() << "JsonUtils::writeCropSidecar: failed to persist merged project sidecar for" << outImagePath;
+			return false;
+		}
+		return true;
 	}
 
 } // namespace JsonUtils

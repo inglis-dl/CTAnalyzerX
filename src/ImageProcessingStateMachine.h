@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QJsonObject>
+#include <QAtomicInteger>
 #include <atomic>
 
 class QStateMachine;
@@ -57,6 +58,12 @@ public:
 	// Append a workflow step entry to an image's sidecar history
 	// This will schedule an asynchronous write and return true if scheduled.
 	bool appendHistoryToSidecar(const QString& imagePath, const QString& stepName, const QJsonObject& params);
+
+	// Inspect current sidecar (or canonical sidecar on disk) and detect whether a primary threshold
+	// has already been recorded for the current input image.
+	// Returns true if a "threshold" parameter already exists in any operations[] entry or if an
+	// operation named "compute_primary_threshold" with a threshold parameter is present.
+	bool sidecarHasPrimaryThreshold() const;
 
 	// Add an external signal->state transition so UI widgets can drive the state machine directly.
 	bool addExternalTransition(State from, State to, QObject* sender, const char* signal);
