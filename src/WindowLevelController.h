@@ -11,6 +11,10 @@ QT_FORWARD_DECLARE_CLASS(QMenu)
 QT_FORWARD_DECLARE_CLASS(QActionGroup)
 QT_FORWARD_DECLARE_CLASS(QAction)
 
+QT_FORWARD_DECLARE_CLASS(QGraphicsEllipseItem)
+QT_FORWARD_DECLARE_CLASS(QGraphicsLineItem)
+QT_FORWARD_DECLARE_CLASS(QGraphicsRectItem)
+
 namespace QtCharts {
 	class QChartView;
 	class QChart;
@@ -23,6 +27,9 @@ class vtkImageData;
 class vtkImageHistogram;
 class RangeSlider;
 
+// forward-declare helper so friend declaration is unambiguous to moc/compiler
+void ensureInteractiveConnections(class WindowLevelController* ctrl);
+
 class WindowLevelController : public QWidget
 {
 	Q_OBJECT
@@ -31,6 +38,13 @@ class WindowLevelController : public QWidget
 
 public:
 	explicit WindowLevelController(QWidget* parent = nullptr);
+
+	QPointF constrainNodePosition(int idx, const QPointF& desired);
+	// qualify QChart with its namespace so the header parses correctly
+	QtCharts::QChart* chart() const { return m_chart; }
+
+	// allow the free helper in the cpp access to internals (keeps helper as a non-member)
+	friend void ensureInteractiveConnections(WindowLevelController* ctrl);
 
 public Q_SLOTS:
 	// Set UI values (can be connected to view signals)
@@ -93,6 +107,27 @@ private:
 
 	// Ensure plot area fills view (implemented in cpp)
 	void adjustChartPlotArea();
+
+	// Interactive 3-segment / 4-node overlay
+	void initInteractiveLine();
+
+	void updateInteractiveLine();
+	bool m_interactiveInitialized = false;
+	QGraphicsEllipseItem* m_nodes[4] = { nullptr, nullptr, nullptr, nullptr };
+	QGraphicsLineItem* m_segLeft = nullptr;
+	QGraphicsLineItem* m_segMid = nullptr;
+	QGraphicsLineItem* m_segRight = nullptr;
+	// visual outline for the chart plot area
+	QGraphicsRectItem* m_plotRect = nullptr;
+	double m_nodeRadius = 6.0;
+	bool m_interactiveUpdating = false; // guard to avoid re-entrancy
+	double m_fixedX[4] = { 0.0, 0.0, 0.0, 0.0 }; // fixed X for nodes 1 and 4 at init
+
+	// explicit active node tracking and last-known positions
+	// - m_activeNode: index of the node currently being actively dragged (-1 if none)
+	// - m_lastNodePos: last known chart-local centers for nodes (used to determine movement direction)
+	int m_activeNode = -1;
+	QPointF m_lastNodePos[4];
 
 protected:
 	bool eventFilter(QObject* watched, QEvent* event) override;
