@@ -40,6 +40,10 @@ public:
 	explicit WindowLevelController(QWidget* parent = nullptr);
 
 	QPointF constrainNodePosition(int idx, const QPointF& desired);
+	// map between chart-local X and histogram "data" value (axis units), and apply W/L to nodes
+	void applyWindowLevelToNodes(double window, double level);
+	double chartXToDataValue(double chartX) const;
+	double dataValueToChartX(double dataVal) const;
 	// qualify QChart with its namespace so the header parses correctly
 	QtCharts::QChart* chart() const { return m_chart; }
 

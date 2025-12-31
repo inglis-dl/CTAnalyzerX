@@ -363,12 +363,33 @@ void ensureInteractiveConnections(WindowLevelController* ctrl)
 			}
 		}
 
+		// preserve previous active so we can detect drag end (for commit)
+		int prevActive = ctrl->m_activeNode;
 		ctrl->m_interactiveUpdating = true;
 		ctrl->m_activeNode = active;
 
 		// nothing changed: update last-known and return
 		if (active < 0) {
 			for (int i = 0; i < 4; ++i) ctrl->m_lastNodePos[i] = curChart[i];
+			// if we just finished an interaction (prevActive >= 0 && now none), commit window/level
+			if (prevActive >= 0) {
+				// compute window/level from nodes 2 & 3 (data-space values)
+				double v2 = ctrl->chartXToDataValue(ctrl->m_chart->mapFromScene(ctrl->m_nodes[1]->pos()).x());
+				double v3 = ctrl->chartXToDataValue(ctrl->m_chart->mapFromScene(ctrl->m_nodes[2]->pos()).x());
+				double dmin = std::min(v2, v3);
+				double dmax = std::max(v2, v3);
+				double W = dmax - dmin;
+				double L = 0.5 * (dmin + dmax);
+				// update spinboxes without emitting valueChanged
+				if (ctrl->ui.m_spinWindow && ctrl->ui.m_spinLevel) {
+					QSignalBlocker b1(ctrl->ui.m_spinWindow);
+					QSignalBlocker b2(ctrl->ui.m_spinLevel);
+					ctrl->ui.m_spinWindow->setValue(W);
+					ctrl->ui.m_spinLevel->setValue(L);
+				}
+				// emit commit
+				Q_EMIT ctrl->windowLevelCommitted(W, L);
+			}
 			ctrl->m_interactiveUpdating = false;
 			return;
 		}
@@ -507,6 +528,27 @@ void ensureInteractiveConnections(WindowLevelController* ctrl)
 
 		// Enforce invariant equalities and refresh geometry
 		ctrl->updateInteractiveLine();
+
+		// compute and publish window/level (data-space) from nodes 2 & 3
+		if (ctrl->ui.m_spinWindow && ctrl->ui.m_spinLevel && ctrl->m_axisX) {
+			double chartX2 = ctrl->m_chart->mapFromScene(ctrl->m_nodes[1]->pos()).x();
+			double chartX3 = ctrl->m_chart->mapFromScene(ctrl->m_nodes[2]->pos()).x();
+			double v2 = ctrl->chartXToDataValue(chartX2);
+			double v3 = ctrl->chartXToDataValue(chartX3);
+			double dmin = std::min(v2, v3);
+			double dmax = std::max(v2, v3);
+			double W = dmax - dmin;
+			double L = 0.5 * (dmin + dmax);
+			// update spinboxes without firing their change signals
+			{
+				QSignalBlocker b1(ctrl->ui.m_spinWindow);
+				QSignalBlocker b2(ctrl->ui.m_spinLevel);
+				ctrl->ui.m_spinWindow->setValue(W);
+				ctrl->ui.m_spinLevel->setValue(L);
+			}
+			// start debounce to emit interactive change (same behavior as spinbox changes)
+			if (ctrl->m_debounce) ctrl->m_debounce->start();
+		}
 
 		// Save last-known positions
 		for (int i = 0; i < 4; ++i)
@@ -754,6 +796,8 @@ void WindowLevelController::setWindow(double w)
 	if (!ui.m_spinWindow) return;
 	QSignalBlocker b(ui.m_spinWindow);
 	ui.m_spinWindow->setValue(w);
+	// reflect into node positions immediately
+	applyWindowLevelToNodes(ui.m_spinWindow->value(), ui.m_spinLevel->value());
 }
 
 void WindowLevelController::setLevel(double l)
@@ -761,6 +805,63 @@ void WindowLevelController::setLevel(double l)
 	if (!ui.m_spinLevel) return;
 	QSignalBlocker b(ui.m_spinLevel);
 	ui.m_spinLevel->setValue(l);
+	// reflect into node positions immediately
+	applyWindowLevelToNodes(ui.m_spinWindow->value(), ui.m_spinLevel->value());
+}
+
+// Helper: convert chart-local X (plot coordinates) -> data value (axis units)
+double WindowLevelController::chartXToDataValue(double chartX) const
+{
+	if (!m_chart || !m_axisX) return chartX;
+	QRectF plot = m_chart->plotArea();
+	const double plotLeft = plot.left();
+	const double plotW = (plot.width() > 0.0) ? plot.width() : 1.0;
+	const double axisMin = m_axisX->min();
+	const double axisMax = m_axisX->max();
+	const double t = (chartX - plotLeft) / plotW;
+	return axisMin + t * (axisMax - axisMin);
+}
+
+// Helper inverse: data value (axis units) -> chart-local X
+double WindowLevelController::dataValueToChartX(double dataVal) const
+{
+	if (!m_chart || !m_axisX) return dataVal;
+	QRectF plot = m_chart->plotArea();
+	const double plotLeft = plot.left();
+	const double plotW = (plot.width() > 0.0) ? plot.width() : 1.0;
+	const double axisMin = m_axisX->min();
+	const double axisMax = m_axisX->max();
+	const double t = (axisMax == axisMin) ? 0.0 : ((dataVal - axisMin) / (axisMax - axisMin));
+	return plotLeft + t * plotW;
+}
+
+// Move nodes 2 & 3 to match given window/level (window = width, level = center)
+void WindowLevelController::applyWindowLevelToNodes(double window, double level)
+{
+	if (!m_chart || !m_nodes[1] || !m_nodes[2] || !m_axisX) return;
+
+	// compute data-space min/max
+	const double half = 0.5 * window;
+	const double dataMin = level - half;
+	const double dataMax = level + half;
+
+	// map to chart-local X
+	const double x2 = dataValueToChartX(dataMin);
+	const double x3 = dataValueToChartX(dataMax);
+
+	// preserve current Y for nodes 2/3 (chart-local)
+	QPointF cur1 = m_chart->mapFromScene(m_nodes[1]->pos());
+	QPointF cur2 = m_chart->mapFromScene(m_nodes[2]->pos());
+
+	// set positions (use scene coordinates). Use constrainNodePosition to clamp.
+	QPointF new1 = constrainNodePosition(1, QPointF(x2, cur1.y()));
+	QPointF new2 = constrainNodePosition(2, QPointF(x3, cur2.y()));
+
+	m_nodes[1]->setPos(m_chart->mapToScene(new1));
+	m_nodes[2]->setPos(m_chart->mapToScene(new2));
+
+	// Ensure geometry & equality constraints are enforced
+	updateInteractiveLine();
 }
 
 void WindowLevelController::setDebounceInterval(int ms)

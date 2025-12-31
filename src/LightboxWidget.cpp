@@ -664,10 +664,52 @@ void LightboxWidget::resetWindowLevel()
 	if (m_propagatingWindowLevel) return;
 	m_propagatingWindowLevel = true;
 
+	// Ask each view to restore its retained baseline (they will apply mapped/native baselines and render).
 	if (auto* yz = getYZView()) yz->resetWindowLevel();
 	if (auto* xz = getXZView()) xz->resetWindowLevel();
 	if (auto* xy = getXYView()) xy->resetWindowLevel();
 	if (auto* vol = getVolumeView()) vol->resetWindowLevel();
+
+	// Ensure the controller UI (spinboxes) and the interactive nodes reflect the baseline we just applied.
+	// Prefer VolumeView baseline if present (most authoritative), otherwise fall back to any slice view.
+	double baselineW = std::numeric_limits<double>::quiet_NaN();
+	double baselineL = std::numeric_limits<double>::quiet_NaN();
+
+	if (auto* vol = getVolumeView()) {
+		baselineW = vol->baselineWindowNative();
+		baselineL = vol->baselineLevelNative();
+	}
+	if (!std::isfinite(baselineW) || !std::isfinite(baselineL)) {
+		if (auto* xy = getXYView()) {
+			baselineW = xy->baselineWindowNative();
+			baselineL = xy->baselineLevelNative();
+		}
+	}
+	if (!std::isfinite(baselineW) || !std::isfinite(baselineL)) {
+		if (auto* xz = getXZView()) {
+			baselineW = xz->baselineWindowNative();
+			baselineL = xz->baselineLevelNative();
+		}
+	}
+	if (!std::isfinite(baselineW) || !std::isfinite(baselineL)) {
+		if (auto* yz = getYZView()) {
+			baselineW = yz->baselineWindowNative();
+			baselineL = yz->baselineLevelNative();
+		}
+	}
+
+	// If we found a valid baseline, update the registered controller (if any).
+	// Keep m_propagatingWindowLevel==true while doing this so the normal signal-path lambdas
+	// that would re-propagate to views are temporarily suppressed (we already applied resets).
+	if (m_wlController && std::isfinite(baselineW) && std::isfinite(baselineL)) {
+		// Direct setter updates spinboxes and calls applyWindowLevelToNodes, but does not emit change signals
+		// because setWindow/setLevel use QSignalBlocker internally.
+		m_wlController->setWindow(baselineW);
+		m_wlController->setLevel(baselineL);
+
+		// Also emit a committed event so any listeners can react to the coordinated reset.
+		emit m_wlController->windowLevelCommitted(baselineW, baselineL);
+	}
 
 	m_propagatingWindowLevel = false;
 }
