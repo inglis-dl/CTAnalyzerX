@@ -205,71 +205,57 @@ QPointF WindowLevelController::constrainNodePosition(int idx, const QPointF& des
 	QRectF plot = m_chart->plotArea();
 	QPointF p = desired;
 
-	// helpers: chart-local (Qt) y increases downward; convert to y-up for spec logic
+	// chart-local: Y increases downward
 	const double chartTop = plot.top();
 	const double chartBottom = plot.bottom();
 	const double chartHeight = chartBottom - chartTop; // >= 0
 
-	auto chartY_to_upY = [&](double yChart) -> double { return chartBottom - yChart; };
-	auto upY_to_chartY = [&](double yUp) -> double { return chartBottom - yUp; };
+	auto clampY = [&](double y) -> double {
+		if (y < chartTop) return chartTop;
+		if (y > chartBottom) return chartBottom;
+		return y;
+		};
 
 	// Clamp center to chart edges (centers constrained; circles may overlap visually)
 	const double minX = plot.left();
 	const double maxX = plot.right();
-	const double minChartY = chartTop;
-	const double maxChartY = chartBottom;
 
 	if (p.x() < minX) p.setX(minX);
 	if (p.x() > maxX) p.setX(maxX);
-	if (p.y() < minChartY) p.setY(minChartY);
-	if (p.y() > maxChartY) p.setY(maxChartY);
+	p.setY(clampY(p.y()));
 
-	// convert to y-up
-	double pUpY = chartY_to_upY(p.y());
-
-	// current node positions (chart-local) and converted to up-y
+	// current node positions (chart-local)
 	QPointF cur0 = m_chart->mapFromScene(m_nodes[0]->pos());
 	QPointF cur1 = m_chart->mapFromScene(m_nodes[1]->pos());
 	QPointF cur2 = m_chart->mapFromScene(m_nodes[2]->pos());
 	QPointF cur3 = m_chart->mapFromScene(m_nodes[3]->pos());
 
-	double cur0Up = chartY_to_upY(cur0.y());
-	double cur1Up = chartY_to_upY(cur1.y());
-	double cur2Up = chartY_to_upY(cur2.y());
-	double cur3Up = chartY_to_upY(cur3.y());
-
-	const double eps = 1.0; // separation tolerance in device units
+	const double eps = 1.0; // separation tolerance in device units (chart-local)
 
 	// Per-index simple (hard) constraints — do not perform cross-node pushing here.
 	if (idx == 0) {
-		// node1: x fixed to left edge, y within [0,chartHeight]
+		// node0: x fixed to left endpoint (chart-local), y clamped to plot
 		p.setX(m_fixedX[0]);
-		if (pUpY < 0.0) pUpY = 0.0;
-		if (pUpY > chartHeight) pUpY = chartHeight;
+		p.setY(clampY(p.y()));
 	}
 	else if (idx == 3) {
-		// node4: x fixed to right edge, y within [0,chartHeight]
+		// node3: x fixed to right endpoint (chart-local), y clamped to plot
 		p.setX(m_fixedX[3]);
-		if (pUpY < 0.0) pUpY = 0.0;
-		if (pUpY > chartHeight) pUpY = chartHeight;
+		p.setY(clampY(p.y()));
 	}
 	else if (idx == 1) {
-		// node2: x in [minX, maxX], y in [0,chartHeight], x must be < node3.x - eps
+		// node1: x in [minX, maxX], y in [chartTop,chartBottom], must be strictly left of node2
 		if (p.x() < minX) p.setX(minX);
 		if (p.x() > maxX) p.setX(maxX);
-		if (pUpY < 0.0) pUpY = 0.0;
-		if (pUpY > chartHeight) pUpY = chartHeight;
+		p.setY(clampY(p.y()));
 	}
 	else if (idx == 2) {
-		// node3: x in [minX, maxX], y in [0,chartHeight], x must be > node2.x + eps
+		// node2: x in [minX, maxX], y in [chartTop,chartBottom], must be strictly right of node1
 		if (p.x() < minX) p.setX(minX);
 		if (p.x() > maxX) p.setX(maxX);
-		if (pUpY < 0.0) pUpY = 0.0;
-		if (pUpY > chartHeight) pUpY = chartHeight;
+		p.setY(clampY(p.y()));
 	}
 
-	// convert back to chart-local
-	p.setY(upY_to_chartY(pUpY));
 	return p;
 }
 
@@ -334,13 +320,6 @@ void ensureInteractiveConnections(WindowLevelController* ctrl)
 			curChart[i] = ctrl->m_chart->mapFromScene(ctrl->m_nodes[i]->pos());
 		}
 
-		// helpers for y-up conversions
-		QRectF plot = ctrl->m_chart->plotArea();
-		const double chartTop = plot.top();
-		const double chartBottom = plot.bottom();
-		auto chartY_to_upY = [&](double yChart) -> double { return chartBottom - yChart; };
-		auto upY_to_chartY = [&](double yUp) -> double { return chartBottom - yUp; };
-
 		// detect active node (prefer mouseGrabberItem)
 		int active = -1;
 		if (QGraphicsScene* scene = ctrl->chart()->scene()) {
@@ -373,7 +352,7 @@ void ensureInteractiveConnections(WindowLevelController* ctrl)
 			for (int i = 0; i < 4; ++i) ctrl->m_lastNodePos[i] = curChart[i];
 			// if we just finished an interaction (prevActive >= 0 && now none), commit window/level
 			if (prevActive >= 0) {
-				// compute window/level from nodes 2 & 3 (data-space values)
+				// compute window/level from nodes 1 & 2 (data-space values)
 				double v2 = ctrl->chartXToDataValue(ctrl->m_chart->mapFromScene(ctrl->m_nodes[1]->pos()).x());
 				double v3 = ctrl->chartXToDataValue(ctrl->m_chart->mapFromScene(ctrl->m_nodes[2]->pos()).x());
 				double dmin = std::min(v2, v3);
@@ -394,64 +373,61 @@ void ensureInteractiveConnections(WindowLevelController* ctrl)
 			return;
 		}
 
-		// prepare prev/current y-up values for direction detection
-		double prevUp[4], curUp[4];
+		// prepare prev/current Y values for direction detection (chart-local Y increases downward)
+		double prevY[4], curY[4];
 		for (int i = 0; i < 4; ++i) {
-			prevUp[i] = chartY_to_upY(ctrl->m_lastNodePos[i].y());
-			curUp[i] = chartY_to_upY(curChart[i].y());
+			prevY[i] = ctrl->m_lastNodePos[i].y();
+			curY[i] = curChart[i].y();
 		}
 
 		double dx = curChart[active].x() - ctrl->m_lastNodePos[active].x();
-		double dyUp = curUp[active] - prevUp[active]; // positive => moved up in user's y-up coords
+		double dy = curY[active] - prevY[active]; // positive => moved down on screen
 
 		const double eps = 1.0;
 		const double tol = 0.5;
 
-		// helper to set a node position (constrained) and refresh curChart/curUp
+		// helper to set a node position (constrained) and refresh curChart/curY
 		auto setChartPos = [&](int idx, const QPointF& desiredChart) {
 			QPointF clamped = ctrl->constrainNodePosition(idx, desiredChart);
 			ctrl->m_nodes[idx]->setPos(ctrl->m_chart->mapToScene(clamped));
 			curChart[idx] = ctrl->m_chart->mapFromScene(ctrl->m_nodes[idx]->pos());
-			curUp[idx] = chartY_to_upY(curChart[idx].y());
+			curY[idx] = curChart[idx].y();
 			};
 
 		// useful bounds
-		const double minX = plot.left();
-		const double maxX = plot.right();
+		const double minX = ctrl->m_chart->plotArea().left();
+		const double maxX = ctrl->m_chart->plotArea().right();
 
-		// Implement the spec: active node dictates updates to others depending on movement direction
-		const bool movedUp = (dyUp > tol);
-		const bool movedDown = (dyUp < -tol);
+		// Interpret direction using chart-local Y
+		const bool movedUp = (dy < -tol);    // smaller Y => moved up on screen
+		const bool movedDown = (dy > tol);   // larger Y => moved down on screen
 		const bool movedLeft = (dx < -tol);
 		const bool movedRight = (dx > tol);
 
 		switch (active) {
-			// ... other cases unchanged ...
-			case 1: { // node2 active
+			case 1: { // node1 active (center-left)
 				QPointF desired = ctrl->constrainNodePosition(1, curChart[1]);
 				setChartPos(1, desired);
 
 				if (movedUp) {
+					// lift left endpoint to same Y
 					setChartPos(0, QPointF(curChart[0].x(), desired.y()));
-					if (chartY_to_upY(desired.y()) > curUp[2]) {
+					// if desired is above node2 (chart-local Y smaller), push node2/3 up
+					if (desired.y() < curChart[2].y()) {
 						setChartPos(2, QPointF(curChart[2].x(), desired.y()));
 						setChartPos(3, QPointF(curChart[3].x(), desired.y()));
 					}
 				}
 				else if (movedDown) {
+					// drop left endpoint to same Y
 					setChartPos(0, QPointF(curChart[0].x(), desired.y()));
 				}
 
 				// X movement: handle pushing to the right robustly
 				if (movedRight) {
-					// if p2 has crossed/passed p3 (or is too close), try to push p3 right
 					if (curChart[1].x() >= (curChart[2].x() - eps)) {
-						// desired new x for p3
 						double targetP3x = std::min(maxX, curChart[1].x() + eps);
-						// attempt to move p3 to target
 						setChartPos(2, QPointF(targetP3x, curChart[2].y()));
-						// after moving p3, ensure p2 is still strictly left of p3; if not, clamp p2 back
-
 						if (curChart[1].x() >= curChart[2].x() - eps) {
 							double clampedP2x = curChart[2].x() - eps;
 							if (clampedP2x < minX) clampedP2x = minX;
@@ -462,18 +438,15 @@ void ensureInteractiveConnections(WindowLevelController* ctrl)
 				// movedLeft: constrain handled by constrainNodePosition
 				break;
 			}
-			case 2: { // node3 active
+			case 2: { // node2 active (center-right)
 				QPointF desired = ctrl->constrainNodePosition(2, curChart[2]);
 				setChartPos(2, desired);
 
 				// X movement left: if p3 moves left past/equal p2, push p2 left
 				if (movedLeft) {
 					if (curChart[2].x() <= (curChart[1].x() + eps)) {
-						// desired new x for p2 so separation holds
 						double targetP2x = std::max(minX, curChart[2].x() - eps);
-						// attempt to set p2
 						setChartPos(1, QPointF(targetP2x, curChart[1].y()));
-						// after moving p2, ensure p3 still strictly right of p2; if not, nudge p3
 						if (curChart[2].x() <= curChart[1].x() + eps) {
 							double clampedP3x = curChart[1].x() + eps;
 							if (clampedP3x > maxX) clampedP3x = maxX;
@@ -482,27 +455,26 @@ void ensureInteractiveConnections(WindowLevelController* ctrl)
 					}
 				}
 
-				// Y movement handled elsewhere (unchanged)
 				if (movedUp) {
 					setChartPos(3, QPointF(curChart[3].x(), desired.y()));
 				}
 				else if (movedDown) {
 					setChartPos(3, QPointF(curChart[3].x(), desired.y()));
-					if (curUp[1] > chartY_to_upY(desired.y())) {
+					// if desired is below node1 (chart-local Y larger), pull node1/0 down
+					if (desired.y() > curChart[1].y()) {
 						setChartPos(1, QPointF(curChart[1].x(), desired.y()));
 						setChartPos(0, QPointF(curChart[0].x(), desired.y()));
 					}
 				}
 				break;
 			}
-				  // ... other cases unchanged ...
 			case 0: {
-				// node1 behavior unchanged (kept for completeness)
+				// left endpoint behavior
 				QPointF desired = ctrl->constrainNodePosition(0, curChart[0]);
 				setChartPos(0, desired);
 				setChartPos(1, QPointF(curChart[1].x(), desired.y()));
 				if (movedUp) {
-					if (chartY_to_upY(desired.y()) > curUp[2]) {
+					if (desired.y() < curChart[2].y()) {
 						setChartPos(2, QPointF(curChart[2].x(), desired.y()));
 						setChartPos(3, QPointF(curChart[3].x(), desired.y()));
 					}
@@ -510,12 +482,13 @@ void ensureInteractiveConnections(WindowLevelController* ctrl)
 				break;
 			}
 			case 3: {
-				// node4 behavior unchanged
+				// right endpoint behavior
 				QPointF desired = ctrl->constrainNodePosition(3, curChart[3]);
 				setChartPos(3, desired);
 				setChartPos(2, QPointF(curChart[2].x(), desired.y()));
 				if (movedDown) {
-					if (curUp[1] > chartY_to_upY(desired.y())) {
+					// if desired is below node1, pull node1/0 down
+					if (desired.y() > curChart[1].y()) {
 						setChartPos(1, QPointF(curChart[1].x(), desired.y()));
 						setChartPos(0, QPointF(curChart[0].x(), desired.y()));
 					}
