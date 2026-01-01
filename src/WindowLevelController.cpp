@@ -1,40 +1,38 @@
 #include "WindowLevelController.h"
+#include "JsonSettings.h"
+#include "RangeSlider.h"
 
-#include <QDoubleSpinBox>
+#include <QAction>
+#include <QActionGroup>
+#include <QBrush>
+#include <QtCharts/QBarSeries>
+#include <QtCharts/QBarSet>
+#include <QtCharts/QChart>
+#include <QtCharts/QChartView>
+#include <QtCharts/QValueAxis>
 #include <QCheckBox>
+#include <QColor>
+#include <QDoubleSpinBox>
+#include <QEvent>
+#include <QGraphicsEllipseItem>
+#include <QGraphicsPathItem>
+#include <QGraphicsSceneMouseEvent>
 #include <QPushButton>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QTimer>
-#include <QSignalBlocker>
 #include <QMenu>
-#include <QActionGroup>
-#include <QAction>
+#include <QPainter>
 #include <QSettings>
-#include <QBrush>
-#include <QColor>
-
-#include "JsonSettings.h"
+#include <QSignalBlocker>
+#include <QSizePolicy>
+#include <QTimer>
+#include <QVBoxLayout>
 
 #include <vtkImageData.h>
 #include <vtkImageHistogram.h>
 #include <vtkIdTypeArray.h>
 #include <vtkSmartPointer.h>
 #include <vtkDataObject.h>
-
-#include <QtCharts/QChartView>
-#include <QtCharts/QChart>
-#include <QtCharts/QBarSeries>
-#include <QtCharts/QBarSet>
-#include <QtCharts/QValueAxis>
-#include <QSizePolicy>
-#include <QEvent>
-#include <QVBoxLayout>
-#include "RangeSlider.h"
-#include <QGraphicsEllipseItem>
-#include <QGraphicsLineItem>
-#include <QGraphicsSceneMouseEvent>
-#include <QPainter>
 
 using namespace QtCharts;
 
@@ -171,21 +169,12 @@ void WindowLevelController::initInteractiveLine()
 	m_fixedX[0] = m_nodes[0] ? m_chart->mapFromScene(m_nodes[0]->pos()).x() : 0.0;
 	m_fixedX[3] = m_nodes[3] ? m_chart->mapFromScene(m_nodes[3]->pos()).x() : 0.0;
 
-	// create three segment lines as children of chart (use chart-local coords)
-	if (!m_segLeft) {
-		m_segLeft = new QGraphicsLineItem(m_chart);
-		m_segLeft->setPen(QPen(Qt::black, 2));
-		m_segLeft->setZValue(950);
-	}
-	if (!m_segMid) {
-		m_segMid = new QGraphicsLineItem(m_chart);
-		m_segMid->setPen(QPen(Qt::black, 2));
-		m_segMid->setZValue(950);
-	}
-	if (!m_segRight) {
-		m_segRight = new QGraphicsLineItem(m_chart);
-		m_segRight->setPen(QPen(Qt::black, 2));
-		m_segRight->setZValue(950);
+	// create single segment path as child of chart (use chart-local coords)
+	if (!m_path) {
+		m_path = new QGraphicsPathItem(m_chart);
+		m_path->setPen(QPen(Qt::black, 2));
+		m_path->setZValue(950);
+		m_path->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
 	}
 
 	// initialize last-known node positions (chart-local)
@@ -287,10 +276,15 @@ void WindowLevelController::updateInteractiveLine()
 	m_nodes[2]->setPos(m_chart->mapToScene(p2));
 	m_nodes[3]->setPos(m_chart->mapToScene(p3));
 
-	// update connector segments (chart-local coords)
-	m_segLeft->setLine(p0.x(), p0.y(), p1.x(), p1.y());   // node1 -> node2
-	m_segMid->setLine(p1.x(), p1.y(), p2.x(), p2.y());    // node2 -> node3
-	m_segRight->setLine(p2.x(), p2.y(), p3.x(), p3.y());  // node3 -> node4
+	// update connector path (chart-local coords)
+	if (m_path) {
+		QPainterPath path;
+		path.moveTo(p0);
+		path.lineTo(p1);
+		path.lineTo(p2);
+		path.lineTo(p3);
+		m_path->setPath(path);
+	}
 
 	// sync outline
 	if (m_plotRect) {
@@ -375,7 +369,7 @@ void ensureInteractiveConnections(WindowLevelController* ctrl)
 
 		// prepare prev/current Y values for direction detection (chart-local Y increases downward)
 		double prevY[4], curY[4];
-		for (int i = 0; i < 4; ++i) {
+		for (int i = 0; i < 4; i++) {
 			prevY[i] = ctrl->m_lastNodePos[i].y();
 			curY[i] = curChart[i].y();
 		}

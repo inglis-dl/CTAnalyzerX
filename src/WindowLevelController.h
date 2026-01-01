@@ -10,9 +10,8 @@
 QT_FORWARD_DECLARE_CLASS(QMenu)
 QT_FORWARD_DECLARE_CLASS(QActionGroup)
 QT_FORWARD_DECLARE_CLASS(QAction)
-
 QT_FORWARD_DECLARE_CLASS(QGraphicsEllipseItem)
-QT_FORWARD_DECLARE_CLASS(QGraphicsLineItem)
+QT_FORWARD_DECLARE_CLASS(QGraphicsPathItem)
 QT_FORWARD_DECLARE_CLASS(QGraphicsRectItem)
 
 namespace QtCharts {
@@ -118,9 +117,7 @@ private:
 	void updateInteractiveLine();
 	bool m_interactiveInitialized = false;
 	QGraphicsEllipseItem* m_nodes[4] = { nullptr, nullptr, nullptr, nullptr };
-	QGraphicsLineItem* m_segLeft = nullptr;
-	QGraphicsLineItem* m_segMid = nullptr;
-	QGraphicsLineItem* m_segRight = nullptr;
+	QGraphicsPathItem* m_path = nullptr;
 	// visual outline for the chart plot area
 	QGraphicsRectItem* m_plotRect = nullptr;
 	double m_nodeRadius = 6.0;
