@@ -32,12 +32,6 @@
 #include <vtkImageData.h>
 #include <vtkImageReslice.h>
 #include <itkVersion.h>   // ITK version macros
-#include <itkImage.h>
-#include <itkImageSeriesReader.h>
-#include <itkGDCMImageIO.h>
-#include <itkGDCMSeriesFileNames.h>
-#include <itkImageFileReader.h>
-#include <itkImageToVTKImageFilter.h>
 
 #ifndef CTANALYZERX_VERSION
 #define CTANALYZERX_VERSION "unknown"
@@ -57,8 +51,6 @@
 #ifndef CTANALYZERX_VTKDICOM_VERSION
 #define CTANALYZERX_VTKDICOM_VERSION "unknown"
 #endif
-
-using ImageType = itk::Image<short, 3>;
 
 namespace {
 	QString queryOpenGLSummary()
@@ -649,7 +641,49 @@ void MainWindow::writeSettings()
 				   .arg(QString::number(ITK_VERSION_MAJOR),
 		QString::number(ITK_VERSION_MINOR),
 		QString::number(ITK_VERSION_PATCH)));
-	app.insert(QStringLiteral("openGL"), queryOpenGLSummary());
+	// Query OpenGL / GPU parameters and persist them under application -> opengl.
+	QJsonObject opengl;
+
+	// 1) Try to get a render window from any ImageFrameWidget child so we can make the GL context current.
+	vtkGenericOpenGLRenderWindow* grw = nullptr;
+	const auto frames = this->findChildren<ImageFrameWidget*>();
+	for (ImageFrameWidget* f : frames) {
+		if (!f) continue;
+		vtkGenericOpenGLRenderWindow* candidate = vtkGenericOpenGLRenderWindow::SafeDownCast(f->genericRenderWindow());
+		if (candidate) {
+			grw = candidate;
+			break;
+		}
+	}
+
+	// If we have a render window, make its context current so glGetString / glGetIntegerv work.
+	if (grw) {
+		// MakeCurrent is safe here; we only use it if a render window exists.
+		grw->MakeCurrent();
+		// Query GL strings if context is available
+#if defined(GL_VENDOR) && defined(GL_RENDERER) && defined(GL_VERSION)
+		const GLubyte* gv = glGetString(GL_VENDOR);
+		const GLubyte* gr = glGetString(GL_RENDERER);
+		const GLubyte* gvrs = glGetString(GL_VERSION);
+		if (gv) opengl.insert(QStringLiteral("vendor"), QString::fromUtf8(reinterpret_cast<const char*>(gv)));
+		if (gr) opengl.insert(QStringLiteral("renderer"), QString::fromUtf8(reinterpret_cast<const char*>(gr)));
+		if (gvrs) opengl.insert(QStringLiteral("version"), QString::fromUtf8(reinterpret_cast<const char*>(gvrs)));
+#endif
+		// Query some GL limits as fallback (if available)
+#if defined(GL_MAX_TEXTURE_SIZE)
+		GLint maxTex = 0;
+		glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+		if (maxTex > 0) opengl.insert(QStringLiteral("maxTextureSize"), maxTex);
+#endif
+#if defined(GL_MAX_3D_TEXTURE_SIZE)
+		GLint max3D = 0;
+		glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max3D);
+		if (max3D > 0) opengl.insert(QStringLiteral("max3DTextureSize"), max3D);
+#endif
+	}
+
+	app.insert(QStringLiteral("openGL"), opengl);
+
 	root.insert(QStringLiteral("application"), app);
 
 	// Recent lists (overwrite the recent group, but keep other top-level keys intact)
