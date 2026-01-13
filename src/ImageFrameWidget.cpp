@@ -453,6 +453,14 @@ void ImageFrameWidget::computeShiftScaleFromInput()
 		}
 	}
 
+	// mapped = (native + shift) * scale
+	double a = (m_scalarRangeMin + m_scalarShift) * m_scalarScale;
+	double b = (m_scalarRangeMax + m_scalarShift) * m_scalarScale;
+	if (b < a) std::swap(a, b);
+
+	m_mappedDataMin = a;
+	m_mappedDataMax = b;
+
 	// Program the shared filter (it already outputs unsigned short)
 	m_shiftScaleFilter->SetShift(m_scalarShift);
 	m_shiftScaleFilter->SetScale(m_scalarScale);

@@ -4,27 +4,21 @@
 
 #include <vtkSmartPointer.h>
 
-class vtkEventQtSlotConnect;
-class vtkVolume;
-class vtkVolumeProperty;
-class vtkGPUVolumeRayCastMapper;
-class vtkImagePlaneWidget;
-class vtkImageData;
+class vtkActor;
+class vtkCamera;
 class vtkColorTransferFunction;
-class vtkPiecewiseFunction;
-class vtkInteractorStyleTrackballCamera;
-class vtkRenderWindowInteractor;
 class vtkCommand;
+class vtkEventQtSlotConnect;
+class vtkGPUVolumeRayCastMapper;
+class vtkImageData;
+class vtkImageOrthoPlanes;
 class vtkObject;
+class vtkPiecewiseFunction;
 class vtkPolyData;
 class vtkPolyDataMapper;
-class vtkCamera;
-class vtkImageSliceMapper;
-class vtkImageSlice;
-class vtkCallbackCommand;
-class vtkActor;
-class vtkImageOrthoPlanes;
+class vtkVolume;
 class vtkVolumeOutlineSource;
+class vtkVolumeProperty;
 
 namespace Ui { class VolumeView; }
 
@@ -35,7 +29,6 @@ class VolumeView : public ImageFrameWidget
 		Q_PROPERTY(bool shadingEnabled READ shadingEnabled WRITE setShadingEnabled)
 		Q_PROPERTY(bool outlineVisible READ outlineVisible WRITE setOutlineVisible)
 		Q_PROPERTY(QColor outlineColor READ outlineColor WRITE setOutlineColor NOTIFY outlineColorChanged)
-
 
 public:
 	explicit VolumeView(QWidget* parent = nullptr);
@@ -54,39 +47,60 @@ public:
 	void updateSlicePlanes(int x, int y, int z);
 
 	bool orthoPlanesVisible() const { return m_orthoPlanesVisible; }
+
 	bool outlineVisible() const { return m_outlineVisible; }
+
 	QColor outlineColor() const { return m_outlineColor; }
 
 	bool shadingEnabled() const { return m_shadingEnabled; }
+
 	void setShadingEnabled(bool on);
 
 	void createMenuAndActions();
 
+	vtkPiecewiseFunction* actualScalarOpacity() const;
+
 signals:
 	void orthoPlanesVisibleChanged(bool visible);
+
 	// Emitted when the effective cropping enabled state changes (e.g. reset to false on new image)
 	void croppingEnabledChanged(bool enabled);
+
 	void outlineColorChanged(const QColor& color);
+
+	void actualScalarOpacityUpdated();
 
 public slots:
 	// Expose as a slot so UI widgets (e.g., VolumeControlsWidget) can connect directly
 	void setOrthoPlanesVisible(bool visible);
+
 	void setOutlineVisible(bool visible);
+
 	void setOutlineColor(const QColor& color);
 
 	void setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
+
 	void resetCamera() override;
+
 	void resetWindowLevel() override;
 
 	void updateData() override;
 
 	// Preserve / restore transient view state when upstream image content changes
 	void captureDerivedViewState() override;
+
 	void restoreDerivedViewState() override;
 
 	// Persist/load volume-specific settings (override of ImageFrameWidget)
 	void readSettings() override;
+
 	void writeSettings() const override;
+
+private slots:
+	// Full-signature observer to optionally abort the event
+	void onInteractorChar(vtkObject* caller, unsigned long eventId, void* clientData, void* callData, vtkCommand* command);
+
+	void onCameraModified(vtkObject* caller);
 
 private:
 	Ui::VolumeView* ui = nullptr;
@@ -111,7 +125,9 @@ private:
 	QColor m_outlineColor = QColor(255, 0, 0);
 
 	void updateMappedOpacityFromActual();
+
 	void updateMappedColorsFromActual();
+
 	void initializeDefaultTransferFunctions();
 
 	vtkSmartPointer<vtkImageOrthoPlanes> m_orthoPlanes;
@@ -126,9 +142,4 @@ private:
 	vtkSmartPointer<vtkColorTransferFunction> m_savedActualColorTF;
 	vtkSmartPointer<vtkPiecewiseFunction> m_savedActualScalarOpacity;
 	bool m_hasSavedState = false;
-
-private slots:
-	// Full-signature observer to optionally abort the event
-	void onInteractorChar(vtkObject* caller, unsigned long eventId, void* clientData, void* callData, vtkCommand* command);
-	void onCameraModified(vtkObject* caller);
 };

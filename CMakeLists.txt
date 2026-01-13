@@ -180,6 +180,8 @@ set(SOURCES
      src/ImageInfoWidget.h
      src/PrimaryThresholdWorker.cpp
      src/PrimaryThresholdWorker.h
+     src/ScalarOpacityFunctionWidget.cpp
+     src/ScalarOpacityFunctionWidget.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early

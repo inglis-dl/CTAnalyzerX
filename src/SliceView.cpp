@@ -882,10 +882,16 @@ void SliceView::onInteractorWindowLevel(vtkObject* caller)
 	double newWindow = dx + window;
 	double newLevel = level - dy;
 
-	if (newWindow < 0.01)
+	if (fabs(newWindow) < 0.01)
 	{
-		newWindow = 0.01;
+		newWindow = 0.01 * (newWindow < 0 ? -1 : 1);
 	}
+	if (fabs(newLevel) < 0.01)
+	{
+		newLevel = 0.01 * (newLevel < 0 ? -1 : 1);
+	}
+
+	newLevel = std::clamp(newLevel, m_mappedDataMin, m_mappedDataMax);
 
 	// Apply mapped-domain change to the image property (we must do this because style did not)
 	prop->SetColorWindow(newWindow);

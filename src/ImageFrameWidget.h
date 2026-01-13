@@ -102,6 +102,8 @@ public:
 	void setGradientBackground(bool on);
 	bool gradientBackground() const;
 
+	vtkGenericOpenGLRenderWindow* genericRenderWindow() const { return m_renderWindow; }
+
 public slots:
 	virtual void updateData() {};
 
@@ -158,7 +160,6 @@ protected:
 
 	// Access to the shared renderer and render window for derived classes.
 	vtkRenderer* renderer() const { return m_renderer; }
-	vtkGenericOpenGLRenderWindow* genericRenderWindow() const { return m_renderWindow; }
 
 	// Optional: allow derived classes to adjust default renderer config.
 	virtual void initializeRendererDefaults();
@@ -181,7 +182,10 @@ protected:
 	// Mapping info derived from input
 	int    m_nativeScalarType = -1;
 	double m_scalarRangeMin = 0.0;
-	double m_scalarRangeMax = 1.0;
+	double m_scalarRangeMax = 255.0;
+	double m_mappedDataMin = 0.0;
+	double m_mappedDataMax = 255.0;
+
 	double m_scalarShift = 0.0;  // shift applied by shiftScaleFilter
 	double m_scalarScale = 1.0;  // scale applied by shiftScaleFilter
 	void computeShiftScaleFromInput();

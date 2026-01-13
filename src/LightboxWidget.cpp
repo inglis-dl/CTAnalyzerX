@@ -1,33 +1,35 @@
 #include "LightboxWidget.h"
-#include "VolumeView.h"
+
 #include "SliceView.h"
 #include "SelectionFrameWidget.h"
-#include "WindowLevelController.h"
+#include "VolumeView.h"
 #include "WindowLevelBridge.h"
+#include "WindowLevelController.h"
 
 #include <vtkAlgorithmOutput.h>
-#include <vtkImageSinusoidSource.h>
-#include <vtkSmartPointer.h>
 #include <vtkImageProperty.h>
+#include <vtkImageSinusoidSource.h>
+#include <vtkPiecewiseFunction.h>
+#include <vtkSmartPointer.h>
 
-#include <QShowEvent>
-#include <QTimer>
-#include <QLabel>
-#include <QPropertyAnimation>
-#include <QEasingCurve>
-#include <QParallelAnimationGroup>
-#include <array>
-#include <cmath>
 #include <QColor>
+#include <QDateTime>
 #include <QDragEnterEvent>
 #include <QDropEvent>
-#include <QMimeData>
+#include <QEasingCurve>
 #include <QGridLayout>
-#include <QLayoutItem>
-#include <QJsonObject>
 #include <QJsonArray>
-#include <QDateTime>
+#include <QJsonObject>
+#include <QLabel>
+#include <QLayoutItem>
+#include <QMimeData>
+#include <QParallelAnimationGroup>
+#include <QPropertyAnimation>
+#include <QShowEvent>
+#include <QTimer>
 
+#include <array>
+#include <cmath>
 
 namespace {
 	void swapWidgets(QGridLayout* grid, QWidget* a, QWidget* b)
@@ -66,7 +68,6 @@ namespace {
 		grid->addWidget(b, aRow, aCol, aRowSpan, aColSpan);
 	}
 } // namespace
-
 
 LightboxWidget::LightboxWidget(QWidget* parent)
 	: QWidget(parent)
@@ -188,6 +189,34 @@ void LightboxWidget::setWindowLevelController(WindowLevelController* ctrl)
 
 			m_propagatingWindowLevel = false;
 		}, Qt::UniqueConnection);
+
+		if (m_wlController) {
+			ScalarOpacityFunctionWidget* scalarWidget = m_wlController->scalarOpacityFunctionWidget();
+			vtkPiecewiseFunction* master = vol->actualScalarOpacity();
+
+			double range[2] = { std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() };
+			if (vol->imageData()) {
+				vol->imageData()->GetScalarRange(range);
+			}
+			else if (master) {
+				double node[4];
+				for (int i = 0; i < master->GetSize(); ++i) {
+					master->GetNodeValue(i, node);
+					range[0] = std::min(range[0], node[0]);
+					range[1] = std::max(range[1], node[0]);
+				}
+			}
+			if (std::isfinite(range[0]) || std::isfinite(range[1])) {
+				range[0] = std::isfinite(range[0]) ? range[0] : 0.0;
+				range[1] = std::isfinite(range[1]) ? range[1] : 1.0;
+			}
+
+			scalarWidget->setSceneXRange(range[0], range[1]);
+			scalarWidget->setFunction(master);
+
+			connect(vol, &VolumeView::actualScalarOpacityUpdated, scalarWidget,
+				&ScalarOpacityFunctionWidget::updateFunction, Qt::UniqueConnection);
+		}
 	}
 
 	// Hook slice -> local propagator so slice-driven WL updates siblings + volume + controller
@@ -261,6 +290,8 @@ void LightboxWidget::showEvent(QShowEvent* e)
 void LightboxWidget::setDefaultImage()
 {
 	// Provide a simple textured default image when no input is available.
+	// Produces a non-isotropic sinusoidal pattern for visual interest
+	// with output scalar range -255 to +255.
 	auto sinusoid = vtkSmartPointer<vtkImageSinusoidSource>::New();
 	sinusoid->SetPeriod(32);
 	sinusoid->SetPhase(0);
