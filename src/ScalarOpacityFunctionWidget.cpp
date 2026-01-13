@@ -4,7 +4,6 @@
 #include <QActionGroup>
 #include <QDebug>
 #include <QGraphicsEllipseItem>
-#include <QGraphicsPathItem>
 #include <QGraphicsView>
 #include <QMenu>
 #include <QPainter>
@@ -15,6 +14,7 @@
 #include <QtCharts/QBarSeries>
 #include <QtCharts/QBarSet>
 #include <QtCharts/QValueAxis>
+#include <QtCharts/QLineSeries>
 
 using namespace QtCharts;
 
@@ -38,7 +38,6 @@ public:
 	explicit ScalarOpacityFunctionWidgetPrivate(ScalarOpacityFunctionWidget& q)
 		: q_ptr(&q)
 		, m_plotRect(nullptr)
-		, m_path(nullptr)
 		, m_viewMin(0)
 		, m_viewMax(255)
 		, m_domainMin(-1.0)
@@ -51,6 +50,9 @@ public:
 		, m_barSet(nullptr)
 		, m_axisX(nullptr)
 		, m_axisY(nullptr)
+		, m_barAxisX(nullptr)
+		, m_barAxisY(nullptr)
+		, m_mapSeries(nullptr)
 		, m_filterPeak(false)
 	{
 		for (int i = 0; i < 4; ++i) m_nodes[i] = nullptr;
@@ -68,15 +70,13 @@ public:
 		}
 		m_histBars.clear();
 
-		// Nodes/path are parented to m_plotRect (which is parented to m_chart) and will be
-		// deleted by Qt parent-child cleanup. Nothing else owned here requires explicit deletion.
+		// Nodes are parented to the chart and will be deleted by Qt parent-child cleanup.
 	}
 
 	// Chart scene clipping rect (child of QChart)
 	QGraphicsRectItem* m_plotRect = nullptr;
 
-	// Path and nodes are created as children of m_plotRect (chart's scene).
-	QGraphicsPathItem* m_path;
+	// Node handles created as children of the chart (chart's scene).
 	QGraphicsEllipseItem* m_nodes[4];
 
 	// cached domain for current function (function node bounds)
@@ -99,8 +99,18 @@ public:
 	QChartView* m_chartView;
 	QBarSeries* m_barSeries;
 	QBarSet* m_barSet;
+
+	// Axis used for mapping the overlay (scalar domain units). These are the axes used by m_mapSeries.
 	QValueAxis* m_axisX;
 	QValueAxis* m_axisY;
+
+	// Separate axes used by the bar (histogram) rendering. Keep them distinct so bar-series
+	// ranges (0..displayBins) do not interfere with overlay mapping.
+	QValueAxis* m_barAxisX;
+	QValueAxis* m_barAxisY;
+
+	// Hidden (or visible) XY series used to render the overlay and for coordinate mapping.
+	QLineSeries* m_mapSeries;
 
 	// Histogram visual items (when drawing directly into scene)
 	QVector<QGraphicsRectItem*> m_histBars;
@@ -203,8 +213,36 @@ public:
 
 	void initializeGraphics()
 	{
-		// keep this minimal: node/path creation is deferred until the chart + plot area exist.
-		// (initializeChart will create m_plotRect, m_path and m_nodes as children of the chart)
+		// keep this minimal: node creation is deferred until the chart + plot area exist.
+		// (initializeChart will create m_plotRect and m_nodes as children of the chart)
+	}
+
+	// Build QLineSeries points from the internal slave function (q->m_function).
+	void updateOverlaySeries()
+	{
+		Q_Q(ScalarOpacityFunctionWidget);
+		if (!m_mapSeries || !q->m_function) return;
+
+		const int n = q->m_function->GetSize();
+		QVector<QPointF> pts;
+		pts.reserve(std::max(0, n));
+
+		double axisYmin = m_axisY ? m_axisY->min() : 0.0;
+		double axisYmax = m_axisY ? m_axisY->max() : 1.0;
+
+		for (int i = 0; i < n; ++i) {
+			double node[4] = { 0.0, 0.0, 0.0, 0.0 };
+			q->m_function->GetNodeValue(i, node);
+			double x = node[0];
+			double y = node[1];
+			if (std::isnan(y)) y = 0.0;
+			y = std::min(1.0, std::max(0.0, y));
+			double yWorld = axisYmin + y * (axisYmax - axisYmin);
+			pts.append(QPointF(qreal(x), qreal(yWorld)));
+		}
+
+		// Replace series data in one operation
+		m_mapSeries->replace(pts);
 	}
 
 	// Copy master nodes into the provided slave (outer q->m_function). Clears existing points.
@@ -297,53 +335,58 @@ public:
 		q->m_function->Modified();
 	}
 
-	// Map function domain -> parent-local coordinates (parent is m_plotRect).
-	// Uses the slave (q->m_function) for display.
+	// Map function domain -> parent-local coordinates (parent is chart).
+	// Uses the slave (q->m_function) for display and positions QGraphics node handles.
 	void layoutItems()
 	{
 		Q_Q(ScalarOpacityFunctionWidget);
 
 		if (!q->m_function) return;
-		if (!m_plotRect || !m_chart) {
-			// If chart/plot not yet created, nothing to layout here.
+		if (!m_chart) return;
+
+		// Pixel plot rectangle must exist (used for positioning/optional clipping)
+		QRectF plot = m_chart->plotArea();
+		if (plot.isEmpty()) return;
+
+		// Use the visible axis ranges (chart's axis reflects range slider / mapping axis)
+		double axisXmin = m_axisX ? m_axisX->min() : m_domainMin;
+		double axisXmax = m_axisX ? m_axisX->max() : m_domainMax;
+		double axisYmin = m_axisY ? m_axisY->min() : 0.0;
+		double axisYmax = m_axisY ? m_axisY->max() : 1.0;
+
+		const int n = q->m_function->GetSize();
+		if (n <= 0) {
+			if (m_mapSeries) m_mapSeries->replace(QVector<QPointF>()); // clear overlay
 			return;
 		}
 
-		const int n = q->m_function->GetSize();
-		QPainterPath path;
-		QPointF parentPts[4];
+		// Ensure overlay series contains current polyline in axis units
+		updateOverlaySeries();
 
-		QRectF plot = m_chart->plotArea();
-		// Guard against degenerate domain
-		double domainSpan = (m_domainMax - m_domainMin);
-		if (domainSpan <= 0.0) domainSpan = 1.0;
+		// Position node handles in pixel coords using the mapping series
+		for (int i = 0; i < 4; ++i) {
+			if (!m_nodes[i]) continue;
 
-		for (int i = 0; i < n; ++i) {
+			if (i >= n) {
+				m_nodes[i]->setVisible(false);
+				continue;
+			}
+
 			double node[4] = { 0.0, 0.0, 0.0, 0.0 };
 			q->m_function->GetNodeValue(i, node);
-			double dataX = node[0];
-			double dataY = node[1]; // [0..1] expected
+			double xWorld = node[0];
+			double yVal = node[1];
+			if (std::isnan(yVal)) yVal = 0.0;
+			yVal = std::min(1.0, std::max(0.0, yVal));
+			double yWorld = axisYmin + yVal * (axisYmax - axisYmin);
 
-			// normalize X in domain [m_domainMin..m_domainMax] -> t in [0..1]
-			double t = (dataX - m_domainMin) / domainSpan;
-			if (t < 0.0) t = 0.0;
-			if (t > 1.0) t = 1.0;
+			QPointF mapped = m_chart->mapToPosition(QPointF(xWorld, yWorld), m_mapSeries);
 
-			// compute parent-local coordinates (m_plotRect local coords: (0,0) .. (plot.width(), plot.height()))
-			double px = t * plot.width();
-			double py = (1.0 - dataY) * plot.height(); // invert Y: scene Y=0 top
-			parentPts[i] = QPointF(px, py);
-
-			// position node (parent is m_plotRect)
-			if (m_nodes[i]) m_nodes[i]->setParentItem(m_plotRect), m_nodes[i]->setPos(parentPts[i]);
-
-			if (i == 0) path.moveTo(parentPts[i]);
-			else path.lineTo(parentPts[i]);
+			m_nodes[i]->setParentItem(m_chart);
+			m_nodes[i]->setPos(mapped);
+			m_nodes[i]->setVisible(true);
+			m_nodes[i]->setTransform(QTransform()); // clear transformations so position is literal
 		}
-
-		if (m_path) m_path->setParentItem(m_plotRect), m_path->setPath(path);
-
-		// No QGraphicsView::fitInView needed - chart overlay handles sizing.
 	}
 
 	void createPlotChildren()
@@ -356,11 +399,13 @@ public:
 		if (plot.isEmpty())
 			return;
 
+		// keep a plot rect for clipping/backdrop if desired
 		if (!m_plotRect) {
 			m_plotRect = new QGraphicsRectItem(plot, m_chart);
 			m_plotRect->setPen(QPen(Qt::black, 1));
 			m_plotRect->setBrush(Qt::NoBrush);
 			m_plotRect->setZValue(900.0);
+			// This ensures children clipped to the plot rect if you prefer explicit clipping.
 			m_plotRect->setFlag(QGraphicsItem::ItemClipsChildrenToShape, true);
 		}
 		else {
@@ -369,30 +414,24 @@ public:
 			m_plotRect->setZValue(900.0);
 		}
 
-		// Create path and nodes as children of m_plotRect so they are clipped to plot area
-		if (!m_path) {
-			m_path = new QGraphicsPathItem(m_plotRect);
-			m_path->setPen(QPen(Qt::black, 2));
-			m_path->setZValue(950.0);
-			m_path->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
-		}
-
 		const double nodeRadius = 6.0;
 		for (int i = 0; i < 4; ++i) {
 			if (!m_nodes[i]) {
-				// Use our NodeItem for consistent appearance and behavior
-				m_nodes[i] = new NodeItem(i, m_plotRect);
+				// create nodes as children of the chart so they can participate in pixel positioning
+				m_nodes[i] = new NodeItem(i, m_chart);
 				// ensure outline is cosmetic
 				QPen nodePen(q_ptr->palette().color(QPalette::WindowText));
 				nodePen.setCosmetic(true);
 				nodePen.setWidthF(1.0);
 				m_nodes[i]->setPen(nodePen);
 				m_nodes[i]->setBrush(q_ptr->palette().color(QPalette::Window));
-				m_nodes[i]->setZValue(1000.0 + ((i == 1 || i == 2) ? 2.0 : 0.0)); // center nodes slightly higher
+				m_nodes[i]->setZValue(1000.0 + ((i == 1 || i == 2) ? 2.0 : 0.0));
+				// NodeItem ctor sets ItemIgnoresTransformations=true for constant pixel size — clear it
+				m_nodes[i]->setFlag(QGraphicsItem::ItemIgnoresTransformations, false);
 			}
 			else {
-				// ensure parented correctly if node existed earlier
-				m_nodes[i]->setParentItem(m_plotRect);
+				// ensure parented to chart
+				m_nodes[i]->setParentItem(m_chart);
 			}
 		}
 
@@ -425,6 +464,7 @@ public:
 		m_chart->setMargins(QMargins(0, 0, 0, 0));
 		m_chart->setPlotAreaBackgroundVisible(false);
 
+		// Create mapping axes (used for overlay mapping in scalar units).
 		m_axisX = new QValueAxis();
 		m_axisY = new QValueAxis();
 		m_axisX->setLabelsVisible(false);
@@ -436,10 +476,52 @@ public:
 		m_axisY->setLineVisible(false);
 		m_axisY->setTickCount(0);
 
+		// Create separate axes for bar/histogram rendering (bar series uses these).
+		m_barAxisX = new QValueAxis();
+		m_barAxisY = new QValueAxis();
+		m_barAxisX->setLabelsVisible(false);
+		m_barAxisX->setGridLineVisible(false);
+		m_barAxisX->setLineVisible(false);
+		m_barAxisX->setTickCount(0);
+		m_barAxisY->setLabelsVisible(false);
+		m_barAxisY->setGridLineVisible(false);
+		m_barAxisY->setLineVisible(false);
+		m_barAxisY->setTickCount(0);
+
+		// Add mapping axes to chart and attach (these axes tell the map series how to map scalar coords)
 		m_chart->addAxis(m_axisX, Qt::AlignBottom);
 		m_chart->addAxis(m_axisY, Qt::AlignLeft);
-		m_barSeries->attachAxis(m_axisX);
-		m_barSeries->attachAxis(m_axisY);
+
+		// Add bar axes to chart and attach them to the bar series
+		m_chart->addAxis(m_barAxisX, Qt::AlignBottom);
+		m_chart->addAxis(m_barAxisY, Qt::AlignLeft);
+		m_barSeries->attachAxis(m_barAxisX);
+		m_barSeries->attachAxis(m_barAxisY);
+
+		// Create mapping series used to draw overlay and for coordinate mapping
+		m_mapSeries = new QLineSeries();
+		m_mapSeries->setName(QString());
+		// show the series so chart draws the overlay
+		m_mapSeries->setVisible(true);
+		// hide point markers - we use QGraphicsEllipseItems for interactive nodes
+		m_mapSeries->setPointsVisible(false);
+		// style overlay
+		QPen overlayPen(q_ptr->palette().color(QPalette::WindowText));
+		overlayPen.setWidth(2);
+		m_mapSeries->setPen(overlayPen);
+
+		m_chart->addSeries(m_mapSeries);
+		// Attach mapping series to the mapping axes
+		m_mapSeries->attachAxis(m_axisX);
+		m_mapSeries->attachAxis(m_axisY);
+
+		// Ensure mapping axes have sensible defaults (scalar domain and y [0..1])
+		m_axisX->setRange(m_domainMin, m_domainMax);
+		m_axisY->setRange(0.0, 1.0);
+
+		// Give bar axes sensible defaults as well (will be updated by redrawHistogram)
+		m_barAxisX->setRange(0.0, 1.0);
+		m_barAxisY->setRange(0.0, 1.0);
 
 		m_chartView = new QChartView(m_chart);
 		m_chartView->setRenderHint(QPainter::Antialiasing);
@@ -493,7 +575,7 @@ public:
 		// Ensure the chart's pixel plot area matches the chartView viewport now
 		adjustChartPlotArea();
 
-		// Helper that creates the clipping rect, path and nodes when a valid plot area exists.
+		// Helper that creates the clipping rect and nodes when a valid plot area exists.
 		// Create children now if plot area is valid, otherwise defer to allow layouts to run.
 		QRectF initialPlot = m_chart->plotArea();
 		if (initialPlot.isEmpty()) {
@@ -509,7 +591,7 @@ public:
 	// Recompute & update chart from the current VTK histogram input
 	void redrawHistogram()
 	{
-		if (!m_histo || !m_chart || !m_barSet || !m_axisX || !m_axisY) return;
+		if (!m_histo || !m_chart || !m_barSet || !m_barAxisX || !m_barAxisY) return;
 
 		m_histo->Update();
 		vtkIdTypeArray* hArr = m_histo->GetHistogram();
@@ -525,7 +607,7 @@ public:
 			vtkIdType raw = hArr->GetValue(i);
 			double s = 0.0;
 			if (scaleMode == vtkImageHistogram::Log) s = (raw > 0) ? std::log(static_cast<double>(raw)) : 0.0;
-			else if (scaleMode == vtkImageHistogram::Sqrt) s = std::sqrt(static_cast<double>(raw));
+			else if (scaleMode == vtkImageHistogram::Sqrt) s = static_cast<double>(std::sqrt(static_cast<double>(raw)));
 			else s = static_cast<double>(raw);
 			scaled[i] = s;
 			if (s > maxScaled) maxScaled = s;
@@ -558,23 +640,97 @@ public:
 		double dispMax = *std::max_element(display.begin(), display.end());
 		if (dispMax <= 0.0) dispMax = 1.0;
 
-		// update chart data
+		// update chart data (bar series)
 		if (m_barSet->count() > 0) m_barSet->remove(0, m_barSet->count());
 		QList<qreal> qvals;
 		qvals.reserve(displayBins);
 		for (double v : display) qvals.append(qreal(v));
 		m_barSet->append(qvals);
 
-		m_axisX->setRange(0.0, double(displayBins));
-		m_axisY->setRange(0.0, dispMax);
+		// --- Compute mapping from scalar domain (m_axisX) to histogram display index range ---
+		// We attempt to obtain bin origin and bin width from vtkImageHistogram, then map the visible
+		// axis range [axisMin, axisMax) to bin indices and map those to display indices.
+		double axisMin = 0.0;
+		double axisMax = 0.0;
+		if (m_axisX) {
+			axisMin = m_axisX->min();
+			axisMax = m_axisX->max();
+		}
+
+		// Default origin/width; override if histogram provides them.
+		double binOrigin = 0.0;
+		double binWidth = 1.0;
+
+		// These getters are available on vtkImageHistogram (bin origin / bin width).
+		// If for some reason your VTK version differs, adapt accordingly.
+		// Protect calls by checking m_histo is valid (already tested above).
+		binOrigin = m_histo->GetBinOrigin();
+		double histoMin = m_histo->GetBinOrigin();
+		double histoMax = histoMin;
+		if (nBins > 0) {
+			// Try to get the scalar range from the image if available
+			if (vtkImageData* img = vtkImageData::SafeDownCast(m_histo->GetInput())) {
+				double range[2] = { 0, 0 };
+				img->GetScalarRange(range);
+				histoMax = range[1];
+				histoMin = range[0];
+			}
+			else {
+				// Fallback: estimate max from bins
+				histoMax = histoMin + nBins;
+			}
+		}
+		binWidth = (nBins > 0) ? (histoMax - histoMin) / nBins : 1.0;
+
+		// Map axis scalar range -> original bin indices [binStart, binEnd)
+		int binStart = static_cast<int>(std::floor((axisMin - binOrigin) / binWidth));
+		int binEnd = static_cast<int>(std::ceil((axisMax - binOrigin) / binWidth));
+		// clamp to histogram bins
+		if (binStart < 0) binStart = 0;
+		if (binStart > nBins) binStart = nBins;
+		if (binEnd < 0) binEnd = 0;
+		if (binEnd > nBins) binEnd = nBins;
+
+		// Map original bin indices to display indices (account for downsampling)
+		if (displayBins >= 1) {
+			if (displayBins == nBins) {
+				// no downsampling
+				m_barAxisX->setRange(double(binStart), double(binEnd));
+			}
+			else {
+				double step = static_cast<double>(nBins) / static_cast<double>(displayBins);
+				int dStart = static_cast<int>(std::floor(binStart / step));
+				int dEnd = static_cast<int>(std::ceil(binEnd / step));
+				// clamp
+				if (dStart < 0) dStart = 0;
+				if (dStart > displayBins) dStart = displayBins;
+				if (dEnd < 0) dEnd = 0;
+				if (dEnd > displayBins) dEnd = displayBins;
+				m_barAxisX->setRange(double(dStart), double(dEnd));
+			}
+		}
+		else {
+			// fallback: show all
+			m_barAxisX->setRange(0.0, double(displayBins));
+		}
+
+		// Update bar Y range
+		m_barAxisY->setRange(0.0, dispMax);
 		m_barSeries->setBarWidth(1.0);
 
-		// update RangeSlider if available in UI
-		if (q_ptr->ui.m_slider) {
-			q_ptr->ui.m_slider->setMinimum(0);
-			q_ptr->ui.m_slider->setMaximum(std::max(0, displayBins - 1));
-			q_ptr->ui.m_slider->setValues(0, std::max(0, displayBins - 1));
+		// Ensure overlay series is drawn above histogram: remove and re-add it so it's last in chart series list
+		if (m_mapSeries) {
+
+			// removeSeries does not delete the series instance.
+			m_chart->removeSeries(m_mapSeries);
+			m_chart->addSeries(m_mapSeries);
+			// reattach mapping axes (remove/add may detach attachments)
+			m_mapSeries->attachAxis(m_axisX);
+			m_mapSeries->attachAxis(m_axisY);
 		}
+
+		// after histogram changes, ensure overlay series reflects current function
+		if (m_mapSeries) updateOverlaySeries();
 
 		if (m_chartView) {
 			m_chartView->update();
@@ -615,7 +771,7 @@ ScalarOpacityFunctionWidget::ScalarOpacityFunctionWidget(QWidget* parent)
 	Q_D(ScalarOpacityFunctionWidget);
 	ui.setupUi(this);
 
-	// initialize placeholder graphics (actual nodes/path created when chart exists)
+	// initialize placeholder graphics (actual nodes created when chart exists)
 	d->initializeGraphics();
 
 	// Note: we no longer create and attach a dedicated QGraphicsScene to ui.m_view.
@@ -713,7 +869,7 @@ ScalarOpacityFunctionWidget::ScalarOpacityFunctionWidget(QWidget* parent)
 		}
 	});
 
-	// wire slider to axis zoom (if chart present)
+	// wire slider to axis zoom (if chart present) - slider controls the overlay/mapping X axis
 	if (ui.m_slider && d->m_axisX) {
 		connect(ui.m_slider, &RangeSlider::valuesChanged, this, [d](int minPos, int maxPos) {
 			if (!d->m_axisX) return;
@@ -721,6 +877,16 @@ ScalarOpacityFunctionWidget::ScalarOpacityFunctionWidget(QWidget* parent)
 			d->m_axisX->setRange(double(minPos), double(maxPos + 1));
 		});
 	}
+
+	// keep the widget updated when the chart axes range changes (e.g. range slider)
+	// Update both overlay (nodes/curve) and histogram when the mapping axis range changes.
+	connect(d->m_axisX, &QValueAxis::rangeChanged, this, [this, d]() {
+		this->updateFunction();
+		// redrawHistogram lives in the private implementation; use d pointer to call it
+		d->redrawHistogram();
+	});
+	// always 0 to 1
+	//connect(d->m_axisY, &QValueAxis::rangeChanged, this, [this]() { this->updateFunction(); });
 }
 
 ScalarOpacityFunctionWidget::~ScalarOpacityFunctionWidget()
@@ -768,6 +934,10 @@ void ScalarOpacityFunctionWidget::setSceneXRange(double xmin, double xmax)
 		d->m_viewMax = ui.m_slider->maximum();
 	}
 
+	// Update the mapping axes so overlay mapping uses the image scalar domain.
+	if (d->m_axisX) d->m_axisX->setRange(x0, x1);
+	if (d->m_axisY) d->m_axisY->setRange(0.0, 1.0);
+
 	// If the chart/plot rect exist, update the clipping rect and re-layout nodes
 	if (d->m_chart) {
 		d->adjustChartPlotArea();
@@ -803,8 +973,11 @@ void ScalarOpacityFunctionWidget::setImageData(vtkImageData* image)
 
 	if (!image) {
 		if (d->m_barSet) d->m_barSet->remove(0, d->m_barSet->count());
-		if (d->m_axisX) d->m_axisX->setRange(0, 1);
-		if (d->m_axisY) d->m_axisY->setRange(0, 1);
+		if (d->m_barAxisX) d->m_barAxisX->setRange(0, 1);
+		if (d->m_barAxisY) d->m_barAxisY->setRange(0, 1);
+		// Keep mapping axis defaults
+		if (d->m_axisX) d->m_axisX->setRange(d->m_domainMin, d->m_domainMax);
+		if (d->m_axisY) d->m_axisY->setRange(0.0, 1.0);
 		return;
 	}
 
@@ -818,7 +991,7 @@ void ScalarOpacityFunctionWidget::setImageData(vtkImageData* image)
 	image->GetScalarRange(range);
 	// Only set scene range when scalar range is sensible
 	if (range[0] < range[1]) {
-		// Ensure widget-level setter is used, which synchronizes slider & scene
+		// Ensure widget-level setter is used, which synchronizes slider & scene and mapping axes
 		setSceneXRange(range[0], range[1]);
 		// Configure histogram bins/origin like WindowLevelController does so vtkImageHistogram
 		// produces expected (non-empty) output. Use a reasonable integer bin count derived
@@ -828,7 +1001,7 @@ void ScalarOpacityFunctionWidget::setImageData(vtkImageData* image)
 		d->m_histo->SetBinOrigin(range[0]);
 	}
 
-	// now redraw histogram
+	// now redraw histogram (updates bar axes ranges and ensures overlay is on top)
 	d->redrawHistogram();
 }
 
