@@ -7,6 +7,7 @@
 QT_FORWARD_DECLARE_CLASS(QGraphicsEllipseItem)
 QT_FORWARD_DECLARE_CLASS(QGraphicsPathItem)
 class vtkPiecewiseFunction;
+class vtkImageData;
 class vtkObject; // forward-declare so slots using vtkObject* compile
 class ScalarOpacityFunctionWidgetPrivate;
 
@@ -22,6 +23,15 @@ public:
 	// The widget will create and maintain an internal "slave" vtkPiecewiseFunction that it displays and edits.
 	void setFunction(vtkPiecewiseFunction* func);
 
+	// Provide concrete image data so the widget can compute and draw a histogram.
+	// Ownership: caller retains ownership; widget will shallow-copy/inspect.
+	void setImageData(vtkImageData* image);
+
+	// Histogram controls (exposed so other code can update programmatically).
+	int histogramScale() const;
+	void setHistogramScale(int s);
+	bool filterPeak() const;
+	void setFilterPeak(bool v);
 
 	// Owned slave vtkPiecewiseFunction used by the widget for display/edits (may be null)
 	vtkSmartPointer<vtkPiecewiseFunction> m_function;
@@ -40,6 +50,9 @@ signals:
 protected:
 	// UI produced by uic
 	Ui::ScalarOpacityFunctionWidget ui;
+
+	// Keep track of child widget resize events so embedded chart can follow viewport size.
+	bool eventFilter(QObject* watched, QEvent* event) override;
 
 	// PIMPL
 	QScopedPointer<ScalarOpacityFunctionWidgetPrivate> d_ptr;

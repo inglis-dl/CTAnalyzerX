@@ -1,15 +1,26 @@
 #include "ScalarOpacityFunctionWidget.h"
 #include "RangeSlider.h"
 
+#include <QActionGroup>
 #include <QDebug>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsPathItem>
-#include <QGraphicsScene>
 #include <QGraphicsView>
+#include <QMenu>
 #include <QPainter>
 #include <QStyleOptionGraphicsItem>
 #include <QTimer>
+#include <QtCharts/QChart>
+#include <QtCharts/QChartView>
+#include <QtCharts/QBarSeries>
+#include <QtCharts/QBarSet>
+#include <QtCharts/QValueAxis>
 
+using namespace QtCharts;
+
+#include <vtkIdTypeArray.h>
+#include <vtkImageData.h>
+#include <vtkImageHistogram.h>
 #include <vtkPiecewiseFunction.h>
 
 #include <algorithm>
@@ -26,38 +37,45 @@ protected:
 public:
 	explicit ScalarOpacityFunctionWidgetPrivate(ScalarOpacityFunctionWidget& q)
 		: q_ptr(&q)
-		, m_scene(nullptr)
+		, m_plotRect(nullptr)
 		, m_path(nullptr)
 		, m_viewMin(0)
 		, m_viewMax(255)
 		, m_domainMin(-1.0)
 		, m_domainMax(1.0)
 		, m_master(nullptr)
+		, m_histo(nullptr)
+		, m_chart(nullptr)
+		, m_chartView(nullptr)
+		, m_barSeries(nullptr)
+		, m_barSet(nullptr)
+		, m_axisX(nullptr)
+		, m_axisY(nullptr)
+		, m_filterPeak(false)
 	{
 		for (int i = 0; i < 4; ++i) m_nodes[i] = nullptr;
 	}
 
 	~ScalarOpacityFunctionWidgetPrivate()
 	{
-		// Qt will delete scene children automatically with the scene, but ensure no dangling pointers
-		if (m_scene) {
-			for (int i = 0; i < 4; ++i) {
-				if (m_nodes[i]) {
-					m_scene->removeItem(m_nodes[i]);
-					delete m_nodes[i];
-					m_nodes[i] = nullptr;
-				}
-			}
-			if (m_path) {
-				m_scene->removeItem(m_path);
-				delete m_path;
-				m_path = nullptr;
+		// histogram visual items (if any) may have been created directly in a scene previously;
+		// ensure they are removed if present.
+		for (auto* bar : m_histBars) {
+			if (bar) {
+				if (bar->scene()) bar->scene()->removeItem(bar);
+				delete bar;
 			}
 		}
+		m_histBars.clear();
+
+		// Nodes/path are parented to m_plotRect (which is parented to m_chart) and will be
+		// deleted by Qt parent-child cleanup. Nothing else owned here requires explicit deletion.
 	}
 
-	// Scene and items (owned by Qt parent/scene)
-	QGraphicsScene* m_scene;
+	// Chart scene clipping rect (child of QChart)
+	QGraphicsRectItem* m_plotRect = nullptr;
+
+	// Path and nodes are created as children of m_plotRect (chart's scene).
 	QGraphicsPathItem* m_path;
 	QGraphicsEllipseItem* m_nodes[4];
 
@@ -73,7 +91,32 @@ public:
 	// Store master using vtkSmartPointer to be safer about lifetime.
 	vtkSmartPointer<vtkPiecewiseFunction> m_master;
 
-	// Helper inner NodeItem (unchanged)
+	// Histogram data / VTK helper
+	vtkSmartPointer<vtkImageHistogram> m_histo;
+
+	// Chart pieces (QtCharts)
+	QChart* m_chart;
+	QChartView* m_chartView;
+	QBarSeries* m_barSeries;
+	QBarSet* m_barSet;
+	QValueAxis* m_axisX;
+	QValueAxis* m_axisY;
+
+	// Histogram visual items (when drawing directly into scene)
+	QVector<QGraphicsRectItem*> m_histBars;
+
+	// Context menu + actions for histogram controls
+	QMenu* m_viewMenu = nullptr;
+	QActionGroup* m_viewMenuGroup = nullptr;
+	QAction* m_actLinear = nullptr;
+	QAction* m_actLog = nullptr;
+	QAction* m_actSqrt = nullptr;
+	QAction* m_actFilterPeak = nullptr;
+
+	// Optional filter peak
+	bool m_filterPeak;
+
+	// Helper inner NodeItem (unchanged appearance/behavior)
 	class NodeItem : public QGraphicsEllipseItem
 	{
 	public:
@@ -160,46 +203,12 @@ public:
 
 	void initializeGraphics()
 	{
-		Q_Q(ScalarOpacityFunctionWidget);
-
-		// create scene and attach
-		m_scene = new QGraphicsScene(q);
-
-		// Ensure scene/view background matches widget palette (avoid default black background)
-		m_scene->setBackgroundBrush(q->palette().color(QPalette::Base));
-
-		// create path item
-		m_path = new QGraphicsPathItem();
-		// Use a contrasting pen color from the widget palette (works for light & dark themes)
-		QPen pen = m_path->pen();
-		pen.setColor(q->palette().color(QPalette::WindowText));
-		pen.setWidthF(2.0);
-		pen.setCosmetic(true);
-		m_path->setPen(pen);
-		m_path->setBrush(Qt::NoBrush);
-		m_path->setZValue(500);
-		m_scene->addItem(m_path);
-
-		for (int i = 0; i < 4; ++i) {
-			if (!m_nodes[i]) {
-				m_nodes[i] = new NodeItem(i);
-				// add to scene root (clipping is handled by the view)
-				m_scene->addItem(m_nodes[i]);
-
-				// Make sure outline is visible and cosmetic so it remains 1px on-screen.
-				QPen outline(q_ptr->palette().color(QPalette::WindowText));
-				outline.setCosmetic(true);
-				outline.setWidthF(1.0);
-				m_nodes[i]->setPen(outline);
-				// Fill chosen to be Window so the node appears as a white circle with dark outline on light themes,
-				// and still visible on dark themes because outline contrasts.
-				m_nodes[i]->setBrush(q_ptr->palette().color(QPalette::Window));
-			}
-		}
+		// keep this minimal: node/path creation is deferred until the chart + plot area exist.
+		// (initializeChart will create m_plotRect, m_path and m_nodes as children of the chart)
 	}
 
 	// Copy master nodes into the provided slave (outer q->m_function). Clears existing points.
-	void ScalarOpacityFunctionWidgetPrivate::copyMasterToSlave()
+	void copyMasterToSlave()
 	{
 		Q_Q(ScalarOpacityFunctionWidget);
 
@@ -288,62 +297,310 @@ public:
 		q->m_function->Modified();
 	}
 
-	// Map function domain -> scene coordinates (scene uses world coords equal to function domain in X and [0..1] in Y)
+	// Map function domain -> parent-local coordinates (parent is m_plotRect).
 	// Uses the slave (q->m_function) for display.
 	void layoutItems()
 	{
 		Q_Q(ScalarOpacityFunctionWidget);
 
 		if (!q->m_function) return;
+		if (!m_plotRect || !m_chart) {
+			// If chart/plot not yet created, nothing to layout here.
+			return;
+		}
 
-		// query function nodes (we expect max 4)
 		const int n = q->m_function->GetSize();
-
-		// Build simple 3-segment QPainterPath between the 4 points (no interpolation)
 		QPainterPath path;
-		QPointF pts[4];
-		for (int i = 0; i < n; ++i) {
+		QPointF parentPts[4];
 
+		QRectF plot = m_chart->plotArea();
+		// Guard against degenerate domain
+		double domainSpan = (m_domainMax - m_domainMin);
+		if (domainSpan <= 0.0) domainSpan = 1.0;
+
+		for (int i = 0; i < n; ++i) {
 			double node[4] = { 0.0, 0.0, 0.0, 0.0 };
 			q->m_function->GetNodeValue(i, node);
+			double dataX = node[0];
+			double dataY = node[1]; // [0..1] expected
 
-			// scene Y: invert opacity so 1.0 -> top (0.0). We'll map yScene = 1 - opacity
-			double sx = node[0];
-			double sy = 1.0 - node[1];
+			// normalize X in domain [m_domainMin..m_domainMax] -> t in [0..1]
+			double t = (dataX - m_domainMin) / domainSpan;
+			if (t < 0.0) t = 0.0;
+			if (t > 1.0) t = 1.0;
 
-			pts[i] = QPointF(sx, sy);
+			// compute parent-local coordinates (m_plotRect local coords: (0,0) .. (plot.width(), plot.height()))
+			double px = t * plot.width();
+			double py = (1.0 - dataY) * plot.height(); // invert Y: scene Y=0 top
+			parentPts[i] = QPointF(px, py);
 
-			//if (sx < m_domainMin) qDebug() << "Warning: function node " << i << " x value " << sx << " below domain min " << m_domainMin;
-			//if (sx > m_domainMax) qDebug() << "Warning: function node " << i << " x value " << sx << " above domain max " << m_domainMax;
+			// position node (parent is m_plotRect)
+			if (m_nodes[i]) m_nodes[i]->setParentItem(m_plotRect), m_nodes[i]->setPos(parentPts[i]);
 
-			m_nodes[i]->setPos(pts[i]);
-
-			if (i == 0) path.moveTo(pts[i]);
-			else path.lineTo(pts[i]);
+			if (i == 0) path.moveTo(parentPts[i]);
+			else path.lineTo(parentPts[i]);
 		}
-		if (m_path) {
-			// update only the path geometry (avoid re-parenting / heavy scene ops)
-			m_path->setPath(path);
+
+		if (m_path) m_path->setParentItem(m_plotRect), m_path->setPath(path);
+
+		// No QGraphicsView::fitInView needed - chart overlay handles sizing.
+	}
+
+	void createPlotChildren()
+	{
+		Q_Q(ScalarOpacityFunctionWidget);
+
+		// recompute plot area in case layout changed
+		this->adjustChartPlotArea();
+		QRectF plot = this->m_chart->plotArea();
+		if (plot.isEmpty())
+			return;
+
+		if (!m_plotRect) {
+			m_plotRect = new QGraphicsRectItem(plot, m_chart);
+			m_plotRect->setPen(QPen(Qt::black, 1));
+			m_plotRect->setBrush(Qt::NoBrush);
+			m_plotRect->setZValue(900.0);
+			m_plotRect->setFlag(QGraphicsItem::ItemClipsChildrenToShape, true);
+		}
+		else {
+			m_plotRect->setRect(plot);
+			m_plotRect->setParentItem(m_chart);
+			m_plotRect->setZValue(900.0);
 		}
 
-		// keep view bounds in double, clamp to domain
-		if (m_viewMin < m_domainMin) m_viewMin = int(std::ceil(m_domainMin));
-		if (m_viewMax > m_domainMax) m_viewMax = int(std::floor(m_domainMax));
+		// Create path and nodes as children of m_plotRect so they are clipped to plot area
+		if (!m_path) {
+			m_path = new QGraphicsPathItem(m_plotRect);
+			m_path->setPen(QPen(Qt::black, 2));
+			m_path->setZValue(950.0);
+			m_path->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
+		}
 
-		// compute visible rectangle from slider (slider values are integer but stored as doubles)
-		double vminX = double(m_viewMin);
-		double vmaxX = double(m_viewMax);
-		if (vmaxX <= vminX) vmaxX = vminX + (m_domainMax - m_domainMin) * 0.001; // avoid zero width
+		const double nodeRadius = 6.0;
+		for (int i = 0; i < 4; ++i) {
+			if (!m_nodes[i]) {
+				// Use our NodeItem for consistent appearance and behavior
+				m_nodes[i] = new NodeItem(i, m_plotRect);
+				// ensure outline is cosmetic
+				QPen nodePen(q_ptr->palette().color(QPalette::WindowText));
+				nodePen.setCosmetic(true);
+				nodePen.setWidthF(1.0);
+				m_nodes[i]->setPen(nodePen);
+				m_nodes[i]->setBrush(q_ptr->palette().color(QPalette::Window));
+				m_nodes[i]->setZValue(1000.0 + ((i == 1 || i == 2) ? 2.0 : 0.0)); // center nodes slightly higher
+			}
+			else {
+				// ensure parented correctly if node existed earlier
+				m_nodes[i]->setParentItem(m_plotRect);
+			}
+		}
 
-		QRectF visibleRect(vminX, 0.0, vmaxX - vminX, 1.0);
+		// perform initial layout now that children exist
+		q->updateFunction();
+	}
 
-		// Arrange view to show visibleRect: use fitInView to map visible world -> view area.
-		// Use IgnoreAspectRatio so Y maps to full height.
-		QGraphicsView* v = q->ui.m_view;
-		if (v) {
-			v->fitInView(visibleRect, Qt::IgnoreAspectRatio);
-			// Force a repaint so the view doesn't leave a 1-pixel artifact when zoom is extreme.
-			if (v->viewport()) v->viewport()->update();
+	// Chart initialization
+	void initializeChart()
+	{
+		Q_Q(ScalarOpacityFunctionWidget);
+
+		if (m_chart) return;
+		// bar set + series
+		m_barSet = new QBarSet(QString());
+		m_barSet->setColor(QColor("#404040"));
+		m_barSet->setBorderColor(Qt::transparent);
+		m_barSet->setBrush(QBrush(QColor(0x44, 0x44, 0x44)));
+
+		m_barSeries = new QBarSeries();
+		m_barSeries->append(m_barSet);
+		m_barSeries->setBarWidth(1.0);
+		m_barSeries->setLabelsVisible(false);
+
+		m_chart = new QChart();
+		m_chart->legend()->hide();
+		m_chart->addSeries(m_barSeries);
+		m_chart->setBackgroundRoundness(0);
+		m_chart->setBackgroundVisible(false);
+		m_chart->setMargins(QMargins(0, 0, 0, 0));
+		m_chart->setPlotAreaBackgroundVisible(false);
+
+		m_axisX = new QValueAxis();
+		m_axisY = new QValueAxis();
+		m_axisX->setLabelsVisible(false);
+		m_axisX->setGridLineVisible(false);
+		m_axisX->setLineVisible(false);
+		m_axisX->setTickCount(0);
+		m_axisY->setLabelsVisible(false);
+		m_axisY->setGridLineVisible(false);
+		m_axisY->setLineVisible(false);
+		m_axisY->setTickCount(0);
+
+		m_chart->addAxis(m_axisX, Qt::AlignBottom);
+		m_chart->addAxis(m_axisY, Qt::AlignLeft);
+		m_barSeries->attachAxis(m_axisX);
+		m_barSeries->attachAxis(m_axisY);
+
+		m_chartView = new QChartView(m_chart);
+		m_chartView->setRenderHint(QPainter::Antialiasing);
+		m_chartView->setContentsMargins(0, 0, 0, 0);
+		m_chartView->setStyleSheet("background: transparent; border: none; padding: 0px; margin: 0px;");
+
+		// ensure the chart view expands to fill the container/layout
+		m_chartView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+		// If the UI has a container widget `m_view`, parent the chart into its viewport (if QGraphicsView)
+		// or directly into the container widget. Use a consistent, simple parenting strategy so the chart
+		// always becomes a child of the UI placeholder (or its viewport) and is visible.
+		QWidget* container = q->ui.m_view; // may be QGraphicsView or QWidget
+		if (container) {
+			QWidget* parentForChart = nullptr;
+			if (auto gview = qobject_cast<QGraphicsView*>(container))
+				parentForChart = gview->viewport();
+			else
+				parentForChart = container;
+
+			// Ensure the parent has a layout. If none exists, create one so Qt layouts manage the chartView sizing.
+			QLayout* parentLayout = parentForChart->layout();
+			if (!parentLayout) {
+				qDebug() << "[ScalarOpacity] initializeChart: no layout on parentForChart - creating QVBoxLayout";
+				auto layout = new QVBoxLayout(parentForChart);
+				layout->setContentsMargins(0, 0, 0, 0);
+				layout->setSpacing(0);
+				layout->setSizeConstraint(QLayout::SetNoConstraint);
+				layout->addWidget(m_chartView, 1);
+				// setLayout attaches the layout to the widget; from now on the layout will manage m_chartView geometry
+				parentForChart->setLayout(layout);
+				parentLayout = layout;
+			}
+			else {
+				parentLayout->setContentsMargins(0, 0, 0, 0);
+				parentLayout->setSpacing(0);
+				if (auto box = qobject_cast<QBoxLayout*>(parentLayout))
+					box->addWidget(m_chartView, 1);
+				else
+					parentLayout->addWidget(m_chartView);
+			}
+
+			// Ensure widget/layout update so viewport geometry becomes available immediately
+			m_chartView->setParent(parentForChart);
+			m_chartView->show();
+			parentForChart->update();
+			parentForChart->layout()->activate();
+			parentForChart->installEventFilter(q);
+		}
+
+		// Ensure the chart's pixel plot area matches the chartView viewport now
+		adjustChartPlotArea();
+
+		// Helper that creates the clipping rect, path and nodes when a valid plot area exists.
+		// Create children now if plot area is valid, otherwise defer to allow layouts to run.
+		QRectF initialPlot = m_chart->plotArea();
+		if (initialPlot.isEmpty()) {
+			// schedule using the outer widget as context; bind the PIMPL member function
+			// so we don't capture the PIMPL pointer in a lambda.
+			QTimer::singleShot(0, q, std::bind(&ScalarOpacityFunctionWidgetPrivate::createPlotChildren, this));
+		}
+		else {
+			createPlotChildren();
+		}
+	}
+
+	// Recompute & update chart from the current VTK histogram input
+	void redrawHistogram()
+	{
+		if (!m_histo || !m_chart || !m_barSet || !m_axisX || !m_axisY) return;
+
+		m_histo->Update();
+		vtkIdTypeArray* hArr = m_histo->GetHistogram();
+		if (!hArr || hArr->GetNumberOfTuples() <= 0) return;
+
+		const int nBins = hArr->GetNumberOfTuples();
+		const int scaleMode = m_histo->GetHistogramImageScale();
+
+		// compute scaled counts
+		std::vector<double> scaled(nBins, 0.0);
+		double maxScaled = 0.0;
+		for (int i = 0; i < nBins; ++i) {
+			vtkIdType raw = hArr->GetValue(i);
+			double s = 0.0;
+			if (scaleMode == vtkImageHistogram::Log) s = (raw > 0) ? std::log(static_cast<double>(raw)) : 0.0;
+			else if (scaleMode == vtkImageHistogram::Sqrt) s = std::sqrt(static_cast<double>(raw));
+			else s = static_cast<double>(raw);
+			scaled[i] = s;
+			if (s > maxScaled) maxScaled = s;
+		}
+		if (maxScaled <= 0.0) maxScaled = 1.0;
+
+		// downsample to display-friendly size
+		const int maxDisplayBins = 2048;
+		int displayBins = std::min(nBins, maxDisplayBins);
+		std::vector<double> display(displayBins, 0.0);
+		if (displayBins == nBins) display = scaled;
+		else {
+			double step = static_cast<double>(nBins) / static_cast<double>(displayBins);
+			for (int b = 0; b < displayBins; ++b) {
+				int start = static_cast<int>(std::floor(b * step));
+				int end = static_cast<int>(std::floor((b + 1) * step));
+				if (end <= start) end = start + 1;
+				double peak = 0.0;
+				for (int j = start; j < end && j < nBins; ++j) peak = std::max(peak, scaled[j]);
+				display[b] = peak;
+			}
+		}
+
+		// optional filter peak
+		if (m_filterPeak && !display.empty()) {
+			auto it = std::max_element(display.begin(), display.end());
+			if (it != display.end()) *it = 0.0;
+		}
+
+		double dispMax = *std::max_element(display.begin(), display.end());
+		if (dispMax <= 0.0) dispMax = 1.0;
+
+		// update chart data
+		if (m_barSet->count() > 0) m_barSet->remove(0, m_barSet->count());
+		QList<qreal> qvals;
+		qvals.reserve(displayBins);
+		for (double v : display) qvals.append(qreal(v));
+		m_barSet->append(qvals);
+
+		m_axisX->setRange(0.0, double(displayBins));
+		m_axisY->setRange(0.0, dispMax);
+		m_barSeries->setBarWidth(1.0);
+
+		// update RangeSlider if available in UI
+		if (q_ptr->ui.m_slider) {
+			q_ptr->ui.m_slider->setMinimum(0);
+			q_ptr->ui.m_slider->setMaximum(std::max(0, displayBins - 1));
+			q_ptr->ui.m_slider->setValues(0, std::max(0, displayBins - 1));
+		}
+
+		if (m_chartView) {
+			m_chartView->update();
+			m_chartView->repaint();
+		}
+	}
+
+	// Recompute chart plot area to match the chart view viewport (pixel coordinates).
+	// Keeps the chart's internal plot area in sync with the widget overlay.
+	void adjustChartPlotArea()
+	{
+		if (!m_chart || !m_chartView)
+			return;
+
+		QWidget* vp = m_chartView->viewport();
+		QSize vsz = vp ? vp->size() : m_chartView->size();
+		if (vsz.isEmpty())
+			return;
+
+		// Use pixel coordinates for plot area so bars/axis fill the full viewport.
+		m_chart->setPlotArea(QRectF(0.0, 0.0, qreal(vsz.width()), qreal(vsz.height())));
+
+		// If plot rect exists, update it to match the new plot area.
+		QRectF plot = m_chart->plotArea();
+		if (m_plotRect) {
+			m_plotRect->setRect(plot);
 		}
 	}
 
@@ -358,61 +615,117 @@ ScalarOpacityFunctionWidget::ScalarOpacityFunctionWidget(QWidget* parent)
 	Q_D(ScalarOpacityFunctionWidget);
 	ui.setupUi(this);
 
+	// initialize placeholder graphics (actual nodes/path created when chart exists)
 	d->initializeGraphics();
 
-	ui.m_view->setBackgroundBrush(d->m_scene->backgroundBrush());
-
-	ui.m_view->setScene(d->m_scene);
-	ui.m_view->setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
-	ui.m_view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-	ui.m_view->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-
+	// Note: we no longer create and attach a dedicated QGraphicsScene to ui.m_view.
+	// Chart overlay (QChartView) will be parented into ui.m_view or its viewport.
+	// configure the display function container and slider
 	m_function = vtkSmartPointer<vtkPiecewiseFunction>::New();
 	m_function->AllowDuplicateScalarsOn();
 
-	// create a default linear function with 4 nodes
-	// Window/level boundaries when scalar range is unsignd char 0 - 255
-	const double window = 255.0;
-	const double half = window * 0.5;
-	const double lower = std::max(0.0, half - std::fabs(half));
-	const double upper = std::min(255.0, half + std::fabs(half));
+	// default scene/domain values
+	d->m_domainMin = 0.0;
+	d->m_domainMax = 255.0;
+	d->m_viewMin = d->m_domainMin;
+	d->m_viewMax = d->m_domainMax;
+	ui.m_slider->setRange(int(d->m_domainMin), int(d->m_domainMax));
+	ui.m_slider->setValues(int(d->m_domainMin), int(d->m_domainMax));
 
-	// Opacity values based on window sign
-	const double lowVal = (window < 0.0) ? 1.0 : 0.0;
-	const double highVal = 1.0 - lowVal;
-
-	d->m_domainMin = 0;
-	d->m_domainMax = 255;
-
-	QRectF worldRect(d->m_domainMin, 0.0, d->m_domainMax - d->m_domainMin, 1.0);
-	d->m_scene->setSceneRect(worldRect);
-
-	// edge order: min -> lower -> upper -> max
+	// Ensure the internal (slave) function has sensible default points so
+	// the widget displays nodes/curve even if no master function is attached.
+	// This matches the synthesized 4-point layout used when a master is present.
 	m_function->RemoveAllPoints();
-	m_function->AddPoint(d->m_domainMin, lowVal);
-	m_function->AddPoint(lower, lowVal);
-	m_function->AddPoint(upper, highVal);
-	m_function->AddPoint(d->m_domainMax, highVal);
-
-	ui.m_slider->setRange(d->m_domainMin, d->m_domainMax);
-	ui.m_slider->setValues(d->m_domainMin, d->m_domainMax);
-	connect(ui.m_slider, &RangeSlider::valuesChanged, this, [this](int minv, int maxv) {
-		Q_D(ScalarOpacityFunctionWidget);
-		int smin = ui.m_slider->minimum();
-		int smax = ui.m_slider->maximum();
-		d->m_viewMin = std::clamp(minv, smin, smax);
-		d->m_viewMax = std::clamp(maxv, smin, smax);
-		// defer update to avoid re-entrancy while dragging
-		QTimer::singleShot(0, this, SLOT(updateFunction()));
-	});
+	m_function->AddPoint(d->m_domainMin, 0.0);
+	m_function->AddPoint(d->m_domainMin, 0.0);
+	m_function->AddPoint(d->m_domainMax, 1.0);
+	m_function->AddPoint(d->m_domainMax, 1.0);
 
 	// Defer initial layout once widget has size
 	QTimer::singleShot(0, this, SLOT(updateFunction()));
+
+	// prepare histogram helper and chart view
+	d->m_histo = vtkSmartPointer<vtkImageHistogram>::New();
+	d->m_histo->AutomaticBinningOn();
+	d->m_histo->GenerateHistogramImageOff();
+	d->m_histo->SetHistogramImageScale(vtkImageHistogram::Linear);
+	d->initializeChart();
+
+	// setup persistent context menu and wire actions to widget slots
+	d->m_viewMenu = new QMenu(this);
+	d->m_viewMenuGroup = new QActionGroup(d->m_viewMenu);
+	d->m_viewMenuGroup->setExclusive(true);
+
+	// create scale actions and add to group
+	d->m_actLinear = d->m_viewMenu->addAction(tr("Linear"));
+	d->m_actLinear->setCheckable(true);
+	d->m_actLinear->setData(vtkImageHistogram::Linear);
+	d->m_viewMenuGroup->addAction(d->m_actLinear);
+
+	d->m_actLog = d->m_viewMenu->addAction(tr("Log"));
+	d->m_actLog->setCheckable(true);
+	d->m_actLog->setData(vtkImageHistogram::Log);
+	d->m_viewMenuGroup->addAction(d->m_actLog);
+
+	d->m_actSqrt = d->m_viewMenu->addAction(tr("Sqrt"));
+	d->m_actSqrt->setCheckable(true);
+	d->m_actSqrt->setData(vtkImageHistogram::Sqrt);
+	d->m_viewMenuGroup->addAction(d->m_actSqrt);
+
+	// filter peak action
+	d->m_viewMenu->addSeparator();
+	d->m_actFilterPeak = d->m_viewMenu->addAction(tr("Filter peak"));
+	d->m_actFilterPeak->setCheckable(true);
+	d->m_actFilterPeak->setChecked(d->m_filterPeak);
+
+	// connect group -> change scale (delegates to widget public API)
+	connect(d->m_viewMenuGroup, &QActionGroup::triggered, this, [this](QAction* act) {
+		if (!act) return;
+		bool ok = act->data().isValid();
+		if (!ok) return;
+		int s = act->data().toInt();
+		this->setHistogramScale(s); // will call d->redrawHistogram()
+	});
+
+	// connect filter toggle
+	connect(d->m_actFilterPeak, &QAction::toggled, this, [this](bool checked) {
+		this->setFilterPeak(checked); // will call d->redrawHistogram()
+	});
+
+	// Show menu on right click, ensure checks reflect current state
+
+	ui.m_view->setContextMenuPolicy(Qt::CustomContextMenu);
+	connect(ui.m_view, &QWidget::customContextMenuRequested, this, [this, d](const QPoint& pt) {
+		// sync checked state
+		if (d->m_histo) {
+			int cur = d->m_histo->GetHistogramImageScale();
+			switch (cur) {
+				case vtkImageHistogram::Log: d->m_actLog->setChecked(true); break;
+				case vtkImageHistogram::Sqrt: d->m_actSqrt->setChecked(true); break;
+				default: d->m_actLinear->setChecked(true); break;
+			}
+		}
+		d->m_actFilterPeak->setChecked(d->m_filterPeak);
+
+		// exec menu
+		if (d->m_viewMenu) {
+			d->m_viewMenu->exec(ui.m_view->mapToGlobal(pt));
+		}
+	});
+
+	// wire slider to axis zoom (if chart present)
+	if (ui.m_slider && d->m_axisX) {
+		connect(ui.m_slider, &RangeSlider::valuesChanged, this, [d](int minPos, int maxPos) {
+			if (!d->m_axisX) return;
+			// inclusive range -> set axis to [min, max+1)
+			d->m_axisX->setRange(double(minPos), double(maxPos + 1));
+		});
+	}
 }
 
 ScalarOpacityFunctionWidget::~ScalarOpacityFunctionWidget()
 {
-	// PIMPL destructor will clean scene items
+	// PIMPL destructor will clean scene items and chart children
 }
 
 void ScalarOpacityFunctionWidget::setFunction(vtkPiecewiseFunction* func)
@@ -436,29 +749,18 @@ void ScalarOpacityFunctionWidget::updateFunction()
 void ScalarOpacityFunctionWidget::setSceneXRange(double xmin, double xmax)
 {
 	Q_D(ScalarOpacityFunctionWidget);
-	if (!d->m_scene) return;
-
 	// Ensure proper ordering and positive width.
 	double x0 = xmin;
 	double x1 = xmax;
-	if (x1 < x0) {
-		std::swap(x0, x1);
-	}
+	if (x1 < x0) std::swap(x0, x1);
 
 	d->m_domainMin = x0;
 	d->m_domainMax = x1;
 
-	// prepare scene full-world rect: X in [domainMin,domainMax], Y in [0,1] where 0=top,1=bottom
-	QRectF worldRect(d->m_domainMin, 0.0, d->m_domainMax - d->m_domainMin, 1.0);
-	d->m_scene->setSceneRect(worldRect);
-
-	// Also synchronize slider range to the scene/domain when slider exists.
-
+	// Update slider integer bounds conservatively (if it exists).
 	QSignalBlocker b(ui.m_slider);
-	// Slider works with integer positions; map domain to integer bounds conservatively.
 	const int smin = static_cast<int>(std::ceil(x0));
 	const int smax = static_cast<int>(std::floor(x1));
-	// Only change if sensible
 	if (smin < smax) {
 		ui.m_slider->setRange(smin, smax);
 		ui.m_slider->setValues(smin, smax);
@@ -466,5 +768,127 @@ void ScalarOpacityFunctionWidget::setSceneXRange(double xmin, double xmax)
 		d->m_viewMax = ui.m_slider->maximum();
 	}
 
+	// If the chart/plot rect exist, update the clipping rect and re-layout nodes
+	if (d->m_chart) {
+		d->adjustChartPlotArea();
+		QRectF plot = d->m_chart->plotArea();
+		if (!plot.isEmpty()) {
+			if (!d->m_plotRect) {
+				d->m_plotRect = new QGraphicsRectItem(plot, d->m_chart);
+				d->m_plotRect->setFlag(QGraphicsItem::ItemClipsChildrenToShape, true);
+				d->m_plotRect->setZValue(900.0);
+			}
+			else {
+				d->m_plotRect->setRect(plot);
+				d->m_plotRect->setParentItem(d->m_chart);
+				d->m_plotRect->setZValue(900.0);
+			}
+		}
+	}
+
+	// Recompute visual layout from the current slave function and domain.
 	updateFunction();
+}
+
+void ScalarOpacityFunctionWidget::setImageData(vtkImageData* image)
+{
+	Q_D(ScalarOpacityFunctionWidget);
+
+	if (!d->m_histo) {
+		d->m_histo = vtkSmartPointer<vtkImageHistogram>::New();
+		d->m_histo->AutomaticBinningOn();
+		d->m_histo->GenerateHistogramImageOff();
+		d->m_histo->SetHistogramImageScale(vtkImageHistogram::Linear);
+	}
+
+	if (!image) {
+		if (d->m_barSet) d->m_barSet->remove(0, d->m_barSet->count());
+		if (d->m_axisX) d->m_axisX->setRange(0, 1);
+		if (d->m_axisY) d->m_axisY->setRange(0, 1);
+		return;
+	}
+
+	// Configure histogram for the image
+	d->m_histo->SetInputData(image);
+	d->m_histo->AutomaticBinningOn();
+	d->m_histo->GenerateHistogramImageOff();
+
+	// Derive domain from the image scalar range and ensure the scene & slider follow the image domain.
+	double range[2];
+	image->GetScalarRange(range);
+	// Only set scene range when scalar range is sensible
+	if (range[0] < range[1]) {
+		// Ensure widget-level setter is used, which synchronizes slider & scene
+		setSceneXRange(range[0], range[1]);
+		// Configure histogram bins/origin like WindowLevelController does so vtkImageHistogram
+		// produces expected (non-empty) output. Use a reasonable integer bin count derived
+		// from the scalar range width.
+		int maxBins = std::max(1, static_cast<int>(std::ceil(range[1] - range[0])));
+		d->m_histo->SetMaximumNumberOfBins(maxBins);
+		d->m_histo->SetBinOrigin(range[0]);
+	}
+
+	// now redraw histogram
+	d->redrawHistogram();
+}
+
+int ScalarOpacityFunctionWidget::histogramScale() const
+{
+	Q_D(const ScalarOpacityFunctionWidget);
+	return d->m_histo ? d->m_histo->GetHistogramImageScale() : vtkImageHistogram::Linear;
+}
+
+void ScalarOpacityFunctionWidget::setHistogramScale(int s)
+{
+	Q_D(ScalarOpacityFunctionWidget);
+	if (!d->m_histo) return;
+	d->m_histo->SetHistogramImageScale(s);
+	d->redrawHistogram();
+}
+
+bool ScalarOpacityFunctionWidget::filterPeak() const
+{
+	Q_D(const ScalarOpacityFunctionWidget);
+	return d->m_filterPeak;
+}
+
+void ScalarOpacityFunctionWidget::setFilterPeak(bool v)
+{
+	Q_D(ScalarOpacityFunctionWidget);
+	if (d->m_filterPeak == v) return;
+	d->m_filterPeak = v;
+	d->redrawHistogram();
+}
+
+bool ScalarOpacityFunctionWidget::eventFilter(QObject* watched, QEvent* event)
+{
+	Q_D(ScalarOpacityFunctionWidget);
+	// Keep chart view sized to the graphics view viewport or container.
+	if (d->m_chartView && ui.m_view) {
+		if (auto gview = qobject_cast<QGraphicsView*>(ui.m_view)) {
+			// watched may be the graphics view viewport
+			if (gview->viewport() && watched == gview->viewport()) {
+				if (event->type() == QEvent::Resize) {
+					QWidget* vp = gview->viewport();
+					d->m_chartView->setGeometry(vp->rect());
+					// update the chart's internal pixel plot area so bars fill the whole viewport
+					d->adjustChartPlotArea();
+					// if plotRect exists, update layout
+					d->layoutItems();
+					return false; // allow normal processing too
+				}
+			}
+		}
+		else {
+			// container widget case
+			if (watched == ui.m_view && event->type() == QEvent::Resize) {
+				QWidget* container = ui.m_view;
+				d->m_chartView->setGeometry(container->rect());
+				d->adjustChartPlotArea();
+				d->layoutItems();
+				return false;
+			}
+		}
+	}
+	return QWidget::eventFilter(watched, event);
 }

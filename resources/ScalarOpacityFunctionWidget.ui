@@ -27,10 +27,17 @@
     <number>0</number>
    </property>
    <item>
-    <widget class="QGraphicsView" name="m_view"/>
+    <widget class="QWidget" name="m_view" native="true">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
    </item>
    <item>
-    <widget class="RangeSlider" name="m_slider" native="true">
+    <widget class="RangeSlider" name="m_slider">
      <property name="orientation">
       <enum>Qt::Horizontal</enum>
      </property>
@@ -38,14 +45,14 @@
    </item>
   </layout>
  </widget>
-	<customwidgets>
-		<customwidget>
-			<class>RangeSlider</class>
-			<extends>QSlider</extends>
-			<header>RangeSlider.h</header>
-			<container>1</container>
-		</customwidget>
-	</customwidgets>	
+ <customwidgets>
+  <customwidget>
+   <class>RangeSlider</class>
+   <extends>QSlider</extends>
+   <header>RangeSlider.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
  <resources/>
  <connections/>
 </ui>

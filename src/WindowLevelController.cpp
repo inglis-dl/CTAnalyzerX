@@ -109,20 +109,18 @@ void WindowLevelController::setDebounceInterval(int ms)
 
 void WindowLevelController::setImageData(vtkImageData* image)
 {
-	// Store the image for possible future use (histogram, etc.). No histogram processing for now.
+	// Store image and forward to scalar-opacity widget for histogram/chart rendering.
 	if (!image) {
 		m_image = nullptr;
+		if (ui.m_so_function) ui.m_so_function->setImageData(nullptr);
 		return;
 	}
 	m_image = vtkSmartPointer<vtkImageData>::New();
 	m_image->ShallowCopy(image);
 
-	// If the scalar range is meaningful, push it to the opacity widget so the scene
-		// world coordinates match the image data range.
+	// Push scalar range and image to the opacity widget so it can set scene domain and compute histogram.
 	if (ui.m_so_function) {
-		double range[2];
-		image->GetScalarRange(range);
-		ui.m_so_function->setSceneXRange(range[0], range[1]);
+		ui.m_so_function->setImageData(image);
 	}
 }
 
