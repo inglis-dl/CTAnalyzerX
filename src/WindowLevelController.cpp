@@ -104,7 +104,8 @@ ScalarOpacityFunctionWidget* WindowLevelController::scalarOpacityFunctionWidget(
 void WindowLevelController::setDebounceInterval(int ms)
 {
 	if (!m_debounce) return;
-	m_debounce->setInterval(ms);
+	// Ensure non-negative interval
+	m_debounce->setInterval(std::max(0, ms));
 }
 
 void WindowLevelController::setImageData(vtkImageData* image)
@@ -120,7 +121,8 @@ void WindowLevelController::setImageData(vtkImageData* image)
 
 	// Push scalar range and image to the opacity widget so it can set scene domain and compute histogram.
 	if (ui.m_so_function) {
-		ui.m_so_function->setImageData(image);
+		// Forward the internal shallow-copy to ensure lifetime is preserved
+		ui.m_so_function->setImageData(m_image.Get());
 	}
 }
 
