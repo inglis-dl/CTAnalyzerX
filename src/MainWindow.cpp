@@ -11,6 +11,7 @@
 #include "ImageInfoWidget.h"
 #include "PrimaryThresholdWorker.h"
 #include "JsonUtils.h"
+#include "Logger.h"
 
 #include <QThread>
 #include <QFileDialog>
@@ -596,6 +597,18 @@ void MainWindow::readSettings()
 		QStringList rp = settings.value("recentProjects").toStringList();
 		if (!rp.isEmpty()) recentProjects = rp;
 		settings.endGroup();
+
+		// Logging preferences (optional group)
+		settings.beginGroup("logging");
+		const bool rotateEnabled = settings.value("rotateEnabled", Logger::rotateEnabled()).toBool();
+		const int maxBackups = settings.value("maxBackupFiles", Logger::maxBackupFiles()).toInt();
+		const int maxFileSizeMB = settings.value("maxFileSizeMB", Logger::maxFileSizeMB()).toInt();
+		settings.endGroup();
+
+		// Apply to Logger runtime config (should be done before Logger::install/openLog if possible)
+		Logger::setRotateEnabled(rotateEnabled);
+		Logger::setMaxBackupFiles(maxBackups);
+		Logger::setMaxFileSizeMB(maxFileSizeMB);
 	}
 
 	// Ensure UI menu reflects loaded recent files
@@ -704,6 +717,13 @@ void MainWindow::writeSettings()
 	appearance.insert(QStringLiteral("geometry_w"), rect.width());
 	appearance.insert(QStringLiteral("geometry_h"), rect.height());
 	root.insert(QStringLiteral("appearance"), appearance);
+
+	// Persist logging configuration under "logging"
+	QJsonObject logging;
+	logging.insert(QStringLiteral("rotateEnabled"), Logger::rotateEnabled());
+	logging.insert(QStringLiteral("maxBackupFiles"), Logger::maxBackupFiles());
+	logging.insert(QStringLiteral("maxFileSizeMB"), Logger::maxFileSizeMB());
+	root.insert(QStringLiteral("logging"), logging);
 
 	// Write merged JSON back to disk atomically
 	QSaveFile out(path);

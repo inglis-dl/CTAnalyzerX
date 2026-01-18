@@ -182,6 +182,8 @@ set(SOURCES
      src/PrimaryThresholdWorker.h
      src/ScalarOpacityFunctionWidget.cpp
      src/ScalarOpacityFunctionWidget.h
+     src/Logger.cpp
+     src/Logger.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early
