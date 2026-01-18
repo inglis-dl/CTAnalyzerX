@@ -60,17 +60,6 @@ public:
 
 	~ScalarOpacityFunctionWidgetPrivate()
 	{
-		// histogram visual items (if any) may have been created directly in a scene previously;
-		// ensure they are removed if present.
-		for (auto* bar : m_histBars) {
-			if (bar) {
-				if (bar->scene()) bar->scene()->removeItem(bar);
-				delete bar;
-			}
-		}
-		m_histBars.clear();
-
-		// Nodes are parented to the chart and will be deleted by Qt parent-child cleanup.
 	}
 
 	// Chart scene clipping rect (child of QChart)
@@ -112,9 +101,6 @@ public:
 	// Hidden (or visible) XY series used to render the overlay and for coordinate mapping.
 	QLineSeries* m_mapSeries;
 
-	// Histogram visual items (when drawing directly into scene)
-	QVector<QGraphicsRectItem*> m_histBars;
-
 	// Context menu + actions for histogram controls
 	QMenu* m_viewMenu = nullptr;
 	QActionGroup* m_viewMenuGroup = nullptr;
@@ -144,9 +130,14 @@ public:
 			QGraphicsItem* p = parent;
 			while (p) {
 				// Try to get the widget from the scene/view chain
-				if (auto view = dynamic_cast<QGraphicsView*>(p->scene() ? p->scene()->views().value(0, nullptr) : nullptr)) {
-					widgetParent = view->parentWidget();
-					break;
+				if (p->scene()) {
+					auto views = p->scene()->views();
+					if (!views.isEmpty()) {
+						if (QGraphicsView* view = views.at(0)) {
+							widgetParent = view->parentWidget();
+							break;
+						}
+					}
 				}
 				p = p->parentItem();
 			}
@@ -210,12 +201,6 @@ public:
 		int m_index;
 		bool m_pressed;
 	};
-
-	void initializeGraphics()
-	{
-		// keep this minimal: node creation is deferred until the chart + plot area exist.
-		// (initializeChart will create m_plotRect and m_nodes as children of the chart)
-	}
 
 	// Build QLineSeries points from the internal slave function (q->m_function).
 	void updateOverlaySeries()
@@ -545,7 +530,6 @@ public:
 			// Ensure the parent has a layout. If none exists, create one so Qt layouts manage the chartView sizing.
 			QLayout* parentLayout = parentForChart->layout();
 			if (!parentLayout) {
-				qDebug() << "[ScalarOpacity] initializeChart: no layout on parentForChart - creating QVBoxLayout";
 				auto layout = new QVBoxLayout(parentForChart);
 				layout->setContentsMargins(0, 0, 0, 0);
 				layout->setSpacing(0);
@@ -593,7 +577,6 @@ public:
 	{
 		if (!m_histo || !m_chart || !m_barSet || !m_barAxisX || !m_barAxisY) return;
 
-		m_histo->Update();
 		vtkIdTypeArray* hArr = m_histo->GetHistogram();
 		if (!hArr || hArr->GetNumberOfTuples() <= 0) return;
 
@@ -601,7 +584,8 @@ public:
 		const int scaleMode = m_histo->GetHistogramImageScale();
 
 		// compute scaled counts
-		std::vector<double> scaled(nBins, 0.0);
+		std::vector<double> scaled;
+		scaled.resize(nBins);
 		double maxScaled = 0.0;
 		for (int i = 0; i < nBins; ++i) {
 			vtkIdType raw = hArr->GetValue(i);
@@ -617,8 +601,12 @@ public:
 		// downsample to display-friendly size
 		const int maxDisplayBins = 2048;
 		int displayBins = std::min(nBins, maxDisplayBins);
+
+		// Fill display bins directly (avoid extra allocations when possible)
 		std::vector<double> display(displayBins, 0.0);
-		if (displayBins == nBins) display = scaled;
+		if (displayBins == nBins) {
+			display = std::move(scaled);
+		}
 		else {
 			double step = static_cast<double>(nBins) / static_cast<double>(displayBins);
 			for (int b = 0; b < displayBins; ++b) {
@@ -661,19 +649,20 @@ public:
 		double binOrigin = 0.0;
 		double binWidth = 1.0;
 
-		// These getters are available on vtkImageHistogram (bin origin / bin width).
-		// If for some reason your VTK version differs, adapt accordingly.
-		// Protect calls by checking m_histo is valid (already tested above).
 		binOrigin = m_histo->GetBinOrigin();
 		double histoMin = m_histo->GetBinOrigin();
 		double histoMax = histoMin;
 		if (nBins > 0) {
 			// Try to get the scalar range from the image if available
-			if (vtkImageData* img = vtkImageData::SafeDownCast(m_histo->GetInput())) {
-				double range[2] = { 0, 0 };
-				img->GetScalarRange(range);
-				histoMax = range[1];
-				histoMin = range[0];
+			if (m_domainMin < m_domainMax) {
+				histoMax = m_domainMax;
+				histoMin = m_domainMin;
+			}
+			else if (vtkImageData* img = vtkImageData::SafeDownCast(m_histo->GetInput())) {
+				double imgRange[2] = { 0.0, 0.0 };
+				img->GetScalarRange(imgRange);
+				histoMin = imgRange[0];
+				histoMax = imgRange[1];
 			}
 			else {
 				// Fallback: estimate max from bins
@@ -718,23 +707,11 @@ public:
 		m_barAxisY->setRange(0.0, dispMax);
 		m_barSeries->setBarWidth(1.0);
 
-		// Ensure overlay series is drawn above histogram: remove and re-add it so it's last in chart series list
-		if (m_mapSeries) {
-
-			// removeSeries does not delete the series instance.
-			m_chart->removeSeries(m_mapSeries);
-			m_chart->addSeries(m_mapSeries);
-			// reattach mapping axes (remove/add may detach attachments)
-			m_mapSeries->attachAxis(m_axisX);
-			m_mapSeries->attachAxis(m_axisY);
-		}
-
 		// after histogram changes, ensure overlay series reflects current function
 		if (m_mapSeries) updateOverlaySeries();
 
 		if (m_chartView) {
 			m_chartView->update();
-			m_chartView->repaint();
 		}
 	}
 
@@ -771,11 +748,6 @@ ScalarOpacityFunctionWidget::ScalarOpacityFunctionWidget(QWidget* parent)
 	Q_D(ScalarOpacityFunctionWidget);
 	ui.setupUi(this);
 
-	// initialize placeholder graphics (actual nodes created when chart exists)
-	d->initializeGraphics();
-
-	// Note: we no longer create and attach a dedicated QGraphicsScene to ui.m_view.
-	// Chart overlay (QChartView) will be parented into ui.m_view or its viewport.
 	// configure the display function container and slider
 	m_function = vtkSmartPointer<vtkPiecewiseFunction>::New();
 	m_function->AllowDuplicateScalarsOn();
@@ -885,8 +857,6 @@ ScalarOpacityFunctionWidget::ScalarOpacityFunctionWidget(QWidget* parent)
 		// redrawHistogram lives in the private implementation; use d pointer to call it
 		d->redrawHistogram();
 	});
-	// always 0 to 1
-	//connect(d->m_axisY, &QValueAxis::rangeChanged, this, [this]() { this->updateFunction(); });
 }
 
 ScalarOpacityFunctionWidget::~ScalarOpacityFunctionWidget()
@@ -983,8 +953,6 @@ void ScalarOpacityFunctionWidget::setImageData(vtkImageData* image)
 
 	// Configure histogram for the image
 	d->m_histo->SetInputData(image);
-	d->m_histo->AutomaticBinningOn();
-	d->m_histo->GenerateHistogramImageOff();
 
 	// Derive domain from the image scalar range and ensure the scene & slider follow the image domain.
 	double range[2];
@@ -1001,6 +969,8 @@ void ScalarOpacityFunctionWidget::setImageData(vtkImageData* image)
 		d->m_histo->SetBinOrigin(range[0]);
 	}
 
+	d->m_histo->Update();
+
 	// now redraw histogram (updates bar axes ranges and ensures overlay is on top)
 	d->redrawHistogram();
 }
@@ -1016,6 +986,7 @@ void ScalarOpacityFunctionWidget::setHistogramScale(int s)
 	Q_D(ScalarOpacityFunctionWidget);
 	if (!d->m_histo) return;
 	d->m_histo->SetHistogramImageScale(s);
+	d->m_histo->Update();
 	d->redrawHistogram();
 }
 

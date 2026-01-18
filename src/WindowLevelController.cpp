@@ -114,15 +114,73 @@ void WindowLevelController::setImageData(vtkImageData* image)
 	if (!image) {
 		m_image = nullptr;
 		if (ui.m_so_function) ui.m_so_function->setImageData(nullptr);
+
+		// Reset spin controls to safe defaults
+		if (ui.m_spinWindow && ui.m_spinLevel) {
+			QSignalBlocker bw(ui.m_spinWindow);
+			QSignalBlocker bl(ui.m_spinLevel);
+			ui.m_spinWindow->setMinimum(0.0);
+			ui.m_spinWindow->setMaximum(0.0);
+			ui.m_spinWindow->setSingleStep(0.0);
+			ui.m_spinWindow->setValue(0.0);
+			ui.m_spinLevel->setMinimum(0.0);
+			ui.m_spinLevel->setMaximum(0.0);
+			ui.m_spinLevel->setSingleStep(0.0);
+			ui.m_spinLevel->setValue(0.0);
+		}
 		return;
 	}
+
 	m_image = vtkSmartPointer<vtkImageData>::New();
 	m_image->ShallowCopy(image);
 
-	// Push scalar range and image to the opacity widget so it can set scene domain and compute histogram.
+	// Forward the internal shallow-copy to the opacity widget so it can set scene domain and compute histogram.
 	if (ui.m_so_function) {
-		// Forward the internal shallow-copy to ensure lifetime is preserved
 		ui.m_so_function->setImageData(m_image.Get());
+	}
+
+	// Derive native scalar range and compute reasonable spin limits/steps.
+	double range[2] = { 0.0, 0.0 };
+	m_image->GetScalarRange(range);
+	if (range[0] < range[1] && ui.m_spinWindow && ui.m_spinLevel) {
+		const double nativeMin = range[0];
+		const double nativeMax = range[1];
+		const double window = nativeMax - nativeMin;
+		const double level = 0.5 * (nativeMax + nativeMin);
+
+		// Compute a sensible single step:
+		// - prefer a fractional resolution relative to window (1/1000)
+		// - but choose a rounded magnitude (power-of-ten / 100) for usability
+		double step = window > 0.0 ? (window / 1000.0) : 1.0;
+		if (window > 0.0) {
+			double mag = std::pow(10.0, std::floor(std::log10(window)));
+			step = std::max(mag / 100.0, step);
+		}
+
+		// Programmatically set ranges/steps/values while blocking signals to avoid
+		// triggering the interactive/debounce emission code.
+		QSignalBlocker bw(ui.m_spinWindow);
+		QSignalBlocker bl(ui.m_spinLevel);
+
+		// Window is a width: min 0, max = native range width (allow up to full-width)
+		ui.m_spinWindow->setMinimum(0.0);
+		ui.m_spinWindow->setMaximum(window);
+		ui.m_spinWindow->setSingleStep(step);
+		ui.m_spinWindow->setDecimals(0);
+		ui.m_spinWindow->setValue(window);
+
+		// Level is a center: clamp to native scalar min/max
+		ui.m_spinLevel->setMinimum(nativeMin);
+		ui.m_spinLevel->setMaximum(nativeMax);
+		ui.m_spinLevel->setSingleStep(step);
+		ui.m_spinLevel->setDecimals(0);
+		ui.m_spinLevel->setValue(level);
+
+		// Notify listeners once with the computed baseline (avoid duplicate notifications)
+		emit windowLevelChanged(ui.m_spinWindow->value(), ui.m_spinLevel->value());
+	}
+	else {
+		// If scalar range is not sensible, leave prior limits but still ensure widget got the image.
 	}
 }
 
