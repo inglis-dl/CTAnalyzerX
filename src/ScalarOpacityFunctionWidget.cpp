@@ -10,6 +10,7 @@
 #include <QPainter>
 #include <QStyleOptionGraphicsItem>
 #include <QTimer>
+#include <QToolTip>
 #include <QtCharts/QChart>
 #include <QtCharts/QChartView>
 #include <QtCharts/QBarSeries>
@@ -445,6 +446,36 @@ public:
 			}
 		}
 
+		// Create threshold overlay items as children of the plot rect so they are clipped by m_plotRect.
+		// These are created once when plot children are created; parenting to m_plotRect gives explicit clipping.
+		if (!m_thresholdLine) {
+			m_thresholdLine = new QGraphicsLineItem(m_chart);
+			QPen p(m_thresholdColor);
+			p.setWidthF(1.0);
+			m_thresholdLine->setPen(p);
+			// position above histogram (plotRect z=900) and below nodes (z=1000)
+			m_thresholdLine->setZValue(950.0);
+			// keep marker size constant in pixels
+			m_thresholdLine->setFlag(QGraphicsItem::ItemIgnoresTransformations, false);
+			m_thresholdLine->setVisible(m_thresholdVisible);
+		}
+		if (!m_thresholdMarkerTop) {
+			m_thresholdMarkerTop = new QGraphicsPolygonItem(m_chart);
+			m_thresholdMarkerTop->setBrush(QBrush(m_thresholdColor));
+			m_thresholdMarkerTop->setPen(Qt::NoPen);
+			m_thresholdMarkerTop->setZValue(951.0);
+			m_thresholdMarkerTop->setFlag(QGraphicsItem::ItemIgnoresTransformations, false);
+			m_thresholdMarkerTop->setVisible(m_thresholdVisible);
+		}
+		if (!m_thresholdMarkerBottom) {
+			m_thresholdMarkerBottom = new QGraphicsPolygonItem(m_chart);
+			m_thresholdMarkerBottom->setBrush(QBrush(m_thresholdColor));
+			m_thresholdMarkerBottom->setPen(Qt::NoPen);
+			m_thresholdMarkerBottom->setZValue(951.0);
+			m_thresholdMarkerBottom->setFlag(QGraphicsItem::ItemIgnoresTransformations, false);
+			m_thresholdMarkerBottom->setVisible(m_thresholdVisible);
+		}
+
 		// perform initial layout now that children exist
 		q->updateFunction();
 	}
@@ -583,37 +614,6 @@ public:
 
 		// Ensure the chart's pixel plot area matches the chartView viewport now
 		adjustChartPlotArea();
-
-		// Create threshold overlay items as children of the chart.
-		// These are created once so the overlay exists by default.
-		if (!m_thresholdLine) {
-			m_thresholdLine = new QGraphicsLineItem(m_chart);
-			QPen p(m_thresholdColor);
-			p.setWidthF(1.0);
-			m_thresholdLine->setPen(p);
-			// position above histogram (plotRect z=900) and below nodes (z=1000)
-			m_thresholdLine->setZValue(950.0);
-			// keep marker size constant in pixels
-			m_thresholdLine->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
-			m_thresholdLine->setVisible(m_thresholdVisible);
-		}
-		if (!m_thresholdMarkerTop) {
-			m_thresholdMarkerTop = new QGraphicsPolygonItem(m_chart);
-			m_thresholdMarkerTop->setBrush(QBrush(m_thresholdColor));
-			m_thresholdMarkerTop->setPen(Qt::NoPen);
-			m_thresholdMarkerTop->setZValue(951.0);
-			m_thresholdMarkerTop->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
-			m_thresholdMarkerTop->setVisible(m_thresholdVisible);
-		}
-		if (!m_thresholdMarkerBottom) {
-			m_thresholdMarkerBottom = new QGraphicsPolygonItem(m_chart);
-			m_thresholdMarkerBottom->setBrush(QBrush(m_thresholdColor));
-			m_thresholdMarkerBottom->setPen(Qt::NoPen);
-			m_thresholdMarkerBottom->setZValue(951.0);
-			m_thresholdMarkerBottom->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
-			m_thresholdMarkerBottom->setVisible(m_thresholdVisible);
-		}
-
 
 		// Helper that creates the clipping rect and nodes when a valid plot area exists.
 		// Create children now if plot area is valid, otherwise defer to allow layouts to run.
@@ -801,69 +801,56 @@ public:
 		QPointF top = m_chart->mapToPosition(QPointF(qreal(m_thresholdValue), qreal(axisYmax)), m_mapSeries);
 		QPointF bottom = m_chart->mapToPosition(QPointF(qreal(m_thresholdValue), qreal(axisYmin)), m_mapSeries);
 
-		// Set line between top and bottom
+		// Set line between top and bottom (chart/m_plotRect will clip appropriately)
 		m_thresholdLine->setLine(QLineF(top, bottom));
 		m_thresholdLine->setVisible(true);
 		QPen pen(m_thresholdColor);
 		pen.setWidthF(1.0);
 		m_thresholdLine->setPen(pen);
 
-		// Get chart plot area so we can clamp triangle tips inside it
+		// Get chart plot area so we can compute marker geometry (we rely on m_plotRect clipping).
 		QRectF plot = m_chart->plotArea();
+		if (plot.isEmpty()) {
+			m_thresholdMarkerTop->setVisible(false);
+			m_thresholdMarkerBottom->setVisible(false);
+			return;
+		}
 
-		// Triangle markers: choose a pixel size but clamp to plot size so tips don't escape
-		const qreal requestedHalf = 4.0;
+		// Triangle markers: choose a pixel half-width but clamp to plot height so triangles fit vertically.
+		const qreal requestedHalf = 5.0;
 		const qreal minHalf = 1.0;
 		qreal triHalf = requestedHalf;
-		if (!plot.isEmpty()) {
+		{
 			const qreal maxHalf = std::max(minHalf, std::floor(plot.height() / 4.0));
 			if (triHalf > maxHalf) triHalf = maxHalf;
 		}
 
-		// Build top triangle (pointing up) ensuring apex Y is not above plot.top()
-		qreal apexTopY = top.y() - triHalf;
-		qreal baseTopY = top.y() + triHalf;
-		// If apex would be above plot, move triangle down so apex sits at plot.top() + 1
-		if (!plot.isEmpty() && apexTopY < plot.top()) {
-			apexTopY = plot.top() + 1.0;
-			baseTopY = apexTopY + 2.0 * triHalf;
-			// ensure base also not below plot.bottom()
-			if (!plot.isEmpty() && baseTopY > plot.bottom()) {
-				baseTopY = plot.bottom() - 1.0;
-				apexTopY = baseTopY - 2.0 * triHalf;
-				if (apexTopY < plot.top()) apexTopY = plot.top() + 1.0; // final clamp
-			}
-		}
+		// Use the mapped threshold X directly (do NOT clamp to plot edges).
+		// This allows polygons to be positioned outside the plot rect so they are partially clipped.
+		qreal cx = top.x();
+
+		// Top triangle: base flush with top edge (tip points downward into the plot)
+		qreal baseTopY = plot.top();
+		qreal apexTopY = baseTopY + 2.0 * triHalf;
+		if (apexTopY > plot.bottom() - 1.0) apexTopY = plot.bottom() - 1.0;
 
 		QPolygonF triTop;
-		triTop << QPointF(top.x() - triHalf, baseTopY)
-			<< QPointF(top.x() + triHalf, baseTopY)
-			<< QPointF(top.x(), apexTopY);
+		triTop << QPointF(cx - triHalf, baseTopY)
+			<< QPointF(cx + triHalf, baseTopY)
+			<< QPointF(cx, apexTopY);
 		m_thresholdMarkerTop->setPolygon(triTop);
-		m_thresholdMarkerTop->setBrush(QBrush(m_thresholdColor));
 		m_thresholdMarkerTop->setVisible(true);
 
-		// Build bottom triangle (pointing down) ensuring apex Y is not below plot.bottom()
-		qreal apexBottomY = bottom.y() + triHalf;
-		qreal baseBottomY = bottom.y() - triHalf;
-		// If apex would be below plot, move triangle up so apex sits at plot.bottom() - 1
-		if (!plot.isEmpty() && apexBottomY > plot.bottom()) {
-			apexBottomY = plot.bottom() - 1.0;
-			baseBottomY = apexBottomY - 2.0 * triHalf;
-			// ensure base also not above plot.top()
-			if (!plot.isEmpty() && baseBottomY < plot.top()) {
-				baseBottomY = plot.top() + 1.0;
-				apexBottomY = baseBottomY + 2.0 * triHalf;
-				if (apexBottomY > plot.bottom()) apexBottomY = plot.bottom() - 1.0; // final clamp
-			}
-		}
+		// Bottom triangle: base flush with bottom edge (tip points upward into the plot)
+		qreal baseBottomY = plot.bottom();
+		qreal apexBottomY = baseBottomY - 2.0 * triHalf;
+		if (apexBottomY < plot.top() + 1.0) apexBottomY = plot.top() + 1.0;
 
 		QPolygonF triBottom;
-		triBottom << QPointF(bottom.x() - triHalf, baseBottomY)
-			<< QPointF(bottom.x() + triHalf, baseBottomY)
-			<< QPointF(bottom.x(), apexBottomY);
+		triBottom << QPointF(cx - triHalf, baseBottomY)
+			<< QPointF(cx + triHalf, baseBottomY)
+			<< QPointF(cx, apexBottomY);
 		m_thresholdMarkerBottom->setPolygon(triBottom);
-		m_thresholdMarkerBottom->setBrush(QBrush(m_thresholdColor));
 		m_thresholdMarkerBottom->setVisible(true);
 	}
 
@@ -1223,12 +1210,13 @@ void ScalarOpacityFunctionWidget::setThresholdIndicatorColor(const QString& colo
 	if (!c.isValid()) return;
 	if (d->m_thresholdColor == c) return;
 	d->m_thresholdColor = c;
-	if (d->m_thresholdLine) {
-		QPen pen(c); pen.setWidthF(1.0);
-		d->m_thresholdLine->setPen(pen);
-	}
-	if (d->m_thresholdMarkerTop) d->m_thresholdMarkerTop->setBrush(QBrush(c));
-	if (d->m_thresholdMarkerBottom) d->m_thresholdMarkerBottom->setBrush(QBrush(c));
+
+	QPen pen(c); pen.setWidthF(1.0);
+	d->m_thresholdLine->setPen(pen);
+
+	d->m_thresholdMarkerTop->setBrush(QBrush(c));
+	d->m_thresholdMarkerBottom->setBrush(QBrush(c));
+
 	emit thresholdIndicatorColorChanged(color);
 }
 
@@ -1245,6 +1233,7 @@ void ScalarOpacityFunctionWidget::setHistogramThreshold(double t)
 		(!std::isfinite(d->m_thresholdValue) && !std::isfinite(t))) return;
 	d->m_thresholdValue = t;
 	emit histogramThresholdChanged(t);
+
 	// Immediately update overlay if chart present
 	if (d->m_chart)
 		d->updateThresholdOverlay();
