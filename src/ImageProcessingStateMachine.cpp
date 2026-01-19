@@ -14,6 +14,9 @@
 #include <QDebug>
 #include <QFile>
 #include <QJsonObject>
+#include <QJsonValue>
+#include <limits>
+#include <utility>
 
 ImageProcessingStateMachine::ImageProcessingStateMachine(QObject* parent)
 	: QObject(parent)
@@ -180,6 +183,10 @@ bool ImageProcessingStateMachine::loadProjectSidecarFile(const QString& sidecarP
 	// Persist parsed sidecar in-memory for later inspection by other helpers.
 	m_sidecar = obj;
 
+	// Inspect sidecar for an explicit primary threshold and notify listeners.
+	auto [present, val] = parsePrimaryThreshold(m_sidecar);
+	emit primaryThresholdChanged(present, val);
+
 	// Determine the last produced derived output from the new "operations" model.
 	QString lastOutputPath;
 	QString lastStepName;
@@ -345,6 +352,10 @@ bool ImageProcessingStateMachine::readSidecarForInput()
 
 	// Store sidecar in state machine
 	m_sidecar = side;
+
+	// Emit threshold presence/state for the newly-read sidecar
+	auto [present, val] = parsePrimaryThreshold(m_sidecar);
+	emit primaryThresholdChanged(present, val);
 
 	// Two canonical cases:
 	// 1) Sidecar that describes a derived image: JsonUtils::writeCropSidecar writes "source" at top-level.
@@ -536,6 +547,12 @@ bool ImageProcessingStateMachine::appendHistoryToSidecar(const QString& imagePat
 			emit sidecarWriteFailed(imagePath, QStringLiteral("Failed to append operation to sidecar"));
 			return false;
 		}
+		// After successful write, emit threshold state derived from the new meta so UI can update.
+		{
+			auto [present2, val2] = parsePrimaryThreshold(meta);
+			emit primaryThresholdChanged(present2, val2);
+		}
+
 		// Emit canonical sidecar path (not the image path)
 		const QString sidecar = JsonUtils::sidecarPathForImage(imagePath);
 		emit sidecarWritten(sidecar);
@@ -575,8 +592,38 @@ bool ImageProcessingStateMachine::writeCropSidecarForOutput(const QString& outPa
 
 	// Emit the canonical sidecar path (JSON file), not the derived image path.
 	const QString sidecar = JsonUtils::sidecarPathForImage(outPath);
+	// Attempt to read the written canonical sidecar and notify listeners about threshold presence.
+	{
+		QJsonObject side = JsonUtils::readJsonSidecar(outPath);
+		if (!side.isEmpty()) {
+			auto [present, val] = parsePrimaryThreshold(side);
+			emit primaryThresholdChanged(present, val);
+		}
+	}
 	emit sidecarWritten(sidecar);
 	return true;
+}
+
+std::pair<bool, double> ImageProcessingStateMachine::parsePrimaryThreshold(const QJsonObject& side) const
+{
+	if (!side.contains(QStringLiteral("operations")) || !side.value(QStringLiteral("operations")).isArray())
+		return { false, std::numeric_limits<double>::quiet_NaN() };
+	QJsonArray ops = side.value(QStringLiteral("operations")).toArray();
+	for (const QJsonValue& v : ops) {
+		if (!v.isObject()) continue;
+		QJsonObject op = v.toObject();
+		QJsonObject params = op.value(QStringLiteral("parameters")).toObject();
+		if (params.contains(QStringLiteral("threshold"))) {
+			const QJsonValue tv = params.value(QStringLiteral("threshold"));
+			if (tv.isDouble()) return { true, tv.toDouble() };
+			if (tv.isString()) {
+				bool ok = false;
+				double val = tv.toString().toDouble(&ok);
+				if (ok) return { true, val };
+			}
+		}
+	}
+	return { false, std::numeric_limits<double>::quiet_NaN() };
 }
 
 QString ImageProcessingStateMachine::stateToString(State s)
@@ -596,6 +643,7 @@ QString ImageProcessingStateMachine::stateToString(State s)
 		case Completed: return QStringLiteral("Completed");
 		case ErrorState: return QStringLiteral("ErrorState");
 		default: return QStringLiteral("Unknown");
+
 	}
 }
 
@@ -608,9 +656,11 @@ bool ImageProcessingStateMachine::sidecarHasPrimaryThreshold() const
 	QJsonObject side;
 	if (!m_sidecar.isEmpty()) {
 		side = m_sidecar;
+
 	}
 	else {
 		side = JsonUtils::readJsonSidecar(m_inputFile);
+
 	}
 
 	if (side.isEmpty()) return false;
@@ -630,6 +680,7 @@ bool ImageProcessingStateMachine::sidecarHasPrimaryThreshold() const
 		// Accept any op that records a 'threshold' parameter (conservative)
 		if (params.contains(QStringLiteral("threshold")))
 			return true;
+
 	}
 	return false;
 }

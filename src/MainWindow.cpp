@@ -404,6 +404,20 @@ void MainWindow::setupPanelConnections()
 		wlController->readSettings();
 	}
 
+	if (m_processingStateMachine && wlController) {
+		if (ScalarOpacityFunctionWidget* scalarWidget = wlController->scalarOpacityFunctionWidget()) {
+			connect(m_processingStateMachine, &ImageProcessingStateMachine::primaryThresholdChanged,
+					this, [scalarWidget](bool present, double value) {
+						// If sidecar contains a threshold, set it on the widget and show the marker.
+						// Otherwise hide the marker. parsePrimaryThreshold guarantees `value` is valid when `present` is true.
+						if (present) {
+							scalarWidget->setHistogramThreshold(value);
+						}
+						scalarWidget->setShowThresholdIndicator(present);
+					}, Qt::QueuedConnection);
+		}
+	}
+
 	// Let the WorkflowPanelWidget own the live connection to the Lightbox for cropping updates.
 	if (m_workflowPanelWidget && ui->lightboxWidget) {
 		m_workflowPanelWidget->setLightboxWidget(ui->lightboxWidget);

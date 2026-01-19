@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QAtomicInteger>
 #include <atomic>
+#include <utility>
 
 class QStateMachine;
 class QState;
@@ -140,6 +141,10 @@ signals:
 	void suggestedState(ImageProcessingStateMachine::State suggested);
 	// Emitted when a project JSON (sidecar) is successfully loaded/parsed
 	void projectLoaded(const QString& projectPath);
+	// Emitted when the state machine parses a sidecar and detects (or clears) a primary threshold.
+	// - present == true && value is finite => threshold present with value
+	// - present == false => no threshold present (value is NaN)
+	void primaryThresholdChanged(bool present, double value);
 
 private:
 	QStateMachine* m_machine = nullptr;
@@ -172,4 +177,8 @@ private:
 
 	// helper to map enum -> QState* (keeps mapping internal)
 	QAbstractState* stateForEnum(State s) const;
+
+	// New private helper: extract first recorded threshold from a sidecar operations[] (if any)
+	// Returns pair: (found, value)
+	std::pair<bool, double> parsePrimaryThreshold(const QJsonObject& side) const;
 };

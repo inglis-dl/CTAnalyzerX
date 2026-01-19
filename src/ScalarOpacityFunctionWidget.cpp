@@ -1257,31 +1257,24 @@ void ScalarOpacityFunctionWidget::readSettings()
 	if (settings.status() != QSettings::NoError) return;
 
 	settings.beginGroup(QStringLiteral("ScalarOpacityFunctionWidget"));
-	d->m_thresholdVisible = settings.value(QStringLiteral("showThresholdIndicator"), d->m_thresholdVisible).toBool();
-	d->m_thresholdColor = QColor(settings.value(QStringLiteral("thresholdIndicatorColor"), d->m_thresholdColor.name()).toString());
-	// QSettings::value(...).toDouble() returns 0.0 for missing keys; keep NaN if not set
-	QVariant thv = settings.value(QStringLiteral("histogramThreshold"));
-	if (thv.isValid()) d->m_thresholdValue = thv.toDouble();
+	// Only restore color here. Visibility and threshold are runtime-only and
+	// controlled by application logic (MainWindow / ImageProcessingStateMachine).
+	QString colorName = settings.value(QStringLiteral("thresholdIndicatorColor"), d->m_thresholdColor.name()).toString();
+	d->m_thresholdColor = QColor(colorName);
 	settings.endGroup();
 
-	// Apply to overlay items if created
+	// Apply color to overlay items if created
 	if (d->m_thresholdLine) {
 		QPen pen(d->m_thresholdColor);
 		pen.setWidthF(1.0);
 		d->m_thresholdLine->setPen(pen);
-		d->m_thresholdLine->setVisible(d->m_thresholdVisible);
 	}
 	if (d->m_thresholdMarkerTop) {
 		d->m_thresholdMarkerTop->setBrush(QBrush(d->m_thresholdColor));
-		d->m_thresholdMarkerTop->setVisible(d->m_thresholdVisible);
 	}
 	if (d->m_thresholdMarkerBottom) {
 		d->m_thresholdMarkerBottom->setBrush(QBrush(d->m_thresholdColor));
-		d->m_thresholdMarkerBottom->setVisible(d->m_thresholdVisible);
 	}
-
-	// Ensure overlay is positioned correctly
-	if (d->m_chart) d->updateThresholdOverlay();
 }
 
 void ScalarOpacityFunctionWidget::writeSettings()
@@ -1291,13 +1284,8 @@ void ScalarOpacityFunctionWidget::writeSettings()
 	if (settings.status() != QSettings::NoError) return;
 
 	settings.beginGroup(QStringLiteral("ScalarOpacityFunctionWidget"));
-	settings.setValue(QStringLiteral("showThresholdIndicator"), d->m_thresholdVisible);
+	// Persist only the indicator color. Visibility/threshold are not persisted here.
 	settings.setValue(QStringLiteral("thresholdIndicatorColor"), d->m_thresholdColor.name());
-	// store NaN as empty QVariant so readSettings keeps NaN if unset
-	if (std::isfinite(d->m_thresholdValue))
-		settings.setValue(QStringLiteral("histogramThreshold"), d->m_thresholdValue);
-	else
-		settings.remove(QStringLiteral("histogramThreshold"));
 	settings.endGroup();
 	settings.sync();
 }
