@@ -189,6 +189,9 @@ void WindowLevelController::writeSettings()
 	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
 	if (settings.status() != QSettings::NoError) return;
 
+	// Delegate to scalar opacity widget (if present) so it can persist its histogram/threshold properties
+	if (ui.m_so_function) ui.m_so_function->writeSettings();
+
 	settings.beginGroup("WindowLevelController");
 	// no histogram/chart settings persisted at this time
 	settings.endGroup();
@@ -199,6 +202,9 @@ void WindowLevelController::readSettings()
 {
 	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
 	if (settings.status() != QSettings::NoError) return;
+
+	// Delegate to scalar opacity widget (if present) so it can restore its histogram/threshold properties
+	if (ui.m_so_function) ui.m_so_function->readSettings();
 
 	settings.beginGroup("WindowLevelController");
 	// no histogram/chart settings to restore

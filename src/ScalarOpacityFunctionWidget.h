@@ -14,6 +14,11 @@ class ScalarOpacityFunctionWidgetPrivate;
 class ScalarOpacityFunctionWidget : public QWidget
 {
 	Q_OBJECT
+		// Threshold indicator properties (persisted in settings.json)
+		Q_PROPERTY(bool showThresholdIndicator READ showThresholdIndicator WRITE setShowThresholdIndicator NOTIFY showThresholdIndicatorChanged)
+		Q_PROPERTY(QString thresholdIndicatorColor READ thresholdIndicatorColor WRITE setThresholdIndicatorColor NOTIFY thresholdIndicatorColorChanged)
+		Q_PROPERTY(double histogramThreshold READ histogramThreshold WRITE setHistogramThreshold NOTIFY histogramThresholdChanged)
+
 
 public:
 	explicit ScalarOpacityFunctionWidget(QWidget* parent = nullptr);
@@ -33,6 +38,20 @@ public:
 	bool filterPeak() const;
 	void setFilterPeak(bool v);
 
+	// Threshold indicator API
+	bool showThresholdIndicator() const;
+	void setShowThresholdIndicator(bool v);
+
+	QString thresholdIndicatorColor() const;
+	void setThresholdIndicatorColor(const QString& color);
+
+	double histogramThreshold() const;
+	void setHistogramThreshold(double t);
+
+	// Load/save widget-specific settings (called by parent controllers)
+	void readSettings();
+	void writeSettings();
+
 	// Owned slave vtkPiecewiseFunction used by the widget for display/edits (may be null)
 	vtkSmartPointer<vtkPiecewiseFunction> m_function;
 
@@ -46,6 +65,9 @@ public slots:
 
 signals:
 	void functionChanged();
+	void showThresholdIndicatorChanged(bool);
+	void thresholdIndicatorColorChanged(const QString&);
+	void histogramThresholdChanged(double);
 
 protected:
 	// UI produced by uic
