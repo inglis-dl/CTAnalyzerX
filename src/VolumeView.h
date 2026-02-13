@@ -142,4 +142,7 @@ private:
 	vtkSmartPointer<vtkColorTransferFunction> m_savedActualColorTF;
 	vtkSmartPointer<vtkPiecewiseFunction> m_savedActualScalarOpacity;
 	bool m_hasSavedState = false;
+
+	double m_minTFNodeX;
+
 };

@@ -29,6 +29,7 @@
 #include <vtkProperty.h>
 #include <vtkRenderer.h>
 #include <vtkRenderWindowInteractor.h>
+#include <vtkTextureObject.h>
 #include <vtkVolume.h>
 #include <vtkVolumeOutlineSource.h>
 #include <vtkVolumeProperty.h>
@@ -66,8 +67,9 @@ VolumeView::VolumeView(QWidget* parent)
 	// Volume pipeline core
 	m_mapper = vtkSmartPointer<vtkGPUVolumeRayCastMapper>::New();
 	m_mapper->SetBlendModeToComposite();
-	m_mapper->AutoAdjustSampleDistancesOff(); // for faster rendering turn auto adjust on and set a desired frame rate
+	m_mapper->AutoAdjustSampleDistancesOn(); // for faster rendering turn auto adjust on and set a desired frame rate
 	m_mapper->LockSampleDistanceToInputSpacingOn();
+
 	m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
 	m_volumeProperty = vtkSmartPointer<vtkVolumeProperty>::New();
@@ -146,6 +148,8 @@ VolumeView::VolumeView(QWidget* parent)
 	m_outlineActor->GetProperty()->SetColor(1, 0, 0);
 
 	m_renderer->AddViewProp(m_outlineActor);
+
+	m_minTFNodeX = 1.0;
 }
 
 VolumeView::~VolumeView()
@@ -256,6 +260,9 @@ void VolumeView::updateData()
 	const int cz = (m_extent[4] + m_extent[5]) / 2;
 
 	if (!m_imageInitialized) {
+
+
+
 		if (m_orthoPlanes) {
 			// Ensure the ortho-planes source is wired to the shared shifted/scaled image
 			m_orthoPlanes->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
@@ -276,6 +283,13 @@ void VolumeView::updateData()
 
 	// Rebuild the actual color TF to span the native image range
 	const double diff = m_scalarRangeMax - m_scalarRangeMin;
+
+	// Configure mapper memory limits now that OpenGL context is ready
+	if (m_mapper && m_renderWindow) {
+		const double maxWidth = std::max(vtkTextureObject::GetMaximumTextureSize(m_renderWindow), 1024);
+		m_minTFNodeX = diff / maxWidth;
+	}
+
 	const double lb = m_scalarRangeMin + 0.01 * diff;
 	const double ub = m_scalarRangeMax - 0.01 * diff;
 
@@ -332,49 +346,112 @@ void VolumeView::updateData()
 
 void VolumeView::setColorWindowLevel(double window, double level)
 {
-	// Implement like vtkVolumeScene::DoWindowLevel, but in the native scalar domain.
-	// Map to four points across [lower, upper] with outer plateaus.
-
 	// Compute window bounds in native scalar domain
 	const double half = 0.5 * std::fabs(window);
 	double lower = std::max(level - half, m_scalarRangeMin);
 	double upper = std::min(level + half, m_scalarRangeMax);
 
 	// If the ramp collapsed, enforce a minimum width
-	if (lower == upper)
-	{
+	if (lower == upper) {
 		const double eps = 1e-6 * (m_scalarRangeMax - m_scalarRangeMin);
 		lower = std::max(m_scalarRangeMin, lower - eps);
 		upper = std::min(m_scalarRangeMax, upper + eps);
 	}
 
-	// Determine plateau values
+	// enforce minimum spacing between all 4 nodes
+	const double minNodeSpacing = m_minTFNodeX;
+	const double rangeSpan = m_scalarRangeMax - m_scalarRangeMin;
+	const double minRequiredSpan = 3.0 * minNodeSpacing; // 3 gaps between 4 nodes
+
+	// Strategy: Always use 4 nodes, but adjust spacing when constrained
+	if (rangeSpan < minRequiredSpan) {
+		// Range too small for ideal spacing - distribute nodes evenly with max possible spacing
+		const double actualSpacing = rangeSpan / 3.0; // Best we can do
+
+		lower = m_scalarRangeMin + actualSpacing;
+		upper = m_scalarRangeMax - actualSpacing;
+	}
+	else {
+		// Sufficient range - enforce minimum spacing constraints
+
+		// Constraint 1: Ensure spacing from min (node 0) to lower (node 1)
+		const double minLowerBound = m_scalarRangeMin + minNodeSpacing;
+		if (lower < minLowerBound) {
+			lower = minLowerBound;
+		}
+
+		// Constraint 2: Ensure spacing from upper (node 2) to max (node 3)
+		const double maxUpperBound = m_scalarRangeMax - minNodeSpacing;
+		if (upper > maxUpperBound) {
+			upper = maxUpperBound;
+		}
+
+		// Constraint 3: Ensure spacing between lower (node 1) and upper (node 2)
+		const double currentSpacing = upper - lower;
+		if (currentSpacing < minNodeSpacing) {
+			// Nodes too close - need to push them apart
+			// Strategy: expand symmetrically from midpoint
+			const double midpoint = 0.5 * (lower + upper);
+			const double halfSpacing = 0.5 * minNodeSpacing;
+
+			double adjustedLower = midpoint - halfSpacing;
+			double adjustedUpper = midpoint + halfSpacing;
+
+			// Re-check boundary constraints after expansion
+			if (adjustedLower < minLowerBound) {
+				// Hit lower boundary - shift both nodes up
+				adjustedLower = minLowerBound;
+				adjustedUpper = adjustedLower + minNodeSpacing;
+
+				// Verify upper doesn't exceed max bound
+				if (adjustedUpper > maxUpperBound) {
+					// Can't maintain spacing - use max available space
+					adjustedUpper = maxUpperBound;
+					adjustedLower = adjustedUpper - minNodeSpacing;
+
+					// Final sanity check
+					if (adjustedLower < minLowerBound) {
+						// Impossible situation - use whatever space we have
+						adjustedLower = minLowerBound;
+					}
+				}
+			}
+			else if (adjustedUpper > maxUpperBound) {
+				// Hit upper boundary - shift both nodes down
+				adjustedUpper = maxUpperBound;
+				adjustedLower = adjustedUpper - minNodeSpacing;
+
+				// Verify lower doesn't go below min bound
+				if (adjustedLower < minLowerBound) {
+					// Can't maintain spacing - use max available space
+					adjustedLower = minLowerBound;
+				}
+			}
+
+			lower = adjustedLower;
+			upper = adjustedUpper;
+		}
+	}
+
+	// Final validation: verify all spacings
+	const double spacing01 = lower - m_scalarRangeMin;
+	const double spacing12 = upper - lower;
+	const double spacing23 = m_scalarRangeMax - upper;
+
+	// Determine plateau values based on window sign
 	double lowVal = (window < 0.0) ? 1.0 : 0.0;
 	double highVal = 1.0 - lowVal;
 
-	if (lowVal > highVal)
+	if (lowVal > highVal) {
 		std::swap(lowVal, highVal);
+	}
 
-	// Build the 4 point opacity function
 	m_actualScalarOpacity->RemoveAllPoints();
+	m_actualScalarOpacity->AddPoint(m_scalarRangeMin, lowVal);  // Node 0 (fixed at min)
+	m_actualScalarOpacity->AddPoint(lower, lowVal);             // Node 1 (moveable)
+	m_actualScalarOpacity->AddPoint(upper, highVal);            // Node 2 (moveable)
+	m_actualScalarOpacity->AddPoint(m_scalarRangeMax, highVal); // Node 3 (fixed at max)
 
-	// edge order: min -> lower -> upper -> max
-	m_actualScalarOpacity->AddPoint(m_scalarRangeMin, lowVal);
-	m_actualScalarOpacity->AddPoint(lower, lowVal);
-	m_actualScalarOpacity->AddPoint(upper, highVal);
-	m_actualScalarOpacity->AddPoint(m_scalarRangeMax, highVal);
-
-	/*
-	if (lower < m_scalarRangeMin)
-		qDebug() << "VolumeView::setColorWindowLevel: lower out of range " << lower << ", " << m_scalarRangeMin;
-	else if (lower > m_scalarRangeMax)
-		qDebug() << "VolumeView::setColorWindowLevel: lower out of range " << lower << ", " << m_scalarRangeMax;
-
-	if (upper < m_scalarRangeMin)
-		qDebug() << "VolumeView::setColorWindowLevel: upper out of range " << upper << ", " << m_scalarRangeMin;
-	else if (upper > m_scalarRangeMax)
-		qDebug() << "VolumeView::setColorWindowLevel: upper out of range " << upper << ", " << m_scalarRangeMax;
-	*/
 	// Recompute mapped TFs using current shift/scale
 	updateMappedOpacityFromActual();
 
