@@ -221,8 +221,11 @@ void SelectionFrameWidget::setSelected(bool selected)
 
 	m_selected = selected;
 	updateVisuals();
-	onSelectionChanged(m_selected);
+
 	emit selectedChanged(m_selected);
+
+	onSelectionChanged(m_selected);
+	//emit selectedChanged(m_selected);
 }
 
 void SelectionFrameWidget::setRestrictInteractionToSelection(bool on)

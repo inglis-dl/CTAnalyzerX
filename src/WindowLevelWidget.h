@@ -1,18 +1,18 @@
 #pragma once
 
-#include "ui_WindowLevelController.h"
+#include "ui_WindowLevelWidget.h"
 
 #include <vtkSmartPointer.h>
 
 class vtkImageData;
 class ScalarOpacityFunctionWidget;
 
-class WindowLevelController : public QWidget
+class WindowLevelWidget : public QWidget
 {
 	Q_OBJECT
 
 public:
-	explicit WindowLevelController(QWidget* parent = nullptr);
+	explicit WindowLevelWidget(QWidget* parent = nullptr);
 
 	ScalarOpacityFunctionWidget* scalarOpacityFunctionWidget() const;
 
@@ -40,7 +40,7 @@ signals:
 	void requestResetWindowLevel();
 
 private:
-	Ui::WindowLevelController ui;
+	Ui::WindowLevelWidget ui;
 	QTimer* m_debounce = nullptr;
 
 	// store the most-recent image (kept for future histogram use)

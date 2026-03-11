@@ -1,8 +1,8 @@
-#include "CropController.h"
+#include "CropWidget.h"
 
 #include <QDebug>
 
-CropController::CropController(QWidget* parent)
+CropWidget::CropWidget(QWidget* parent)
 	: QWidget(parent)
 {
 	ui.setupUi(this);
@@ -15,14 +15,14 @@ CropController::CropController(QWidget* parent)
 	ui.zRangeSlider->setOrientation(Qt::Horizontal);
 
 	// connect UI
-	connect(ui.defineButton, &QPushButton::toggled, this, &CropController::on_defineButton_toggled);
-	connect(ui.resetButton, &QPushButton::clicked, this, &CropController::on_resetButton_clicked);
-	connect(ui.saveButton, &QPushButton::clicked, this, &CropController::on_saveButton_clicked);
+	connect(ui.defineButton, &QPushButton::toggled, this, &CropWidget::on_defineButton_toggled);
+	connect(ui.resetButton, &QPushButton::clicked, this, &CropWidget::on_resetButton_clicked);
+	connect(ui.saveButton, &QPushButton::clicked, this, &CropWidget::on_saveButton_clicked);
 
 	// RangeSlider provides valuesChanged(min,max)
-	connect(ui.xRangeSlider, &RangeSlider::valuesChanged, this, &CropController::on_xRangeSlider_valuesChanged);
-	connect(ui.yRangeSlider, &RangeSlider::valuesChanged, this, &CropController::on_yRangeSlider_valuesChanged);
-	connect(ui.zRangeSlider, &RangeSlider::valuesChanged, this, &CropController::on_zRangeSlider_valuesChanged);
+	connect(ui.xRangeSlider, &RangeSlider::valuesChanged, this, &CropWidget::on_xRangeSlider_valuesChanged);
+	connect(ui.yRangeSlider, &RangeSlider::valuesChanged, this, &CropWidget::on_yRangeSlider_valuesChanged);
+	connect(ui.zRangeSlider, &RangeSlider::valuesChanged, this, &CropWidget::on_zRangeSlider_valuesChanged);
 
 	// sensible defaults for labels (in case caller doesn't call setRangeSliders)
 	setRangeSliders(0, 1000, 0, 1000, 0, 1000);
@@ -32,11 +32,16 @@ CropController::CropController(QWidget* parent)
 	updateSaveButtonState();
 }
 
-CropController::~CropController()
+CropWidget::~CropWidget()
 {
 }
 
-void CropController::setRangeSliders(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax)
+void CropWidget::setSaveEnabled(bool on)
+{
+	ui.saveButton->setEnabled(on);
+}
+
+void CropWidget::setRangeSliders(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax)
 {
 	// Prevent intermediate signals while initializing
 	bool xb = ui.xRangeSlider->blockSignals(true);
@@ -75,7 +80,7 @@ void CropController::setRangeSliders(int xMin, int xMax, int yMin, int yMax, int
 	updateSaveButtonState();
 }
 
-void CropController::onExternalCroppingChanged(bool enabled)
+void CropWidget::onExternalCroppingChanged(bool enabled)
 {
 	// Keep define button in sync with external state and enable/disable siblings.
 	// Avoid re-emitting the same user-intent signal when programmatically changing the button.
@@ -87,7 +92,7 @@ void CropController::onExternalCroppingChanged(bool enabled)
 	emit requestOutlineVisibility(enabled);
 }
 
-void CropController::on_defineButton_toggled(bool checked)
+void CropWidget::on_defineButton_toggled(bool checked)
 {
 	setSiblingControlsEnabled(checked);
 	emit defineCropToggled(checked);
@@ -96,9 +101,9 @@ void CropController::on_defineButton_toggled(bool checked)
 	emit requestOutlineVisibility(checked);
 }
 
-void CropController::on_resetButton_clicked()
+void CropWidget::on_resetButton_clicked()
 {
-	// Reset sliders to full ranges (min, max) to match VolumeControlsWidget behavior
+	// Reset sliders to full ranges (min, max)
 	ui.xRangeSlider->setValues(ui.xRangeSlider->minimum(), ui.xRangeSlider->maximum());
 	ui.yRangeSlider->setValues(ui.yRangeSlider->minimum(), ui.yRangeSlider->maximum());
 	ui.zRangeSlider->setValues(ui.zRangeSlider->minimum(), ui.zRangeSlider->maximum());
@@ -112,9 +117,12 @@ void CropController::on_resetButton_clicked()
 
 	// Update Save button state after reset (now same as input, so Save should be disabled)
 	updateSaveButtonState();
+
+	// emit the explicit reset signal so consumers can respond (e.g., discard pending changes, update outline actors, etc.)
+	emit resetCropRequested();
 }
 
-void CropController::on_saveButton_clicked()
+void CropWidget::on_saveButton_clicked()
 {
 	// Turn outlines off before committing the save so views won't request out-of-range data
 	// while the new image is written/loaded.
@@ -124,7 +132,7 @@ void CropController::on_saveButton_clicked()
 	emit saveCroppedRequested();
 }
 
-void CropController::on_xRangeSlider_valuesChanged(int min, int max)
+void CropWidget::on_xRangeSlider_valuesChanged(int min, int max)
 {
 	ui.xMinLabel->setText(QString::number(min));
 	ui.xMaxLabel->setText(QString::number(max));
@@ -136,7 +144,7 @@ void CropController::on_xRangeSlider_valuesChanged(int min, int max)
 	updateSaveButtonState();
 }
 
-void CropController::on_yRangeSlider_valuesChanged(int min, int max)
+void CropWidget::on_yRangeSlider_valuesChanged(int min, int max)
 {
 	ui.yMinLabel->setText(QString::number(min));
 	ui.yMaxLabel->setText(QString::number(max));
@@ -148,7 +156,7 @@ void CropController::on_yRangeSlider_valuesChanged(int min, int max)
 	updateSaveButtonState();
 }
 
-void CropController::on_zRangeSlider_valuesChanged(int min, int max)
+void CropWidget::on_zRangeSlider_valuesChanged(int min, int max)
 {
 	ui.zMinLabel->setText(QString::number(min));
 	ui.zMaxLabel->setText(QString::number(max));
@@ -160,7 +168,7 @@ void CropController::on_zRangeSlider_valuesChanged(int min, int max)
 	updateSaveButtonState();
 }
 
-void CropController::setSiblingControlsEnabled(bool on)
+void CropWidget::setSiblingControlsEnabled(bool on)
 {
 	ui.resetButton->setEnabled(on);
 	// Save should only be enabled when defining AND when extents produce a valid, smaller-than-input volume.
@@ -172,7 +180,7 @@ void CropController::setSiblingControlsEnabled(bool on)
 	ui.zRangeSlider->setEnabled(on);
 }
 
-void CropController::updateLabels()
+void CropWidget::updateLabels()
 {
 	// Keep min/max labels reflecting current slider values.
 	ui.xMinLabel->setText(QString::number(ui.xRangeSlider->minimumValue()));
@@ -188,7 +196,7 @@ void CropController::updateLabels()
 // - Define mode is active (ui.defineButton checked),
 // - the selected extents produce positive dimensions on each axis,
 // - AND the selected extents are strictly smaller than the full image extents on at least one axis.
-void CropController::updateSaveButtonState()
+void CropWidget::updateSaveButtonState()
 {
 	// If no UI elements available bail out defensively.
 	if (!ui.saveButton || !ui.xRangeSlider || !ui.yRangeSlider || !ui.zRangeSlider || !ui.defineButton) return;

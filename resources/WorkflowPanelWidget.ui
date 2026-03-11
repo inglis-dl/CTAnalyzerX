@@ -64,11 +64,11 @@
         </rect>
        </property>
        <item>
-        <widget class="CollapsibleGroupBox" name="grpInfo">
+        <widget class="CollapsibleGroupBox" name="grpImageInfo">
          <property name="title">
           <string>Info</string>
          </property>
-         <layout class="QVBoxLayout" name="info`Layout">
+         <layout class="QVBoxLayout" name="imageInfoLayout">
           <property name="leftMargin">
            <number>0</number>
           </property>
@@ -82,7 +82,7 @@
            <number>0</number>
           </property>
           <item>
-           <widget class="ImageInfoWidget" name="imageInfo" native="true">
+           <widget class="ImageInfoWidget" name="imageInfoWidget" native="true">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
               <horstretch>0</horstretch>
@@ -91,15 +91,15 @@
             </property>
            </widget>
           </item>
-         </layout>		 
+         </layout>
         </widget>
        </item>
        <item>
-        <widget class="CollapsibleGroupBox" name="grpCropping">
+        <widget class="CollapsibleGroupBox" name="grpCrop">
          <property name="title">
           <string>Cropping</string>
          </property>
-         <layout class="QVBoxLayout" name="croppingLayout">
+         <layout class="QVBoxLayout" name="cropLayout">
           <property name="leftMargin">
            <number>0</number>
           </property>
@@ -113,7 +113,7 @@
            <number>0</number>
           </property>
           <item>
-           <widget class="CropController" name="cropController" native="true">
+           <widget class="CropWidget" name="cropWidget" native="true">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
               <horstretch>0</horstretch>
@@ -126,11 +126,11 @@
         </widget>
        </item>
        <item>
-        <widget class="CollapsibleGroupBox" name="grpFiducials">
+        <widget class="CollapsibleGroupBox" name="grpLandmark">
          <property name="title">
-          <string>Fiducials &amp; Axes</string>
+          <string>Landmarks</string>
          </property>
-         <layout class="QVBoxLayout" name="fiducialsLayout">
+         <layout class="QVBoxLayout" name="landmarkLayout">
           <property name="leftMargin">
            <number>6</number>
           </property>
@@ -144,25 +144,12 @@
            <number>6</number>
           </property>
           <item>
-           <widget class="QLabel" name="lblFiducialsPlaceholder">
-            <property name="text">
-             <string>Fiducial placement controls placeholder (define plane &amp; rotation axes)</string>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnPlaceFiducials">
+           <widget class="LandmarkWidget" name="landmarkWidget" native="true">
             <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
+             <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
               <horstretch>0</horstretch>
               <verstretch>0</verstretch>
              </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Place Fiducials</string>
             </property>
            </widget>
           </item>
@@ -170,151 +157,11 @@
         </widget>
        </item>
        <item>
-        <widget class="CollapsibleGroupBox" name="grpRotation">
+        <widget class="CollapsibleGroupBox" name="grpWindowLevel">
          <property name="title">
-          <string>Rotation</string>
+          <string>Window/Level</string>
          </property>
-         <layout class="QVBoxLayout" name="rotationLayout">
-          <property name="leftMargin">
-           <number>6</number>
-          </property>
-          <property name="topMargin">
-           <number>6</number>
-          </property>
-          <property name="rightMargin">
-           <number>6</number>
-          </property>
-          <property name="bottomMargin">
-           <number>6</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="lblRotationPlaceholder">
-            <property name="text">
-             <string>VolumeRotationWidget placeholder (axes widget + spinboxes)</string>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnStartInteractiveRotation">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Start Interactive Rotation</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnApplyRotation">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Apply Rotation &amp; Save</string>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="CollapsibleGroupBox" name="grpSegmentation">
-         <property name="title">
-          <string>Segmentation</string>
-         </property>
-         <layout class="QVBoxLayout" name="segmentationLayout">
-          <property name="leftMargin">
-           <number>6</number>
-          </property>
-          <property name="topMargin">
-           <number>6</number>
-          </property>
-          <property name="rightMargin">
-           <number>6</number>
-          </property>
-          <property name="bottomMargin">
-           <number>6</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="lblSegmentationPlaceholder">
-            <property name="text">
-             <string>Thresholding / region growing UI placeholder (histogram, preview)</string>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnComputeThreshold">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Compute Threshold (Otsu)</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnPreviewThreshold">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Preview Threshold</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnRunSegmentation">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Run Region Growing</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="btnSaveSegment">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>Save Segmented Volume</string>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="CollapsibleGroupBox" name="grpAppearance">
-         <property name="title">
-          <string>Appearance</string>
-         </property>
-         <layout class="QVBoxLayout" name="appearanceLayout">
+         <layout class="QVBoxLayout" name="windowLevelLayout">
           <property name="leftMargin">
            <number>0</number>
           </property>
@@ -328,7 +175,7 @@
            <number>0</number>
           </property>
           <item>
-           <widget class="WindowLevelController" name="windowLevelController" native="true">
+           <widget class="WindowLevelWidget" name="windowLevelWidget" native="true">
             <property name="sizePolicy">
              <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
               <horstretch>0</horstretch>
@@ -367,21 +214,27 @@
    <container>1</container>
   </customwidget>
   <customwidget>
-   <class>ImageInforWidget</class>
+   <class>ImageInfoWidget</class>
    <extends>QWidget</extends>
    <header>ImageInfoWidget.h</header>
    <container>1</container>
   </customwidget>
   <customwidget>
-   <class>CropController</class>
+   <class>CropWidget</class>
    <extends>QWidget</extends>
-   <header>CropController.h</header>
+   <header>CropWidget.h</header>
    <container>1</container>
   </customwidget>
   <customwidget>
-   <class>WindowLevelController</class>
+   <class>WindowLevelWidget</class>
    <extends>QWidget</extends>
-   <header>WindowLevelController.h</header>
+   <header>WindowLevelWidget.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>LandmarkWidget</class>
+   <extends>QWidget</extends>
+   <header>LandmarkWidget.h</header>
    <container>1</container>
   </customwidget>
  </customwidgets>

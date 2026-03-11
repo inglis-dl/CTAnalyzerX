@@ -1,4 +1,4 @@
-#include "WindowLevelController.h"
+#include "WindowLevelWidget.h"
 #include "JsonSettings.h"
 
 #include "ScalarOpacityFunctionWidget.h"
@@ -24,7 +24,7 @@
 #include <vtkImageData.h>
 #include <vtkSmartPointer.h>
 
-WindowLevelController::WindowLevelController(QWidget* parent)
+WindowLevelWidget::WindowLevelWidget(QWidget* parent)
 	: QWidget(parent)
 {
 	ui.setupUi(this);
@@ -75,7 +75,7 @@ WindowLevelController::WindowLevelController(QWidget* parent)
 	});
 }
 
-void WindowLevelController::setWindow(double w)
+void WindowLevelWidget::setWindow(double w)
 {
 	if (!ui.m_spinWindow) return;
 	QSignalBlocker b(ui.m_spinWindow);
@@ -83,7 +83,7 @@ void WindowLevelController::setWindow(double w)
 	emit windowLevelChanged(ui.m_spinWindow->value(), ui.m_spinLevel->value());
 }
 
-void WindowLevelController::setLevel(double l)
+void WindowLevelWidget::setLevel(double l)
 {
 	if (!ui.m_spinLevel) return;
 	QSignalBlocker b(ui.m_spinLevel);
@@ -91,7 +91,7 @@ void WindowLevelController::setLevel(double l)
 	emit windowLevelChanged(ui.m_spinWindow->value(), ui.m_spinLevel->value());
 }
 
-ScalarOpacityFunctionWidget* WindowLevelController::scalarOpacityFunctionWidget() const
+ScalarOpacityFunctionWidget* WindowLevelWidget::scalarOpacityFunctionWidget() const
 {
 	if (ui.m_so_function) {
 		return ui.m_so_function;
@@ -101,14 +101,14 @@ ScalarOpacityFunctionWidget* WindowLevelController::scalarOpacityFunctionWidget(
 	}
 }
 
-void WindowLevelController::setDebounceInterval(int ms)
+void WindowLevelWidget::setDebounceInterval(int ms)
 {
 	if (!m_debounce) return;
 	// Ensure non-negative interval
 	m_debounce->setInterval(std::max(0, ms));
 }
 
-void WindowLevelController::setImageData(vtkImageData* image)
+void WindowLevelWidget::setImageData(vtkImageData* image)
 {
 	// Store image and forward to scalar-opacity widget for histogram/chart rendering.
 	if (!image) {
@@ -184,7 +184,7 @@ void WindowLevelController::setImageData(vtkImageData* image)
 	}
 }
 
-void WindowLevelController::writeSettings()
+void WindowLevelWidget::writeSettings()
 {
 	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
 	if (settings.status() != QSettings::NoError) return;
@@ -192,13 +192,13 @@ void WindowLevelController::writeSettings()
 	// Delegate to scalar opacity widget (if present) so it can persist its histogram/threshold properties
 	if (ui.m_so_function) ui.m_so_function->writeSettings();
 
-	settings.beginGroup("WindowLevelController");
+	settings.beginGroup("WindowLevelWidget");
 	// no histogram/chart settings persisted at this time
 	settings.endGroup();
 	settings.sync();
 }
 
-void WindowLevelController::readSettings()
+void WindowLevelWidget::readSettings()
 {
 	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
 	if (settings.status() != QSettings::NoError) return;
@@ -206,7 +206,7 @@ void WindowLevelController::readSettings()
 	// Delegate to scalar opacity widget (if present) so it can restore its histogram/threshold properties
 	if (ui.m_so_function) ui.m_so_function->readSettings();
 
-	settings.beginGroup("WindowLevelController");
+	settings.beginGroup("WindowLevelWidget");
 	// no histogram/chart settings to restore
 	settings.endGroup();
 }

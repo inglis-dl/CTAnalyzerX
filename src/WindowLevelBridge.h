@@ -12,7 +12,7 @@ public:
 	explicit WindowLevelBridge(VolumeView* volumeView, SliceView* sliceView = nullptr, QObject* parent = nullptr);
 
 public Q_SLOTS:
-	// Called by WindowLevelController (interactive or committed)
+	// Called by WindowLevelWidget (interactive or committed)
 	void onWindowLevelChanged(double window, double level);
 
 	// Called when a SliceView changes WL via VTK interaction.

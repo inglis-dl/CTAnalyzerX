@@ -1,15 +1,15 @@
 #pragma once
 
-#include "ui_CropController.h"
+#include "ui_CropWidget.h"
 
 #include <QWidget>
 
-class CropController : public QWidget
+class CropWidget : public QWidget
 {
 	Q_OBJECT
 public:
-	explicit CropController(QWidget* parent = nullptr);
-	~CropController() override;
+	explicit CropWidget(QWidget* parent = nullptr);
+	~CropWidget() override;
 
 	// Accessors for the range sliders
 	RangeSlider* xRangeSlider() const { return ui.xRangeSlider; }
@@ -23,6 +23,8 @@ public:
 	QLabel* yMaxLabel() const { return ui.yMaxLabel; }
 	QLabel* zMinLabel() const { return ui.zMinLabel; }
 	QLabel* zMaxLabel() const { return ui.zMaxLabel; }
+
+	void setSaveEnabled(bool on);
 
 public slots:
 	// Configure the sliders' ranges and labels (x,y,z order to match UI)
@@ -39,13 +41,16 @@ signals:
 	// user requests to save the cropped volume (Save button)
 	void saveCroppedRequested();
 
-	// Matches VolumeControlsWidget: emit full ranges for each axis (min, max) in order X, Y, Z
+	// emit full ranges for each axis (min, max) in order X, Y, Z
 	void croppingRegionChanged(int xMin, int xMax,
 							  int yMin, int yMax,
 							  int zMin, int zMax);
 
 	// request views toggle outline visibility (connected to SliceView::setOutlineVisible)
 	void requestOutlineVisibility(bool visible);
+
+	// emitted when user presses Reset (sliders return to full extents)
+	void resetCropRequested();
 
 private slots:
 	void on_defineButton_toggled(bool checked);
@@ -58,7 +63,7 @@ private slots:
 	void on_zRangeSlider_valuesChanged(int min, int max);
 
 private:
-	Ui::CropController ui;
+	Ui::CropWidget ui;
 	void setSiblingControlsEnabled(bool on);
 	void updateLabels();
 	void updateSaveButtonState();

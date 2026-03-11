@@ -1,37 +1,38 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
-#include "ImageProcessingStateMachine.h"
-#include "LightboxWidget.h"
-#include "ImageLoader.h"
-#include "WindowLevelController.h"
-#include "WindowLevelBridge.h"
-#include "JsonSettings.h"
-#include "WorkflowPanelWidget.h"
 #include "CropExporter.h"
 #include "ImageInfoWidget.h"
-#include "PrimaryThresholdWorker.h"
+#include "ImageLoader.h"
+#include "JsonSettings.h"
 #include "JsonUtils.h"
+#include "LandmarkWidget.h"
+#include "LightboxWidget.h"
 #include "Logger.h"
+#include "OtsuThresholdWorker.h"
+#include "WindowLevelBridge.h"
+#include "WindowLevelWidget.h"
+#include "WorkflowPanelWidget.h"
+#include "WorkflowStateMachine.h"
 
-#include <QThread>
+#include <QtConcurrent/QtConcurrent>
+#include <QDateTime>
+#include <QDebug>
+#include <QDragEnterEvent>
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QDateTime>
-#include <QSettings>
-#include <QDebug>
-#include <QtConcurrent/QtConcurrent>
+#include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
-#include <QDragEnterEvent>
-#include <QOffscreenSurface>
-#include <QSurfaceFormat>
-#include <QScreen>
 #include <QRegularExpression>
+#include <QScreen>
+#include <QSettings>
+#include <QSurfaceFormat>
+#include <QThread>
 
-#include <vtkVersion.h>   // VTK version macros
 #include <vtkEventQtSlotConnect.h>
 #include <vtkImageData.h>
 #include <vtkImageReslice.h>
+#include <vtkVersion.h>   // VTK version macros
 #include <itkVersion.h>   // ITK version macros
 
 #ifndef CTANALYZERX_VERSION
@@ -97,6 +98,7 @@ MainWindow::MainWindow(QWidget* parent)
 
 	// Connect menu actions to slots
 	connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::onActionOpen);
+	connect(ui->actionResume, &QAction::triggered, this, &MainWindow::onActionResume);
 	connect(ui->actionSave, &QAction::triggered, this, &MainWindow::onActionSave);
 	connect(ui->actionExit, &QAction::triggered, this, &MainWindow::onActionExit);
 	connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::onActionAbout);
@@ -109,8 +111,8 @@ MainWindow::MainWindow(QWidget* parent)
 	vtkConnections = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 
 	vtkConnections->Connect(
-	m_imageLoader, vtkCommand::StartEvent,
-	this, SLOT(onVtkStartEvent()));
+		m_imageLoader, vtkCommand::StartEvent,
+		this, SLOT(onVtkStartEvent()));
 
 	vtkConnections->Connect(
 		m_imageLoader, vtkCommand::EndEvent,
@@ -128,77 +130,128 @@ MainWindow::MainWindow(QWidget* parent)
 	Q_ASSERT(m_workflowPanelWidget); // or qWarning() if you prefer non-fatal
 
 	// Initialize image processing state machine
-	m_processingStateMachine = new ImageProcessingStateMachine(this);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestLoadImage,
-			this, &MainWindow::onProcessingRequestLoadImage);
-	// new: machine can request MainWindow open a specific image (e.g., last processed output)
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestOpenImage,
-			this, &MainWindow::onProcessingRequestOpenImage, Qt::QueuedConnection);
-	// machine can suggest a UI workflow state to display (does not start processing)
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::suggestedState,
-			this, &MainWindow::updateUiForState, Qt::QueuedConnection);
-	// when a project file is loaded, ensure it's in recent projects
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::projectLoaded,
-			this, &MainWindow::onProjectLoaded, Qt::QueuedConnection);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestDefineCrop,
-			this, &MainWindow::onProcessingRequestDefineCrop);
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestLoadCropped,
-			this, &MainWindow::onProcessingRequestLoadCropped);
-	// State-machine-driven automatic save of cropped volume
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::requestSaveCropped,
-			this, &MainWindow::onProcessingRequestSaveCropped);
+	m_workflowStateMachine = new WorkflowStateMachine(this);
 
-	// Keep UI updates via updateUiForState
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::stateChanged,
-			this, &MainWindow::updateUiForState, Qt::QueuedConnection);
+	// State machine request/notification connections
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestComputeThreshold,
+		this, &MainWindow::onProcessingRequestComputeThreshold);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestLoadImage,
+		this, &MainWindow::onProcessingRequestLoadImage);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestOpenImage,
+		this, &MainWindow::onProcessingRequestOpenImage, Qt::QueuedConnection);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::suggestedState,
+		this, &MainWindow::updateUiForState, Qt::QueuedConnection);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::projectLoaded,
+		this, &MainWindow::onProjectLoaded, Qt::QueuedConnection);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestSaveCropped,
+		this, &MainWindow::onProcessingRequestSaveCropped);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestLoadCropped,
+		this, &MainWindow::onProcessingRequestLoadCropped);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestLoadLandmarks,
+		this, &MainWindow::onProcessingRequestLoadLandmarks);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestSaveLandmarks,
+		this, &MainWindow::onProcessingRequestSaveLandmarks);
+	// High-level state change notification (for progress/status/menus only)
+	connect(m_workflowStateMachine, &WorkflowStateMachine::stateChanged,
+		this, &MainWindow::updateUiForState, Qt::QueuedConnection);
 
-	// Connect to state-machine sidecar persistence notifications (async)
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::sidecarWritten,
-			this, [this](const QString& sidecarPath) {
-				// Ensure the recent projects list contains the sidecar and refresh UI
-				addToRecentProjects(sidecarPath);
-				writeSettings(); // persist recentProjects
-				updateRecentProjectsMenu();
-				statusBar()->showMessage(tr("Project saved: %1").arg(sidecarPath), 2000);
-			}, Qt::QueuedConnection);
+	// Sidecar persistence notifications
+	connect(m_workflowStateMachine, &WorkflowStateMachine::sidecarWritten,
+		this, [this](const QString& sidecarPath) {
+			addToRecentProjects(sidecarPath);
+			writeSettings();
+			updateRecentProjectsMenu();
+			statusBar()->showMessage(tr("Project saved: %1").arg(sidecarPath), 2000);
+		}, Qt::QueuedConnection);
 
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::sidecarWriteFailed,
-			this, [this](const QString& imagePath, const QString& reason) {
-				qWarning() << "Sidecar write failed for" << imagePath << ":" << reason;
-				statusBar()->showMessage(tr("Failed to save project for %1").arg(imagePath), 4000);
-			}, Qt::QueuedConnection);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::sidecarWriteFailed,
+		this, [this](const QString& imagePath, const QString& reason) {
+			qWarning() << "Sidecar write failed for" << imagePath << ":" << reason;
+			statusBar()->showMessage(tr("Failed to save project for %1").arg(imagePath), 4000);
+		}, Qt::QueuedConnection);
 
-	// Ensure UI initially reflects the machine's starting state
-	updateUiForState(m_processingStateMachine->currentState());
+	// Top-level menu action gating (Save should be disabled when machine is active)
+	connect(m_workflowStateMachine, &WorkflowStateMachine::stateChanged, this,
+		[this](WorkflowStateMachine::State s) {
+			bool active = (s != WorkflowStateMachine::Idle &&
+				s != WorkflowStateMachine::Completed &&
+				s != WorkflowStateMachine::ErrorState);
+			ui->actionSave->setEnabled(!active);
+		});
 
-	connect(m_processingStateMachine, &ImageProcessingStateMachine::stateChanged, this, [this](ImageProcessingStateMachine::State s) {
-		bool active = (s != ImageProcessingStateMachine::Idle && s != ImageProcessingStateMachine::Completed && s != ImageProcessingStateMachine::ErrorState);
-		// Keep "Open" enabled at all times per product requirement.
-		// Only gate "Save" (or other actions) while the machine is active.
-		ui->actionSave->setEnabled(!active);
-	});
+	// Phase 4: Workflow resumption support
+	connect(m_workflowStateMachine, &WorkflowStateMachine::workflowRestored,
+		this, [this](WorkflowStateMachine::State restoredState) {
+			statusBar()->showMessage(
+				tr("Resumed workflow at: %1").arg(
+					WorkflowStateMachine::stateToString(restoredState)),
+				5000);
+
+			// Notify workflow panel to highlight restored step
+			if (m_workflowPanelWidget) {
+				m_workflowPanelWidget->notifyWorkflowRestored(restoredState);
+			}
+		}, Qt::QueuedConnection);
+
+	// Auto-save workflow state on significant transitions
+	connect(m_workflowStateMachine, &WorkflowStateMachine::stateChanged,
+		this, [this](WorkflowStateMachine::State newState) {
+			// Save state at key workflow milestones (not during transient/loading states)
+			const bool shouldPersist = (newState == WorkflowStateMachine::DefiningCrop ||
+				newState == WorkflowStateMachine::DefiningLandmarks);
+
+			if (shouldPersist && m_workflowStateMachine) {
+				m_workflowStateMachine->saveWorkflowState();
+			}
+		}, Qt::QueuedConnection);
+
+	// ========================================================================
+	// Phase 3: Declarative UI property bindings
+	// State machine capabilities directly drive workflow panel controls
+	// ========================================================================
+	if (m_workflowStateMachine && m_workflowPanelWidget) {
+		// Cropping UI bindings
+		connect(m_workflowStateMachine, &WorkflowStateMachine::canDefineCropChanged,
+			m_workflowPanelWidget, &WorkflowPanelWidget::setCroppingEnabled, Qt::QueuedConnection);
+
+		connect(m_workflowStateMachine, &WorkflowStateMachine::canSaveCropChanged,
+			m_workflowPanelWidget, &WorkflowPanelWidget::setSaveCroppedEnabled, Qt::QueuedConnection);
+
+		// Landmarks UI bindings
+		connect(m_workflowStateMachine, &WorkflowStateMachine::canPlaceLandmarksChanged,
+			m_workflowPanelWidget, &WorkflowPanelWidget::setLandmarkingEnabled, Qt::QueuedConnection);
+
+		auto* landmarkWidget = m_workflowPanelWidget->landmarkWidget();
+		if (landmarkWidget) {
+			// Widget requests save ? State machine emits requestSaveLandmarks
+			connect(landmarkWidget, &LandmarkWidget::saveLandmarksRequested,
+				m_workflowStateMachine, &WorkflowStateMachine::requestSaveLandmarks);
+
+			qDebug() << "Connected LandmarkWidget save request to state machine";
+		}
+
+		// Initialize UI to match state machine's initial capabilities
+		m_workflowPanelWidget->setCroppingEnabled(m_workflowStateMachine->canDefineCrop());
+		m_workflowPanelWidget->setSaveCroppedEnabled(m_workflowStateMachine->canSaveCrop());
+		m_workflowPanelWidget->setLandmarkingEnabled(m_workflowStateMachine->canPlaceLandmarks());
+
+		// Appearance group is always available (not state-machine managed)
+		m_workflowPanelWidget->setWindowLevellingEnabled(true);
+	}
+
+	// Ensure UI initially reflects the machine's starting state (for progress/status only)
+	updateUiForState(m_workflowStateMachine->currentState());
 
 	// --- Wire workflow panel actions into state-machine-driven flow ---
 	if (m_workflowPanelWidget) {
-		// Load image button -> open file dialog (same as ActionOpen)
-		connect(m_workflowPanelWidget, &WorkflowPanelWidget::loadImageRequested, this, &MainWindow::onActionOpen);
-
-		// Define Crop: no longer enable an Apply button (Apply removed from UI).
-		// Keep any required behavior in the CropController/WorkflowPanelWidget (Save enabling is handled there).
-
-		// Save cropped request -> prompt for path and start save worker
+		// Save cropped request -> trigger export worker
 		connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested, this, [this]() {
 			if (!m_cropExporter) {
 				statusBar()->showMessage(tr("No crop exporter available"), 5000);
 				return;
 			}
-
-			// The CropExporter uses the input file path (set when opening the image)
-			// to create an automatic output filename. Call apply() to perform crop+write.
-			// CropExporter emits writeStarted/writeProgress/writeFinished which are
-			// connected to MainWindow to update the loader UI.
 			m_cropExporter->apply();
-		});
+			});
 	}
 
 	// Instantiate CropExporter (stateless w.r.t. stakeholders). MainWindow performs the wiring.
@@ -208,76 +261,64 @@ MainWindow::MainWindow(QWidget* parent)
 		// Panel -> exporter: extents only (Apply removed; Save triggers export)
 		if (m_workflowPanelWidget) {
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
-					m_cropExporter, &CropExporter::setCropRegion, Qt::UniqueConnection);
-			// do not connect applyCropRequested -> m_cropExporter->apply() any more
+				m_cropExporter, &CropExporter::setCropRegion, Qt::UniqueConnection);
 		}
 
 		// MainWindow hooks: show loader/progress like ImageLoader
-		connect(m_cropExporter, &CropExporter::writeStarted, this, &MainWindow::showProgressStart, Qt::QueuedConnection);
-		connect(m_cropExporter, &CropExporter::writeProgress, this, &MainWindow::showProgressValue, Qt::QueuedConnection);
-		connect(m_cropExporter, &CropExporter::writeFinished, this, [this](const QString& path, bool success, const QString& msg) {
-			// always hide loader
-			this->showProgressEnd();
+		connect(m_cropExporter, &CropExporter::writeStarted,
+			this, &MainWindow::showProgressStart, Qt::QueuedConnection);
+		connect(m_cropExporter, &CropExporter::writeProgress,
+			this, &MainWindow::showProgressValue, Qt::QueuedConnection);
+		connect(m_cropExporter, &CropExporter::writeFinished,
+			this, [this](const QString& path, bool success, const QString& msg) {
+				this->showProgressEnd();
 
-			if (success && !path.isEmpty()) {
-				addToRecentFiles(path);
-				writeSettings();
+				if (success && !path.isEmpty()) {
+					addToRecentFiles(path);
+					writeSettings();
+					statusBar()->showMessage(tr("Saved cropped volume: %1").arg(path), 8000);
 
-				// Show full path of saved .nii in the status bar
-				statusBar()->showMessage(tr("Saved cropped volume: %1").arg(path), 8000);
+					// Automatically load the produced cropped volume
+					openFile(path);
 
-				// Automatically load the produced cropped volume into the Lightbox
-				// and update the workflow UI: disable cropping and enable fiducials.
-				// openFile will set the image pipeline and update the lightbox.
-				openFile(path);
-
-				// disable cropping UI and enable fiducials panel
-				if (m_workflowPanelWidget) {
-					m_workflowPanelWidget->setCroppingEnabled(false);
-					m_workflowPanelWidget->setFiducialsEnabled(true);
+					// NOTE: Individual panel control states are now managed by Phase 3 property bindings.
+					// The state machine transitions (cropApplied/croppedLoaded) will trigger
+					// canPlaceLandmarksChanged signal which enables landmarks UI automatically.
+					if (m_workflowStateMachine) {
+						m_workflowStateMachine->cropApplied();
+						m_workflowStateMachine->croppedLoaded();
+					}
 				}
-
-				// Tell the state machine the crop was applied and loaded so it can continue the workflow.
-				// notifyCropApplied() triggers the DefiningCrop -> LoadingCropped transition.
-				// notifyCroppedLoaded() triggers LoadingCropped -> PlacingFiducials transition.
-				if (m_processingStateMachine) {
-					m_processingStateMachine->notifyCropApplied();
-					m_processingStateMachine->notifyCroppedLoaded();
+				else {
+					statusBar()->showMessage(tr("Crop write failed: %1").arg(msg), 6000);
 				}
-			}
-			else {
-				// show failure reason
-				statusBar()->showMessage(tr("Crop write failed: %1").arg(msg), 6000);
-			}
-		}, Qt::QueuedConnection);
+			}, Qt::QueuedConnection);
 
-		// Forward sidecar requests to ImageProcessingStateMachine (it owns sidecar persistence)
-		if (m_processingStateMachine) {
+		// Forward sidecar requests to WorkflowStateMachine
+		if (m_workflowStateMachine) {
 			connect(m_cropExporter, &CropExporter::sidecarUpdateRequested,
-					m_processingStateMachine, &ImageProcessingStateMachine::writeCropSidecarForOutput,
-					Qt::QueuedConnection);
+				m_workflowStateMachine, &WorkflowStateMachine::writeCropSidecarForOutput,
+				Qt::QueuedConnection);
 		}
 	}
 
 	setupPanelConnections();
 
-	// Connect ImageLoader's JSON metadata emitter to the ImageInfoWidget (if present)
-	// The WorkflowPanelWidget owns the ImageInfoWidget instance (m_imageInfo).
-	if (m_imageLoader && m_workflowPanelWidget && m_workflowPanelWidget->imageInfo()) {
+	// Connect ImageLoader's JSON metadata emitter to the ImageInfoWidget
+	if (m_imageLoader && m_workflowPanelWidget && m_workflowPanelWidget->imageInfoWidget()) {
 		if (auto emitter = m_imageLoader->metaEmitter()) {
 			connect(emitter, &ImageLoaderMetaEmitter::metaUpdated,
-					m_workflowPanelWidget->imageInfo(), &ImageInfoWidget::updateFromMeta, Qt::QueuedConnection);
+				m_workflowPanelWidget->imageInfoWidget(), &ImageInfoWidget::updateFromMeta, Qt::QueuedConnection);
 		}
 	}
 
-	// Connect LightboxWidget's default-image metaReady signal to ImageInfoWidget so
-	// the info panel shows metadata for the synthetic default image too.
-	if (ui->lightboxWidget && m_workflowPanelWidget && m_workflowPanelWidget->imageInfo()) {
+	// Connect LightboxWidget's default-image metaReady signal to ImageInfoWidget
+	if (ui->lightboxWidget && m_workflowPanelWidget && m_workflowPanelWidget->imageInfoWidget()) {
 		connect(ui->lightboxWidget, &LightboxWidget::metaReady,
-		m_workflowPanelWidget->imageInfo(), &ImageInfoWidget::updateFromMeta, Qt::QueuedConnection);
+			m_workflowPanelWidget->imageInfoWidget(), &ImageInfoWidget::updateFromMeta, Qt::QueuedConnection);
 	}
 
-	// Load settings (geometry, recent files, appearance) using JsonSettings-backed QSettings
+	// Load settings (geometry, recent files, appearance)
 	readSettings();
 
 	// --- connect LightboxWidget view setting requests to MainWindow slots
@@ -317,6 +358,21 @@ void MainWindow::onActionOpen()
 	openFile(fileName);
 }
 
+void MainWindow::onActionResume()
+{
+	QString projectPath = QFileDialog::getOpenFileName(
+		this,
+		tr("Select Project to Resume"),
+		QString(),
+		tr("Project Files (*.json);;All Files (*)"));
+
+	if (projectPath.isEmpty()) {
+		return; // User canceled
+	}
+
+	resumeProjectWorkflow(projectPath);
+}
+
 void MainWindow::onActionSave()
 {
 	QMessageBox::information(this, tr("Save"), tr("Save action triggered."));
@@ -347,8 +403,8 @@ void MainWindow::onActionAbout()
 	const QString vtkVer = QString::fromLatin1(vtkVersion::GetVTKVersionFull());
 	const QString itkVer = QStringLiteral("%1.%2.%3")
 		.arg(QString::number(ITK_VERSION_MAJOR),
-			 QString::number(ITK_VERSION_MINOR),
-			 QString::number(ITK_VERSION_PATCH));
+			QString::number(ITK_VERSION_MINOR),
+			QString::number(ITK_VERSION_PATCH));
 
 	// OpenGL summary (vendor | renderer | version)
 	const QString gl = queryOpenGLSummary();
@@ -367,54 +423,50 @@ void MainWindow::onActionAbout()
 		"VTK-DICOM: %11\n"
 		"OpenGL:    %12")
 		.arg(ver, build, shortHash, buildType, compiler,
-			 os, arch, qtVer, vtkVer, itkVer, vtkDicomVer, gl);
+			os, arch, qtVer, vtkVer, itkVer, vtkDicomVer, gl);
 
 	QMessageBox::about(this, tr("About CTAnalyzerX"), details);
 }
 
 void MainWindow::setupPanelConnections()
 {
-	// Previously this function wired VolumeControlsWidget <-> LightboxWidget signals.
-	// That logic is commented out because the WorkflowPanelWidget now holds the UI
-	// controls and placeholders. If needed, re-wire using m_workflowPanelWidget APIs.
-
 	// --- Window/Level controller (owned by WorkflowPanelWidget UI) ---
 
-	WindowLevelController* wlController = nullptr;
+	WindowLevelWidget* wlController = nullptr;
 
 	// Prefer the controller embedded in the WorkflowPanelWidget (uic placed one by default).
 	if (m_workflowPanelWidget) {
-		wlController = m_workflowPanelWidget->windowLevelController();
+		wlController = m_workflowPanelWidget->windowLevelWidget();
 	}
 
 	// Fallback: if workflow panel is not present, ask the lightbox if it created one internally.
 	if (!wlController) {
-		wlController = ui->lightboxWidget->windowLevelController();
+		wlController = ui->lightboxWidget->windowLevelWidget();
 	}
 
 	// Register the controller instance with the Lightbox so it can wire propagation.
 	if (wlController) {
-		ui->lightboxWidget->setWindowLevelController(wlController);
+		ui->lightboxWidget->setWindowLevelWidget(wlController);
 
 		// Ensure the controller participates in global load/save settings hooks
-		connect(this, &MainWindow::requestLoadViewSettings, wlController, &WindowLevelController::readSettings, Qt::UniqueConnection);
-		connect(this, &MainWindow::requestSaveViewSettings, wlController, &WindowLevelController::writeSettings, Qt::UniqueConnection);
+		connect(this, &MainWindow::requestLoadViewSettings, wlController, &WindowLevelWidget::readSettings, Qt::UniqueConnection);
+		connect(this, &MainWindow::requestSaveViewSettings, wlController, &WindowLevelWidget::writeSettings, Qt::UniqueConnection);
 
 		// Load controller settings immediately so UI reflects persisted state early
 		wlController->readSettings();
 	}
 
-	if (m_processingStateMachine && wlController) {
+	if (m_workflowStateMachine && wlController) {
 		if (ScalarOpacityFunctionWidget* scalarWidget = wlController->scalarOpacityFunctionWidget()) {
-			connect(m_processingStateMachine, &ImageProcessingStateMachine::primaryThresholdChanged,
-					this, [scalarWidget](bool present, double value) {
-						// If sidecar contains a threshold, set it on the widget and show the marker.
-						// Otherwise hide the marker. parsePrimaryThreshold guarantees `value` is valid when `present` is true.
-						if (present) {
-							scalarWidget->setHistogramThreshold(value);
-						}
-						scalarWidget->setShowThresholdIndicator(present);
-					}, Qt::QueuedConnection);
+			connect(m_workflowStateMachine, &WorkflowStateMachine::thresholdChanged,
+				this, [scalarWidget](bool present, double value) {
+					// If sidecar contains a threshold, set it on the widget and show the marker.
+					// Otherwise hide the marker. parseOtsuThreshold guarantees `value` is valid when `present` is true.
+					if (present) {
+						scalarWidget->setHistogramThreshold(value);
+					}
+					scalarWidget->setShowThresholdIndicator(present);
+				}, Qt::QueuedConnection);
 		}
 	}
 
@@ -425,43 +477,49 @@ void MainWindow::setupPanelConnections()
 		// XY slice
 		if (auto* xy = ui->lightboxWidget->getXYView()) {
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
-					xy, [xy]() { xy->setOutlineVisible(true); }, Qt::UniqueConnection);
+				xy, [xy]() { xy->setOutlineVisible(true); }, Qt::UniqueConnection);
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
-					xy, [xy]() { xy->setOutlineVisible(false); }, Qt::UniqueConnection);
+				xy, [xy]() { xy->setOutlineVisible(false); }, Qt::UniqueConnection);
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
-					xy, &SliceView::setCroppingRegion, Qt::UniqueConnection);
+				xy, &SliceView::setCroppingRegion, Qt::UniqueConnection);
 		}
 		// XZ slice
 		if (auto* xz = ui->lightboxWidget->getXZView()) {
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
-					xz, [xz]() { xz->setOutlineVisible(true); }, Qt::UniqueConnection);
+				xz, [xz]() { xz->setOutlineVisible(true); }, Qt::UniqueConnection);
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
-					xz, [xz]() { xz->setOutlineVisible(false); }, Qt::UniqueConnection);
+				xz, [xz]() { xz->setOutlineVisible(false); }, Qt::UniqueConnection);
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
-					xz, &SliceView::setCroppingRegion, Qt::UniqueConnection);
+				xz, &SliceView::setCroppingRegion, Qt::UniqueConnection);
 		}
 		// YZ slice
 		if (auto* yz = ui->lightboxWidget->getYZView()) {
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
-					yz, [yz]() { yz->setOutlineVisible(true); }, Qt::UniqueConnection);
+				yz, [yz]() { yz->setOutlineVisible(true); }, Qt::UniqueConnection);
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
-					yz, [yz]() { yz->setOutlineVisible(false); }, Qt::UniqueConnection);
+				yz, [yz]() { yz->setOutlineVisible(false); }, Qt::UniqueConnection);
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
-					yz, &SliceView::setCroppingRegion, Qt::UniqueConnection);
+				yz, &SliceView::setCroppingRegion, Qt::UniqueConnection);
 		}
 
 		if (auto* vol = ui->lightboxWidget->getVolumeView()) {
 			connect(vol, &VolumeView::croppingEnabledChanged,
-					m_workflowPanelWidget, &WorkflowPanelWidget::setCroppingEnabled, Qt::UniqueConnection);
+				m_workflowPanelWidget, &WorkflowPanelWidget::setCroppingEnabled, Qt::UniqueConnection);
 
 			// Show outline when user enters "define crop" mode (panel-level request)
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
-					vol, [vol]() { vol->setOutlineVisible(true); }, Qt::UniqueConnection);
+				vol, [vol]() { vol->setOutlineVisible(true); }, Qt::UniqueConnection);
 
 			// Hide outline when user requests Save (crop completed / save initiated)
 			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
-					vol, [vol]() { vol->setOutlineVisible(false); }, Qt::UniqueConnection);
+				vol, [vol]() { vol->setOutlineVisible(false); }, Qt::UniqueConnection);
 		}
+	}
+
+	if (m_workflowPanelWidget && m_workflowStateMachine) {
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::resetCropRequested,
+			m_workflowStateMachine, &WorkflowStateMachine::cropReset,
+			Qt::QueuedConnection);
 	}
 }
 
@@ -528,15 +586,15 @@ void MainWindow::updateRecentFilesMenu()
 		}
 		connect(action, &QAction::triggered, this, [this, filePath]() {
 			// If no state machine is present fall back to immediate open (preserves current behavior).
-			if (!m_processingStateMachine) {
+			if (!m_workflowStateMachine) {
 				openFile(filePath);
 				return;
 			}
 
 			// If the machine is idle, hand the path to it and start the workflow.
-			if (!m_processingStateMachine->isActive()) {
-				m_processingStateMachine->setInputFilePath(filePath);
-				m_processingStateMachine->start();
+			if (!m_workflowStateMachine->isWorkflowActive()) {
+				m_workflowStateMachine->setInputFilePath(filePath);
+				m_workflowStateMachine->start();
 				statusBar()->showMessage(tr("Queued file for processing: %1").arg(filePath), 2000);
 				return;
 			}
@@ -549,23 +607,23 @@ void MainWindow::updateRecentFilesMenu()
 			if (resp == QMessageBox::Yes) {
 				// Wait for canceled() then start the new job. Use a self-disconnecting connection.
 				QMetaObject::Connection* conn = new QMetaObject::Connection;
-				*conn = connect(m_processingStateMachine, &ImageProcessingStateMachine::canceled, this,
+				*conn = connect(m_workflowStateMachine, &WorkflowStateMachine::canceled, this,
 					[this, filePath, conn]() {
-						m_processingStateMachine->setInputFilePath(filePath);
-						m_processingStateMachine->start();
+						m_workflowStateMachine->setInputFilePath(filePath);
+						m_workflowStateMachine->start();
 						disconnect(*conn);
 						delete conn;
 					}, Qt::QueuedConnection);
 
 				// Ask the machine to cancel current job; when it emits canceled() our lambda will start new job.
-				m_processingStateMachine->cancel();
+				m_workflowStateMachine->cancel();
 				statusBar()->showMessage(tr("Canceling current job and will start processing selected file..."), 2000);
 				return;
 			}
 
-			// User declined — provide feedback and do nothing.
+			// User declined: provide feedback and do nothing.
 			statusBar()->showMessage(tr("Selection ignored while processing is active"), 2000);
-		});
+			});
 		ui->menuFile->insertAction(ui->menuFile->actions().value(insertIndex), action);
 		++insertIndex;
 	}
@@ -664,10 +722,10 @@ void MainWindow::writeSettings()
 	app.insert(QStringLiteral("qtVersion"), QString::fromLatin1(QT_VERSION_STR));
 	app.insert(QStringLiteral("vtkVersion"), QString::fromLatin1(vtkVersion::GetVTKVersionFull()));
 	app.insert(QStringLiteral("itkVersion"),
-			   QStringLiteral("%1.%2.%3")
-				   .arg(QString::number(ITK_VERSION_MAJOR),
-		QString::number(ITK_VERSION_MINOR),
-		QString::number(ITK_VERSION_PATCH)));
+		QStringLiteral("%1.%2.%3")
+		.arg(QString::number(ITK_VERSION_MAJOR),
+			QString::number(ITK_VERSION_MINOR),
+			QString::number(ITK_VERSION_PATCH)));
 	// Query OpenGL / GPU parameters and persist them under application -> opengl.
 	QJsonObject opengl;
 
@@ -821,7 +879,7 @@ void MainWindow::openFile(const QString& filePath)
 	catch (const std::exception& ex) {
 		QMessageBox::critical(this, "Error Loading File",
 			QString("An error occurred while loading the file:\n%1\n\nDetails: %2")
-				.arg(filePath, ex.what()));
+			.arg(filePath, ex.what()));
 		return;
 	}
 	catch (...) {
@@ -949,16 +1007,16 @@ void MainWindow::dropEvent(QDropEvent* event)
 	}
 
 	// If no state machine, fall back to original behavior
-	if (!m_processingStateMachine) {
+	if (!m_workflowStateMachine) {
 		openFile(droppedPath);
 		event->acceptProposedAction();
 		return;
 	}
 
 	// If not active, start immediately (ask machine if it is active)
-	if (!m_processingStateMachine->isActive()) {
-		m_processingStateMachine->setInputFilePath(droppedPath);
-		m_processingStateMachine->start();
+	if (!m_workflowStateMachine->isWorkflowActive()) {
+		m_workflowStateMachine->setInputFilePath(droppedPath);
+		m_workflowStateMachine->start();
 		statusBar()->showMessage(tr("Queued file for processing: %1").arg(droppedPath), 2000);
 		event->acceptProposedAction();
 		return;
@@ -972,16 +1030,16 @@ void MainWindow::dropEvent(QDropEvent* event)
 	if (resp == QMessageBox::Yes) {
 		// Wait for canceled signal, then start with droppedPath.
 		QMetaObject::Connection* conn = new QMetaObject::Connection;
-		*conn = connect(m_processingStateMachine, &ImageProcessingStateMachine::canceled, this, [this, droppedPath, conn]() {
+		*conn = connect(m_workflowStateMachine, &WorkflowStateMachine::canceled, this, [this, droppedPath, conn]() {
 			// now safe to start new job
-			m_processingStateMachine->setInputFilePath(droppedPath);
-			m_processingStateMachine->start();
+			m_workflowStateMachine->setInputFilePath(droppedPath);
+			m_workflowStateMachine->start();
 			disconnect(*conn);
 			delete conn;
-		}, Qt::QueuedConnection);
+			}, Qt::QueuedConnection);
 
 		// Request cancellation; machine will emit canceled() and our lambda will start new job.
-		m_processingStateMachine->cancel();
+		m_workflowStateMachine->cancel();
 		statusBar()->showMessage(tr("Canceling current job and will start processing dropped file..."), 2000);
 		event->acceptProposedAction();
 		return;
@@ -1027,24 +1085,16 @@ void MainWindow::closeEvent(QCloseEvent* event)
 	QMainWindow::closeEvent(event);
 }
 
-void MainWindow::onProcessingRequestDefineCrop()
-{
-	// Enable/notify UI so user can define crop. Do not auto-transition here.
-	statusBar()->showMessage(tr("StateMachine: please define crop (use controls on the left)"), 4000);
-	qDebug() << "StateMachine requested: define crop";
-	// TODO: show/raise cropping UI and wire completion to m_processingStateMachine->notifyCropDefined()
-}
-
 void MainWindow::onProcessingRequestSaveCropped()
 {
 	// Automatic save requested by the state machine.
-	if (!m_processingStateMachine) return;
+	if (!m_workflowStateMachine) return;
 	if (!m_cropExporter) {
 		statusBar()->showMessage(tr("No crop exporter available"), 5000);
 		return;
 	}
 
-	const QString inputPath = m_processingStateMachine->inputFilePath();
+	const QString inputPath = m_workflowStateMachine->inputFilePath();
 	if (inputPath.isEmpty()) {
 		statusBar()->showMessage(tr("StateMachine requested save but no input path is set"), 5000);
 		return;
@@ -1057,185 +1107,137 @@ void MainWindow::onProcessingRequestSaveCropped()
 	// writeFinished handler (connected earlier) will hide the loader and handle post-save actions.
 }
 
-void MainWindow::onProcessingRequestLoadCropped()
-{
-	// Trigger UI/loader to load the produced cropped volume (worker should provide path)
-	statusBar()->showMessage(tr("StateMachine: load cropped volume"), 3000);
-	qDebug() << "StateMachine requested: load cropped";
-	// TODO: load cropped file (or wait for worker to call m_processingStateMachine->notifyCroppedLoaded())
-}
-
-void MainWindow::onProcessingRequestPlaceFiducials()
-{
-	statusBar()->showMessage(tr("StateMachine: place fiducials"), 3000);
-	qDebug() << "StateMachine requested: place fiducials";
-	// TODO: enable fiducial UI and call notifyFiducialsPlaced() when done
-}
-
-void MainWindow::onProcessingRequestStartInteractiveRotation()
-{
-	statusBar()->showMessage(tr("StateMachine: start interactive rotation"), 3000);
-	qDebug() << "StateMachine requested: start interactive rotation";
-	// TODO: present rotation UI; call notifyInteractiveRotationFinished() when user completes
-}
-
-void MainWindow::onProcessingRequestApplyRotation()
-{
-	statusBar()->showMessage(tr("StateMachine: apply rotation (starting worker)"), 3000);
-	qDebug() << "StateMachine requested: apply rotation";
-	// TODO: start rotation worker; on completion call notifyRotationApplied()/notifyFailed()
-}
-
-void MainWindow::onProcessingRequestLoadRotated()
-{
-	statusBar()->showMessage(tr("StateMachine: load rotated image"), 3000);
-	qDebug() << "StateMachine requested: load rotated";
-	// TODO: load rotated file (or wait for worker to call m_processingStateMachine->notifyRotatedLoaded())
-}
-
 void MainWindow::onProcessingRequestComputeThreshold()
 {
-	statusBar()->showMessage(tr("StateMachine: compute threshold"), 3000);
-	qDebug() << "StateMachine requested: compute threshold";
-	// TODO: run threshold computation (Otsu/histogram) and call notifyThresholdComputed()
+	if (!m_imageLoader || !m_imageLoader->GetOutput()) {
+		qWarning() << "No image loaded for threshold computation";
+		statusBar()->showMessage(tr("Cannot compute threshold: no image loaded"), 3000);
+		return;
+	}
+
+	vtkImageData* vtkImg = m_imageLoader->GetOutput();
+
+	// Create worker + thread
+	OtsuThresholdWorker* worker = new OtsuThresholdWorker();
+	QThread* workerThread = new QThread(this);
+	worker->moveToThread(workerThread);
+
+	// Start compute when thread starts
+	connect(workerThread, &QThread::started, worker, [worker, vtkImg]() {
+		worker->compute(vtkImg, nullptr);
+	}, Qt::QueuedConnection);
+
+	// Handle successful computation -> append to sidecar
+	connect(worker, &OtsuThresholdWorker::computeFinished, this,
+		[this](bool ok, double threshold) {
+				if (!m_workflowStateMachine) return;
+
+				if (ok) {
+					// NEW: let the state machine persist threshold in new canonical keys
+					m_workflowStateMachine->onThresholdComputed(threshold, QStringLiteral("otsu"));
+
+					statusBar()->showMessage(
+						tr("Computed threshold: %1").arg(threshold),
+						3000
+					);
+				}
+				else {
+					statusBar()->showMessage(
+						tr("Threshold computation returned invalid result"),
+						3000
+					);
+					// Optional later: set up manual threshold UI. For now, fail loudly.
+					m_workflowStateMachine->failed(QStringLiteral("Otsu threshold failed"));
+				}
+		}, Qt::QueuedConnection);
+
+	// Progress handling
+	connect(worker, &OtsuThresholdWorker::computeStarted,
+			this, &MainWindow::showProgressStart, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeProgress,
+			this, &MainWindow::showProgressValue, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeFinished,
+			this, &MainWindow::showProgressEnd, Qt::QueuedConnection);
+
+	// Error handling
+	connect(worker, &OtsuThresholdWorker::computeError, this,
+		[this](const QString& reason) {
+			qWarning() << "OtsuThresholdWorker error:" << reason;
+			this->showProgressEnd();
+			statusBar()->showMessage(
+				tr("Threshold compute error: %1").arg(reason),
+				5000
+			);
+		}, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeCanceled, this,
+		[this]() {
+			this->showProgressEnd();
+			statusBar()->showMessage(
+				tr("Threshold computation canceled"),
+				2000
+			);
+		}, Qt::QueuedConnection);
+
+	// Thread lifecycle
+	connect(worker, &OtsuThresholdWorker::computeFinished,
+			workerThread, &QThread::quit, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeError,
+			workerThread, &QThread::quit, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeCanceled,
+			workerThread, &QThread::quit, Qt::QueuedConnection);
+
+	// Cleanup
+	connect(workerThread, &QThread::finished,
+			worker, &QObject::deleteLater, Qt::QueuedConnection);
+
+	connect(workerThread, &QThread::finished,
+			workerThread, &QObject::deleteLater, Qt::QueuedConnection);
+
+	// Start worker thread
+	workerThread->start();
+
+	qDebug() << "Started Otsu threshold computation";
 }
 
-void MainWindow::onProcessingRequestSegment()
+void MainWindow::updateUiForState(WorkflowStateMachine::State s)
 {
-	statusBar()->showMessage(tr("StateMachine: run segmentation"), 3000);
-	qDebug() << "StateMachine requested: segment";
-	// TODO: run segmentation worker and call notifySegmentationDone()/notifyFailed()
-}
-
-void MainWindow::onProcessingRequestSaveSegment()
-{
-	statusBar()->showMessage(tr("StateMachine: save segmented volume"), 3000);
-	qDebug() << "StateMachine requested: save segment";
-	// TODO: prompt save dialog or start saver and call notifySaved()/notifyFailed()
-}
-
-void MainWindow::onProcessingFinished()
-{
-	// Stop any loader UI
-	showProgressEnd();
-
-	// Do not directly drive WorkflowPanelWidget here. UI updates are performed by
-	// updateUiForState() in response to the state machine's stateChanged() signal.
-	// Keep only the generic UI cleanup (menus / status).
-	ui->actionOpen->setEnabled(true);
-	ui->actionSave->setEnabled(true);
-
-	statusBar()->showMessage(tr("Processing finished"), 5000);
-	qDebug() << "Image processing finished.";
-	// Additional UI updates after processing can be added here.
-}
-
-void MainWindow::onProcessingError(const QString& reason)
-{
-	// Stop loader visuals
-	showProgressEnd();
-
-	qDebug() << "ImageProcessingStateMachine error:" << reason;
-	QMessageBox::critical(this, tr("Processing Error"), reason);
-	statusBar()->showMessage(tr("Processing error: %1").arg(reason), 10000);
-
-	// Do not directly toggle WorkflowPanelWidget here. Let updateUiForState handle UI transitions.
-	// Restore basic menu actions:
-	ui->actionOpen->setEnabled(true);
-	ui->actionSave->setEnabled(true);
-}
-
-// Add this implementation near the other MainWindow helpers (below constructor for example).
-
-void MainWindow::updateUiForState(ImageProcessingStateMachine::State s)
-{
-	// Helper to check if a valid image is currently loaded
 	auto hasImage = [&]() -> bool {
 		if (!m_imageLoader) return false;
 		if (auto img = m_imageLoader->GetOutput()) {
-			int d[3]; img->GetDimensions(d);
+			int d[3];
+			img->GetDimensions(d);
 			return (d[0] > 1 && d[1] > 1 && d[2] > 1);
 		}
 		return false;
 		};
 
 	const bool imgPresent = hasImage();
-	bool derived = m_processingStateMachine ? m_processingStateMachine->inputIsDerived() : false;
+	const bool isIdle = (s == WorkflowStateMachine::Idle ||
+						 s == WorkflowStateMachine::Completed ||
+						 s == WorkflowStateMachine::ErrorState);
 
-	// Default: enable/disable top-level actions based on whether the machine is idle/completed/error
-	switch (s) {
-		case ImageProcessingStateMachine::Idle:
-		case ImageProcessingStateMachine::Completed:
-		case ImageProcessingStateMachine::ErrorState:
-		ui->actionSave->setEnabled(imgPresent);
-		// Enable/disable workflow groups depending on whether an image is present
-		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent, derived);
-		}
-		// Hide loader if idle
-		showProgressEnd();
-		break;
+	ui->actionSave->setEnabled(imgPresent && isIdle);
 
-		case ImageProcessingStateMachine::LoadingImage:
-		// Block UI while loading
-		ui->actionSave->setEnabled(false);
-		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent, derived);
-		}
+	// Progress indicator
+	const bool showProgress = (s == WorkflowStateMachine::LoadingImage ||
+	 //s == WorkflowStateMachine::LoadingSidecar ||  // consider showing progress for sidecar load if it becomes a bottleneck
+	 //s == WorkflowStateMachine::ComputingThreshold || // consider showing progress for threshold compute if it becomes a bottleneck
+							   s == WorkflowStateMachine::LoadingCropped);
+
+	if (showProgress) {
 		showProgressStart();
-		break;
-
-		case ImageProcessingStateMachine::DefiningCrop:
-		// Let user interact with cropping controls only
-		ui->actionSave->setEnabled(false);
-		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent, derived);
-		}
+	}
+	else {
 		showProgressEnd();
-		break;
-
-		case ImageProcessingStateMachine::ApplyingRotation:
-		case ImageProcessingStateMachine::ComputingThreshold:
-		case ImageProcessingStateMachine::Segmenting:
-		case ImageProcessingStateMachine::SavingSegment:
-		// Long-running workers - disable interactive UI and show loader
-		ui->actionSave->setEnabled(false);
-		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent, derived);
-		}
-		showProgressStart();
-		break;
-
-		case ImageProcessingStateMachine::PlacingFiducials:
-		// Enable fiducials placement UI
-		ui->actionSave->setEnabled(false);
-		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent, derived);
-		}
-		showProgressEnd();
-		break;
-
-		case ImageProcessingStateMachine::InteractiveRotation:
-		ui->actionSave->setEnabled(false);
-		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent, derived);
-		}
-		showProgressEnd();
-		break;
-
-		default:
-		// conservative fallback: disable risky UI
-		ui->actionSave->setEnabled(false);
-		if (m_workflowPanelWidget) {
-			m_workflowPanelWidget->applyState(s, imgPresent, derived);
-		}
-		showProgressEnd();
-		break;
 	}
 
-	QString statusMsg = tr("Workflow: %1").arg(ImageProcessingStateMachine::stateToString(s));
-
-	// Show a short status bar message describing the current workflow state.
+	// Status message
+	QString statusMsg = tr("Workflow: %1").arg(WorkflowStateMachine::stateToString(s));
 	statusBar()->showMessage(statusMsg, 2500);
 }
 
@@ -1283,38 +1285,49 @@ void MainWindow::verifyRecentProjects()
 	if (!recentProjects.isEmpty()) {
 		QStringList kept;
 		for (const QString& projPath : recentProjects) {
+			// Check file exists
 			if (!QFile::exists(projPath)) {
+				qWarning() << "Removing missing project from recents:" << projPath;
 				changed = true;
 				continue;
-
 			}
+
+			// Check file is readable
 			QFile f(projPath);
 			if (!f.open(QIODevice::ReadOnly)) {
+				qWarning() << "Removing unreadable project from recents:" << projPath;
 				changed = true;
 				continue;
-
 			}
+
+			// Validate JSON structure
 			const QByteArray data = f.readAll();
 			f.close();
 			const QJsonDocument doc = QJsonDocument::fromJson(data);
 			if (!doc.isObject()) {
-				// malformed project file, drop it from recents
+				qWarning() << "Removing malformed project from recents:" << projPath;
 				changed = true;
 				continue;
-
 			}
-			// valid JSON project sidecar -> keep
-			kept.append(projPath);
 
+			// Validate it's a valid sidecar (has required "inputImage" key)
+			QJsonObject root = doc.object();
+			if (!root.contains("source")) {
+				qWarning() << "Removing invalid sidecar from recents (missing 'source'):" << projPath;
+				changed = true;
+				continue;
+			}
+
+			// All checks passed - keep this entry
+			kept.append(projPath);
 		}
 		recentProjects = kept;
-
 	}
 
 	if (changed) {
 		writeSettings();
-
 	}
+
 	// Refresh Projects menu to reflect cleaned entries
 	updateRecentProjectsMenu();
 }
@@ -1332,14 +1345,17 @@ void MainWindow::updateRecentProjectsMenu()
 	int count = 0;
 	for (const QString& proj : recentProjects) {
 		if (count++ >= 10) break;
+
 		QFileInfo fi(proj);
 		QString display = fi.fileName();
 		QAction* act = new QAction(display, this);
 		act->setToolTip(proj);
 		act->setProperty("isRecentProject", true);
+
 		connect(act, &QAction::triggered, this, [this, proj]() {
-			openProjectFile(proj);
-		});
+			resumeProjectWorkflow(proj);
+			});
+
 		m_projectsMenu->addAction(act);
 	}
 
@@ -1370,6 +1386,34 @@ void MainWindow::addToRecentProjects(const QString& projectPath)
 {
 	if (projectPath.isEmpty()) return;
 
+	// Validate file exists
+	if (!QFile::exists(projectPath)) {
+		qWarning() << "Cannot add non-existent project to recents:" << projectPath;
+		return;
+	}
+
+	// Validate file is readable and contains valid JSON
+	QFile f(projectPath);
+	if (!f.open(QIODevice::ReadOnly)) {
+		qWarning() << "Cannot read project file:" << projectPath;
+		return;
+	}
+
+	const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+	f.close();
+
+	if (!doc.isObject()) {
+		qWarning() << "Invalid JSON project file:" << projectPath;
+		return;
+	}
+
+	// Validate it's a valid sidecar (has required "inputImage" key)
+	QJsonObject root = doc.object();
+	if (!root.contains("source")) {
+		qWarning() << "Project file missing 'source' key:" << projectPath;
+		return;
+	}
+
 	// Maintain most-recent-first unique list (max 10)
 	recentProjects.removeAll(projectPath);
 	recentProjects.prepend(projectPath);
@@ -1379,33 +1423,71 @@ void MainWindow::addToRecentProjects(const QString& projectPath)
 	updateRecentProjectsMenu();
 }
 
-void MainWindow::openProjectFile(const QString& sidecarPath)
+void MainWindow::resumeProjectWorkflow(const QString& projectPath)
 {
-	// Delegate parsing / decision logic to the state machine which will emit signals
-	// to open the appropriate image and suggest the next workflow UI state.
-	if (!m_processingStateMachine) {
-		statusBar()->showMessage(tr("No state machine available to open project"), 3000);
+	if (!m_workflowStateMachine) {
+		statusBar()->showMessage(tr("State machine not available"), 3000);
 		return;
 	}
-	if (!m_processingStateMachine->loadProjectSidecarFile(sidecarPath)) {
-		statusBar()->showMessage(tr("Failed to load project: %1").arg(sidecarPath), 3000);
+
+	// Check if workflow is already running
+	if (m_workflowStateMachine->isWorkflowActive()) {
+		auto reply = QMessageBox::question(this,
+			tr("Workflow Active"),
+			tr("A workflow is currently running.\n\nCancel it and resume the selected project?\n\n%1")
+			.arg(QFileInfo(projectPath).fileName()),
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+		if (reply != QMessageBox::Yes) {
+			return;
+		}
+
+		// Cancel current workflow and wait for cleanup
+		QMetaObject::Connection* conn = new QMetaObject::Connection;
+		*conn = connect(m_workflowStateMachine, &WorkflowStateMachine::canceled,
+			this, [this, projectPath, conn]() {
+				// Recursively call after cancel completes
+				resumeProjectWorkflow(projectPath);
+				disconnect(*conn);
+				delete conn;
+			}, Qt::QueuedConnection);
+
+		m_workflowStateMachine->cancel();
+		return;
 	}
+
+	// Load project sidecar
+	if (!m_workflowStateMachine->loadProjectSidecarFile(projectPath)) {
+		QMessageBox::warning(this, tr("Resume Failed"),
+			tr("Could not load workflow state from:\n%1\n\nThe file may be corrupted.")
+			.arg(projectPath));
+		return;
+	}
+
+	// Add to recent projects
+	addToRecentProjects(projectPath);
+	writeSettings();
+	updateRecentProjectsMenu();
+
+	// Resume workflow
+	statusBar()->showMessage(
+		tr("Resuming workflow: %1").arg(QFileInfo(projectPath).fileName()),
+		3000);
+
+	m_workflowStateMachine->resume();
 }
 
 void MainWindow::onProcessingRequestLoadImage()
 {
-	if (!m_processingStateMachine) return;
-	const QString path = m_processingStateMachine->inputFilePath();
-	if (path.isEmpty()) {
-		statusBar()->showMessage(tr("StateMachine: requestLoadImage (no path set)"), 3000);
-		qDebug() << "ImageProcessingStateMachine requested load image but input path is empty.";
+	if (!m_workflowStateMachine) return;
 
-		// Ensure loader UI is hidden if no path (openFile won't be called)
+	const QString path = m_workflowStateMachine->inputFilePath();
+	if (path.isEmpty()) {
 		showProgressEnd();
 		return;
 	}
 
-	// Use centralized helper which optionally shows progress and notifies the state machine.
+	// Just load the image - state machine handles all workflow decisions
 	openAndNotifyImageLoaded(path, /*showProgress=*/true);
 }
 
@@ -1427,146 +1509,195 @@ void MainWindow::onProjectLoaded(const QString& projectPath)
 	statusBar()->showMessage(tr("Loaded project: %1").arg(projectPath), 3000);
 }
 
-// Centralized helper: open image and notify state machine consistently.
-// - when showProgress==true this function will disable top-level actions and show the loader UI.
-// - returns true on successful load (image valid) and false otherwise.
 bool MainWindow::openAndNotifyImageLoaded(const QString& path, bool showProgress)
 {
 	if (path.isEmpty()) return false;
 
-	// Optionally gate UI
 	if (showProgress) {
 		ui->actionOpen->setEnabled(false);
 		ui->actionSave->setEnabled(false);
 		showProgressStart();
 	}
 
-	// Reuse existing synchronous open helper (it sets up m_imageLoader and lightbox)
+	// Just load the file
 	openFile(path);
 
-	// Validate image load success using same checks as before
+	// Validate image
 	bool success = false;
 	if (m_imageLoader) {
 		if (auto img = m_imageLoader->GetOutput()) {
-			int dims[3]; img->GetDimensions(dims);
-			if (dims[0] > 1 && dims[1] > 1 && dims[2] > 1) success = true;
+			int dims[3];
+			img->GetDimensions(dims);
+			if (dims[0] > 1 && dims[1] > 1 && dims[2] > 1) {
+				success = true;
+			}
 		}
 	}
 
-	// Stop loader UI if we showed it
 	if (showProgress) {
 		showProgressEnd();
 	}
 
 	if (!success) {
 		if (showProgress) {
-			statusBar()->showMessage(tr("StateMachine: failed to load image '%1'").arg(path), 5000);
-			qDebug() << "StateMachine: failed to load image" << path;
+			statusBar()->showMessage(
+				tr("Failed to load image '%1'").arg(path),
+				5000
+			);
 			ui->actionOpen->setEnabled(true);
 			ui->actionSave->setEnabled(true);
-
 		}
 		return false;
 	}
 
-	// On success, ensure state machine observes the loaded path and sidecar, then notify it.
-	if (m_processingStateMachine) {
-		m_processingStateMachine->setInputFilePath(path);
-		m_processingStateMachine->readSidecarForInput();
-		m_processingStateMachine->notifyImageLoaded();
+	// Notify state machine - it will handle sidecar and workflow orchestration
+	if (m_workflowStateMachine) {
+		// IMPORTANT:
+		// - Do NOT call readSidecarForInput() here; sidecar lifecycle is owned by LoadingSidecar/ensureSidecarForSource().
+		// - Do NOT overwrite the source input file when we're opening a derived image requested by the machine.
+		const bool isOpeningDerived = (!m_workflowStateMachine->lastDerivedPath().isEmpty() &&
+			path == m_workflowStateMachine->lastDerivedPath());
 
-		// If this is a primary (non-derived) input image, compute an automatic primary threshold
-		// asynchronously and append it to the project's sidecar history.
-		//
-		// First: consult the canonical JSON sidecar and skip compute if a threshold already exists.
-		if (!m_processingStateMachine->inputIsDerived() && m_imageLoader && m_imageLoader->GetOutput()) {
+		if (!isOpeningDerived) {
+			// Source open (user open or resume open source)
+			m_workflowStateMachine->setInputFilePath(path);
+		}
 
-			bool thresholdExists = m_processingStateMachine->sidecarHasPrimaryThreshold();
-
-			if (thresholdExists) {
-				// Sidecar already records a primary threshold — skip costly recompute.
-				statusBar()->showMessage(tr("Primary threshold present in project sidecar — skipping recompute"), 3000);
-			}
-			else {
-				// No threshold recorded: run asynchronous compute and append result to sidecar via state machine.
-				vtkImageData* vtkImg = m_imageLoader->GetOutput();
-
-				// Create worker + thread
-				PrimaryThresholdWorker* worker = new PrimaryThresholdWorker();
-				QThread* workerThread = new QThread(this);
-				worker->moveToThread(workerThread);
-
-				// Start compute when thread starts. Use a lambda so we avoid QMetaType issues with vtkImageData*.
-				connect(workerThread, &QThread::started, worker, [worker, vtkImg]() {
-					worker->compute(vtkImg, nullptr);
-				}, Qt::QueuedConnection);
-
-				// Handle successful computation -> append to sidecar history asynchronously
-				connect(worker, &PrimaryThresholdWorker::computeFinished, this,
-						[this, path](bool ok, double threshold) {
-							if (ok) {
-								QJsonObject params;
-								params.insert(QStringLiteral("threshold"), threshold);
-								// step name chosen to be descriptive; change if project schema expects a specific key
-								const QString stepName = QStringLiteral("compute_primary_threshold");
-								if (m_processingStateMachine) {
-									const bool scheduled = m_processingStateMachine->appendHistoryToSidecar(path, stepName, params);
-									if (scheduled) {
-										statusBar()->showMessage(tr("Primary threshold computed and scheduled for project sidecar"), 3000);
-									}
-									else {
-										statusBar()->showMessage(tr("Primary threshold computed but failed to schedule sidecar update"), 3000);
-									}
-								}
-							}
-							else {
-								statusBar()->showMessage(tr("Primary threshold computation returned invalid result"), 3000);
-							}
-						}, Qt::QueuedConnection);
-
-				// Progress and lifecycle connections
-				connect(worker, &PrimaryThresholdWorker::computeStarted, this, &MainWindow::showProgressStart, Qt::QueuedConnection);
-				connect(worker, &PrimaryThresholdWorker::computeProgress, this, &MainWindow::showProgressValue, Qt::QueuedConnection);
-				// keep existing computeFinished handler that appends sidecar; also ensure UI hides progress when finished
-				connect(worker, &PrimaryThresholdWorker::computeFinished, this, &MainWindow::showProgressEnd, Qt::QueuedConnection);
-
-				// existing error/cancel handlers remain (they can also hide progress if desirable)
-				connect(worker, &PrimaryThresholdWorker::computeError, this, [this](const QString& reason) {
-					qWarning() << "PrimaryThresholdWorker error:" << reason;
-					this->showProgressEnd();
-					statusBar()->showMessage(tr("Primary threshold compute error: %1").arg(reason), 5000);
-				}, Qt::QueuedConnection);
-
-				connect(worker, &PrimaryThresholdWorker::computeCanceled, this, [this]() {
-					this->showProgressEnd();
-					statusBar()->showMessage(tr("Primary threshold computation canceled"), 2000);
-				}, Qt::QueuedConnection);
-
-				// Ensure the thread quits when worker finishes or errors
-				connect(worker, &PrimaryThresholdWorker::computeFinished, workerThread, &QThread::quit, Qt::QueuedConnection);
-				connect(worker, &PrimaryThresholdWorker::computeError, workerThread, &QThread::quit, Qt::QueuedConnection);
-				connect(worker, &PrimaryThresholdWorker::computeCanceled, workerThread, &QThread::quit, Qt::QueuedConnection);
-
-				// Clean up objects when thread finishes
-				connect(workerThread, &QThread::finished, worker, &QObject::deleteLater, Qt::QueuedConnection);
-				connect(workerThread, &QThread::finished, workerThread, &QObject::deleteLater, Qt::QueuedConnection);
-
-				// Provide simple UI feedback while computing
-				connect(workerThread, &QThread::started, this, &MainWindow::showProgressStart, Qt::QueuedConnection);
-				connect(workerThread, &QThread::finished, this, &MainWindow::showProgressEnd, Qt::QueuedConnection);
-
-				// Start worker thread
-				workerThread->start();
-			}
+		if (isOpeningDerived) {
+			m_workflowStateMachine->croppedLoaded();
+		}
+		else {
+			m_workflowStateMachine->imageLoaded();
 		}
 	}
 
 	if (showProgress) {
-		statusBar()->showMessage(tr("StateMachine: loading image '%1'").arg(path), 3000);
-		qDebug() << "StateMachine: loaded image" << path;
+		statusBar()->showMessage(
+			tr("Loaded image: %1").arg(path),
+			3000
+		);
 		ui->actionOpen->setEnabled(true);
 		ui->actionSave->setEnabled(true);
 	}
 
 	return true;
+}
+
+void MainWindow::onProcessingRequestLoadCropped()
+{
+	if (!m_workflowStateMachine) return;
+
+	const QString path = m_workflowStateMachine->lastDerivedPath();
+	if (path.isEmpty() || !QFile::exists(path)) {
+		qWarning() << "State machine requested load of a cropped image that does not exist:" << path;
+		// Optionally, tell the state machine it failed so it can transition to an error state or back to Idle.
+		// m_workflowStateMachine->failed(tr("Cropped image not found."));
+		return;
+	}
+
+	// Reuse the existing helper to load the image and notify the state machine.
+	// We can show progress here as it's an explicit loading step.
+	if (openAndNotifyImageLoaded(path, /*showProgress=*/true)) {
+		// After the image is loaded and the state machine is notified via imageLoaded(),
+		// we can now signal that the "cropped" image specifically is ready.
+		m_workflowStateMachine->croppedLoaded();
+	}
+}
+
+void MainWindow::onProcessingRequestLoadLandmarks(const QJsonObject& landmarksData)
+{
+	if (!m_workflowPanelWidget) {
+		qWarning() << "No workflow panel widget available for loading landmarks";
+		return;
+	}
+
+	// Get the LandmarkWidget from the panel
+	auto* landmarkWidget = m_workflowPanelWidget->landmarkWidget();
+
+	if (!landmarkWidget) {
+		qWarning() << "No landmark widget available";
+		statusBar()->showMessage(tr("Cannot load landmarks: widget not available"), 3000);
+		return;
+	}
+
+	// Extract landmarks array from the parameters object
+	// The sidecar stores landmarks in operations[].parameters
+	QJsonArray landmarksArray;
+
+	if (landmarksData.contains("landmarks") && landmarksData.value("landmarks").isArray()) {
+		// Format 1: Direct "landmarks" key
+		landmarksArray = landmarksData.value("landmarks").toArray();
+	}
+	else if (landmarksData.contains("parameters") && landmarksData.value("parameters").isObject()) {
+		// Format 2: Nested in "parameters.landmarks"
+		QJsonObject params = landmarksData.value("parameters").toObject();
+		if (params.contains("landmarks") && params.value("landmarks").isArray()) {
+			landmarksArray = params.value("landmarks").toArray();
+		}
+	}
+	else {
+		// Format 3: The entire object IS the parameters (most likely from state machine)
+		// Assume it contains a "landmarks" key directly
+		if (landmarksData.value("landmarks").isArray()) {
+			landmarksArray = landmarksData.value("landmarks").toArray();
+		}
+	}
+
+	if (landmarksArray.isEmpty()) {
+		qWarning() << "No landmarks array found in data";
+		statusBar()->showMessage(tr("No landmarks to load"), 2000);
+		return;
+	}
+
+	// Load landmarks using existing method
+	landmarkWidget->loadLandmarksFromJson(landmarksArray);
+
+	statusBar()->showMessage(
+		tr("Loaded %1 landmark(s)").arg(landmarksArray.size()),
+		2000
+	);
+
+	qDebug() << "Successfully loaded" << landmarksArray.size() << "landmarks from sidecar";
+}
+
+void MainWindow::onProcessingRequestSaveLandmarks(const QJsonArray& landmarks)
+{
+	// This is an executor slot triggered by state machine
+
+	if (!m_workflowStateMachine) {
+		qWarning() << "Cannot save landmarks: no state machine available";
+		return;
+	}
+
+	const QString inputPath = m_workflowStateMachine->inputFilePath();
+	if (inputPath.isEmpty()) {
+		qWarning() << "Cannot save landmarks: no input file path set";
+		statusBar()->showMessage(tr("Cannot save landmarks: no input file loaded"), 3000);
+		return;
+	}
+
+	if (landmarks.isEmpty()) {
+		qWarning() << "No landmarks to save";
+		statusBar()->showMessage(tr("No landmarks to save"), 2000);
+		return;
+	}
+
+	// Package landmarks into parameters object
+	QJsonObject params;
+	params.insert(QStringLiteral("landmarks"), landmarks);
+
+	// Delegate to state machine for sidecar persistence
+	m_workflowStateMachine->appendHistoryToSidecar(
+		inputPath,
+		QStringLiteral("place_landmarks"),
+		params
+	);
+
+	// Provide user feedback
+	statusBar()->showMessage(
+		tr("Saved %1 landmark(s) to project").arg(landmarks.size()),
+		3000
+	);
+
+	qDebug() << "Saved" << landmarks.size() << "landmarks via state machine to" << inputPath;
 }

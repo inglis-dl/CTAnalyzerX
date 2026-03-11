@@ -4,7 +4,7 @@
 #include "SelectionFrameWidget.h"
 #include "VolumeView.h"
 #include "WindowLevelBridge.h"
-#include "WindowLevelController.h"
+#include "WindowLevelWidget.h"
 
 #include <vtkAlgorithmOutput.h>
 #include <vtkImageProperty.h>
@@ -113,14 +113,14 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 	}
 
 	// NOTE:
-	// Do NOT create a WindowLevelController here. The controller may be provided by
-	// the WorkflowPanelWidget UI and registered via setWindowLevelController().
-	// All controller-related wiring is performed in setWindowLevelController().
+	// Do NOT create a WindowLevelWidget here. The controller may be provided by
+	// the WorkflowPanelWidget UI and registered via setWindowLevelWidget().
+	// All controller-related wiring is performed in setWindowLevelWidget().
 	// This avoids duplicate controllers and duplicate connections.
 }
 
-// New: install an externally-owned WindowLevelController instance (Lightbox does not take ownership)
-void LightboxWidget::setWindowLevelController(WindowLevelController* ctrl)
+// New: install an externally-owned WindowLevelWidget instance (Lightbox does not take ownership)
+void LightboxWidget::setWindowLevelWidget(WindowLevelWidget* ctrl)
 {
 	// If the controller is identical, nothing to do.
 	if (m_wlController == ctrl) return;
@@ -142,7 +142,7 @@ void LightboxWidget::setWindowLevelController(WindowLevelController* ctrl)
 	}
 
 	// Controller -> Lightbox propagation (apply to volume via bridge and to all slice views)
-	connect(m_wlController, &WindowLevelController::windowLevelChanged, this, [this](double w, double l) {
+	connect(m_wlController, &WindowLevelWidget::windowLevelChanged, this, [this](double w, double l) {
 		if (m_propagatingWindowLevel) return;
 		m_propagatingWindowLevel = true;
 
@@ -155,7 +155,7 @@ void LightboxWidget::setWindowLevelController(WindowLevelController* ctrl)
 		m_propagatingWindowLevel = false;
 	}, Qt::UniqueConnection);
 
-	connect(m_wlController, &WindowLevelController::windowLevelCommitted, this, [this](double w, double l) {
+	connect(m_wlController, &WindowLevelWidget::windowLevelCommitted, this, [this](double w, double l) {
 		if (m_propagatingWindowLevel) return;
 		m_propagatingWindowLevel = true;
 
@@ -169,7 +169,7 @@ void LightboxWidget::setWindowLevelController(WindowLevelController* ctrl)
 	}, Qt::UniqueConnection);
 
 	// Controller reset -> Lightbox reset propagation
-	connect(m_wlController, &WindowLevelController::requestResetWindowLevel,
+	connect(m_wlController, &WindowLevelWidget::requestResetWindowLevel,
 			this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
 
 	// Volume -> controller update (keep controller UI synchronized if the volume changes WL)

@@ -1103,7 +1103,7 @@ void ScalarOpacityFunctionWidget::setImageData(vtkImageData* image)
 	if (range[0] < range[1]) {
 		// Ensure widget-level setter is used, which synchronizes slider & scene and mapping axes
 		setSceneXRange(range[0], range[1]);
-		// Configure histogram bins/origin like WindowLevelController does so vtkImageHistogram
+		// Configure histogram bins/origin like WindowLevelWidget does so vtkImageHistogram
 		// produces expected (non-empty) output. Use a reasonable integer bin count derived
 		// from the scalar range width.
 		int maxBins = std::max(1, static_cast<int>(std::ceil(range[1] - range[0])));
@@ -1247,7 +1247,7 @@ void ScalarOpacityFunctionWidget::readSettings()
 
 	settings.beginGroup(QStringLiteral("ScalarOpacityFunctionWidget"));
 	// Only restore color here. Visibility and threshold are runtime-only and
-	// controlled by application logic (MainWindow / ImageProcessingStateMachine).
+	// controlled by application logic (MainWindow / WorkflowStateMachine).
 	QString colorName = settings.value(QStringLiteral("thresholdIndicatorColor"), d->m_thresholdColor.name()).toString();
 	d->m_thresholdColor = QColor(colorName);
 	settings.endGroup();

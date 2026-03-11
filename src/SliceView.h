@@ -18,7 +18,8 @@
 class vtkEventQtSlotConnect;
 class vtkObject; // forward declare for slot
 class QLineEdit;
-class QLabel;    // added
+class QLabel;
+class vtkImageSlicePointPlacer;
 class vtkSliceOutlineSource;
 class vtkPolyDataMapper;
 class vtkActor;
@@ -62,6 +63,7 @@ public:
 	bool outlineVisible() const { return m_outlineVisible; }
 	QColor outlineColor() const { return m_outlineColor; }
 
+	vtkImageSlicePointPlacer* pointPlacer() const;
 
 public slots:
 	void updateData() override;
@@ -111,6 +113,8 @@ private:
 	vtkSmartPointer<vtkImageSlice> m_imageSlice;
 	vtkSmartPointer<vtkImageProperty> m_imageProperty;
 	vtkSmartPointer<vtkEventQtSlotConnect> m_qvtkConnection;
+
+	vtkSmartPointer<vtkImageSlicePointPlacer> m_pointPlacer;
 
 	vtkSmartPointer<vtkSliceOutlineSource> m_outlineSource;
 	vtkSmartPointer<vtkPolyDataMapper>   m_outlineMapper;

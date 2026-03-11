@@ -1,4 +1,4 @@
-#include "PrimaryThresholdWorker.h"
+#include "OtsuThresholdWorker.h"
 
 #include <vtkImageData.h>
 #include <vtkType.h>
@@ -156,7 +156,7 @@ namespace {
 } // anonymous namespace
 
 // Backwards-compatible synchronous helper retained.
-std::pair<bool, double> computePrimaryOtsuThresholdFromVtk(vtkImageData* vtkImage, QAtomicInteger<int>* cancel)
+std::pair<bool, double> computeOtsuThresholdFromVtk(vtkImageData* vtkImage, QAtomicInteger<int>* cancel)
 {
 	double threshold = 0.0;
 	// No progress callback for synchronous API
@@ -165,29 +165,29 @@ std::pair<bool, double> computePrimaryOtsuThresholdFromVtk(vtkImageData* vtkImag
 }
 
 // -----------------------------
-// PrimaryThresholdWorker implementation
+// OtsuThresholdWorker implementation
 // -----------------------------
 
-PrimaryThresholdWorker::PrimaryThresholdWorker(QObject* parent)
+OtsuThresholdWorker::OtsuThresholdWorker(QObject* parent)
 	: QObject(parent),
 	m_internalCancel(0),
 	m_externalCancel(nullptr)
 {
 }
 
-PrimaryThresholdWorker::~PrimaryThresholdWorker() = default;
+OtsuThresholdWorker::~OtsuThresholdWorker() = default;
 
-void PrimaryThresholdWorker::setCancelFlag(QAtomicInteger<int>* cancel)
+void OtsuThresholdWorker::setCancelFlag(QAtomicInteger<int>* cancel)
 {
 	m_externalCancel = cancel;
 }
 
-void PrimaryThresholdWorker::requestCancel()
+void OtsuThresholdWorker::requestCancel()
 {
 	m_internalCancel.storeRelease(1);
 }
 
-void PrimaryThresholdWorker::compute(vtkImageData* vtkImage, QAtomicInteger<int>* cancel)
+void OtsuThresholdWorker::compute(vtkImageData* vtkImage, QAtomicInteger<int>* cancel)
 {
 	// Use external cancel param if provided, else the worker's external flag if set,
 	// otherwise fall back to internal cancel flag.

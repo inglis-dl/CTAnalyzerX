@@ -71,7 +71,7 @@ signals:
 	void actualScalarOpacityUpdated();
 
 public slots:
-	// Expose as a slot so UI widgets (e.g., VolumeControlsWidget) can connect directly
+	// Expose as a slot so UI widgets can connect directly
 	void setOrthoPlanesVisible(bool visible);
 
 	void setOutlineVisible(bool visible);

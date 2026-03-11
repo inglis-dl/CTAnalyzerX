@@ -10,7 +10,7 @@
 class SliceView;
 class VolumeView;
 class SelectionFrameWidget;
-class WindowLevelController;
+class WindowLevelWidget;
 class WindowLevelBridge;
 
 class QLabel;
@@ -36,20 +36,20 @@ public:
 	SliceView* getXYView() const;
 	VolumeView* getVolumeView() const;
 
-	// Accept an externally-owned WindowLevelController (LightboxWidget does NOT take ownership).
+	// Accept an externally-owned WindowLevelWidget (LightboxWidget does NOT take ownership).
 	// MainWindow will create the controller, give ownership to WorkflowPanelWidget and register
 	// the same controller instance here so LightboxWidget can route reset requests and avoid
 	// creating a duplicate controller.
-	void setWindowLevelController(WindowLevelController* ctrl);
+	void setWindowLevelWidget(WindowLevelWidget* ctrl);
 
 	// Minimal accessor so MainWindow can place the controller in its layout or inspect it
-	WindowLevelController* windowLevelController() const { return m_wlController; }
+	WindowLevelWidget* windowLevelWidget() const { return m_wlController; }
 
 public slots:
 	// Propagate a reset request to all child image frames (slices + volume)
 	void resetWindowLevel();
 
-	// Forward cropping regions from external UI (e.g., CropController).
+	// Forward cropping regions from external UI (e.g., CropWidget).
 	// LightboxWidget will apply the region to VolumeView and update slice indices.
 	void setCroppingRegion(int xMin, int xMax,
 						   int yMin, int yMax,
@@ -107,7 +107,7 @@ private:
 
 	// External Window/Level controller (NOT owned by LightboxWidget).
 	// The controller is created by MainWindow and owned by WorkflowPanelWidget (via Qt parent-child).
-	WindowLevelController* m_wlController = nullptr;
+	WindowLevelWidget* m_wlController = nullptr;
 	WindowLevelBridge* m_wlBridge = nullptr;
 
 	// Guard to prevent feedback loops while propagating WL changes

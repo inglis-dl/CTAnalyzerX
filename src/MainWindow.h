@@ -8,7 +8,7 @@
 #include <memory>
 
 // Add include for state machine
-#include "ImageProcessingStateMachine.h"
+#include "WorkflowStateMachine.h"
 
 namespace Ui {
 	class MainWindow;
@@ -42,6 +42,7 @@ protected:
 
 private slots:
 	void onActionOpen();
+	void onActionResume();
 	void onActionSave();
 	void onActionExit();
 	void onActionAbout();
@@ -54,22 +55,19 @@ private slots:
 	void showProgressStart();
 	void showProgressEnd();
 
-	// ImageProcessingStateMachine integration slots
+	void resumeProjectWorkflow(const QString& projectPath);
+
+	// WorkflowStateMachine integration slots
 	void onProcessingRequestLoadImage();
 	// Slot invoked when state machine asks MainWindow to open a specific image (project load)
 	void onProcessingRequestOpenImage(const QString& path);
-	void onProcessingRequestDefineCrop();
+	//void onProcessingRequestDefineCrop();
 	void onProcessingRequestSaveCropped();
 	void onProcessingRequestLoadCropped();
-	void onProcessingRequestPlaceFiducials();
-	void onProcessingRequestStartInteractiveRotation();
-	void onProcessingRequestApplyRotation();
-	void onProcessingRequestLoadRotated();
+	//void onProcessingRequestPlaceLandmarks();
+	void onProcessingRequestSaveLandmarks(const QJsonArray& landmarks);
+	void onProcessingRequestLoadLandmarks(const QJsonObject& landmarksData);
 	void onProcessingRequestComputeThreshold();
-	void onProcessingRequestSegment();
-	void onProcessingRequestSaveSegment();
-	void onProcessingFinished();
-	void onProcessingError(const QString& reason);
 
 private:
 	void setupPanelConnections();
@@ -94,7 +92,7 @@ private:
 	void writeSettings();
 
 	// New: centralized UI update helper driven by state machine
-	void updateUiForState(ImageProcessingStateMachine::State s);
+	void updateUiForState(WorkflowStateMachine::State s);
 
 	Ui::MainWindow* ui;
 	QStringList recentFiles;
@@ -114,7 +112,7 @@ private:
 	WorkflowPanelWidget* m_workflowPanelWidget = nullptr;
 
 	// Image processing state machine
-	ImageProcessingStateMachine* m_processingStateMachine = nullptr;
+	WorkflowStateMachine* m_workflowStateMachine = nullptr;
 
 	// Crop exporter (signal/slot driven, no direct ownership of UI/loader/state machine pointers)
 	CropExporter* m_cropExporter = nullptr;
@@ -123,7 +121,6 @@ private:
 	void addToRecentProjects(const QString& projectPath);
 	void updateRecentProjectsMenu();
 	void clearRecentProjects();
-	void openProjectFile(const QString& sidecarPath);
 
 	// Slot invoked when state-machine indicates a project was loaded (so we can add to recents)
 	void onProjectLoaded(const QString& projectPath);

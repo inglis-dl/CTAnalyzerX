@@ -1,146 +1,114 @@
-/* WorkflowPanelWidget.cpp
-   Refactored to use resources/WorkflowPanelWidget.ui (uic-generated header).
-   Do not create a manual ui_WorkflowPanelWidget.h here; the build system will
-   generate it via uic. This file adopts the UI-created widgets into the
-   existing member variables and preserves original behavior.
-*/
-
 #include "WorkflowPanelWidget.h"
-#include "CollapsibleGroupBox.h"
-#include "CropController.h"
 #include "ui_WorkflowPanelWidget.h"
-#include "WindowLevelController.h"
-#include "LightboxWidget.h"
-#include "ImageInfoWidget.h"
 
-#include <memory>
-#include <QLayout>
+#include "CropWidget.h"
+#include "ImageInfoWidget.h"
+#include "LandmarkWidget.h"
+#include "LightboxWidget.h"
+#include "WindowLevelWidget.h"
+
 #include <QDebug>
-#include <QCoreApplication>
-#include <QVariant>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QPushButton>
-#include <QLabel>
-#include <QFrame>
-#include <QScrollArea>
 #include <QResizeEvent>
+#include <QScrollArea>
+#include <QSizePolicy>
 
 WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 	: QWidget(parent)
+	, ui(new Ui::WorkflowPanelWidget)
 {
-	// Use uic-generated UI to build widgets/layouts.
-	std::unique_ptr<Ui::WorkflowPanelWidget> ui(new Ui::WorkflowPanelWidget());
 	ui->setupUi(this);
+	init();
+}
 
-	// Adopt UI widgets into existing member variables so rest of the class can
+WorkflowPanelWidget::~WorkflowPanelWidget()
+{
+	delete ui;
+}
+
+void WorkflowPanelWidget::init()
+{
+	// Adopt UI widgets into member variables so rest of the class can
 	// continue using the same names and logic.
 	m_scrollArea = ui->scrollArea;
 	m_scrollContent = ui->scrollContent;
 	m_rootLayout = ui->rootLayout;
 
-	// Load group
-	m_grpInfo = ui->grpInfo;
-	m_infoContainer = nullptr;
-	m_imageInfo = ui->imageInfo;
+	// Group boxes
+	m_grpImageInfo = ui->grpImageInfo;
+	m_grpCrop = ui->grpCrop;
+	m_grpLandmark = ui->grpLandmark;
+	m_grpWindowLevel = ui->grpWindowLevel;
 
-	// Cropping group: the .ui places a native CropController instance
-	m_grpCropping = ui->grpCropping;
-	// UI provides a CropController named cropController; use it as the custom widget
-	m_customCroppingWidget = ui->cropController;
-	// There are no separate define/apply/save buttons in the UI; ensure legacy pointers are null
-	m_croppingContainer = nullptr;
-	m_btnDefineCrop = nullptr;
-	m_btnSaveCropped = nullptr;
-	m_btnLoadCropped = nullptr;
+	// Wire CropWidget signals to panel-level signals
+	if (auto* widget = ui->cropWidget) {
+		connect(widget, &CropWidget::defineCropToggled,
+			this, [this](bool) { emit defineCropRequested(); });
 
-	// Wire CropController signals to existing slots/signals
-	if (auto* crop = qobject_cast<CropController*>(m_customCroppingWidget.data())) {
-		connect(crop, &CropController::defineCropToggled, this, [this](bool) { emit defineCropRequested(); });
-		// Apply step removed from the UI/flow - no connection to onApplyCropClicked.
-		connect(crop, &CropController::saveCroppedRequested, this, &WorkflowPanelWidget::onSaveCroppedClicked);
-		// Forward croppingRegionChanged so external owners can react in real time.
-		connect(crop, &CropController::croppingRegionChanged,
-				this, &WorkflowPanelWidget::croppingRegionChanged, Qt::UniqueConnection);
+		connect(widget, &CropWidget::saveCroppedRequested,
+			this, &WorkflowPanelWidget::saveCroppedRequested);
+
+		connect(widget, &CropWidget::croppingRegionChanged,
+			this, &WorkflowPanelWidget::croppingRegionChanged,
+			Qt::UniqueConnection);
+
+		// Reset forwarder
+		connect(widget, &CropWidget::resetCropRequested,
+			this, &WorkflowPanelWidget::resetCropRequested,
+			Qt::UniqueConnection);
 	}
 
-	// Fiducials group
-	m_grpFiducials = ui->grpFiducials;
-	m_fiducialsContainer = nullptr;
-	m_btnPlaceFiducials = ui->btnPlaceFiducials;
-	if (m_btnPlaceFiducials) connect(m_btnPlaceFiducials, &QPushButton::clicked, this, &WorkflowPanelWidget::onPlaceFiducialsClicked);
-
-	// Rotation group
-	m_grpRotation = ui->grpRotation;
-	m_rotationContainer = nullptr;
-	m_btnStartInteractiveRotation = ui->btnStartInteractiveRotation;
-	m_btnApplyRotation = ui->btnApplyRotation;
-	if (m_btnStartInteractiveRotation) connect(m_btnStartInteractiveRotation, &QPushButton::clicked, this, &WorkflowPanelWidget::onStartInteractiveRotationClicked);
-	if (m_btnApplyRotation) connect(m_btnApplyRotation, &QPushButton::clicked, this, &WorkflowPanelWidget::onApplyRotationClicked);
-
-	// Segmentation group
-	m_grpSegmentation = ui->grpSegmentation;
-	m_segmentationContainer = nullptr;
-	m_btnComputeThreshold = ui->btnComputeThreshold;
-	m_btnPreviewThreshold = ui->btnPreviewThreshold;
-	m_btnRunSegmentation = ui->btnRunSegmentation;
-	m_btnSaveSegment = ui->btnSaveSegment;
-	if (m_btnComputeThreshold) connect(m_btnComputeThreshold, &QPushButton::clicked, this, &WorkflowPanelWidget::onComputeThresholdClicked);
-	if (m_btnPreviewThreshold) connect(m_btnPreviewThreshold, &QPushButton::clicked, this, &WorkflowPanelWidget::onPreviewThresholdClicked);
-	if (m_btnRunSegmentation) connect(m_btnRunSegmentation, &QPushButton::clicked, this, &WorkflowPanelWidget::onRunSegmentationClicked);
-	if (m_btnSaveSegment) connect(m_btnSaveSegment, &QPushButton::clicked, this, &WorkflowPanelWidget::onSaveSegmentClicked);
-
-	// Appearance group
-	m_grpAppearance = ui->grpAppearance;
-	m_appearanceContainer = nullptr;
-
-	// If the UI placed a WindowLevelController instance, adopt it now
-	if (ui->windowLevelController) {
-		// Remember pointer; UI already parented it into the grpAppearance container
-		m_windowLevelController = ui->windowLevelController;
-		m_customAppearanceWidget = ui->windowLevelController;
-
-		// Forward committed adjustments as a panel-level hint/signal
-		connect(m_windowLevelController, &WindowLevelController::windowLevelCommitted,
-				this, &WorkflowPanelWidget::windowLevelAdjusted, Qt::UniqueConnection);
+	// Landmarks group: .ui embeds a LandmarkWidget named "landmarkWidget"
+	if (auto* widget = ui->landmarkWidget) {
+		connect(widget, &LandmarkWidget::placingComplete,
+			this, [this](bool complete) {
+				if (complete) {
+					emit placeLandmarksRequested();
+				}
+			});
 	}
 
-	// Ensure groups adopt same size/policy behavior as original implementation.
+	// Window/Level group: .ui embeds WindowLevelWidget named "windowLevelWidget"
+	if (auto* widget = ui->windowLevelWidget) {
+		connect(widget, &WindowLevelWidget::windowLevelCommitted,
+			this, &WorkflowPanelWidget::windowLevelAdjusted,
+			Qt::UniqueConnection);
+	}
+
+	// Ensure groups adopt same size/policy behavior
 	adjustGroupWidths();
 
-	// Add stretch to push groups to the top (UI's root layout already contains items; add the stretch here).
-	if (m_rootLayout) m_rootLayout->addStretch(1);
+	// Add stretch to push groups to the top
+	if (m_rootLayout) {
+		m_rootLayout->addStretch(1);
+	}
 }
-
-// The rest of the implementation is unchanged and continues to operate on the
-// member variables that were bound above.
 
 void WorkflowPanelWidget::adjustGroupWidths()
 {
-	if (!m_scrollArea || !m_scrollContent) return;
+	if (!m_scrollArea || !m_scrollContent) {
+		return;
+	}
 
-	// Available width inside the scroll area's viewport
-	int avail = m_scrollArea->viewport()->width();
-	// leave some padding for group margins/arrow/title
+	const int avail = m_scrollArea->viewport()->width();
 	const int padding = 24;
-	int target = qMax(220, avail - padding);
+	const int target = qMax(220, avail - padding);
 
-	// Apply maximum width so layout will reflow and never require a horizontal scrollbar.
 	const QList<QWidget*> groups = {
-		m_grpInfo, m_grpCropping, m_grpFiducials,
-		m_grpRotation, m_grpSegmentation, m_grpAppearance
+		m_grpImageInfo,
+		m_grpCrop,
+		m_grpLandmark,
+		m_grpWindowLevel
 	};
+
 	for (QWidget* g : groups) {
-		if (!g) continue;
+		if (!g) {
+			continue;
+		}
 		g->setMaximumWidth(target);
-		g->setMinimumWidth(0); // do not force a large minimum width
-		// ensure child widgets can expand horizontally
-		// IMPORTANT: use Preferred vertical policy (not Minimum) so the group's
-		// height can grow to accommodate its content when expanded.
+		g->setMinimumWidth(0);
 		g->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 	}
 
-	// Allow content widget to shrink/grow with the viewport
 	m_scrollContent->setMinimumWidth(0);
 	m_scrollContent->setMaximumWidth(target);
 }
@@ -148,431 +116,165 @@ void WorkflowPanelWidget::adjustGroupWidths()
 void WorkflowPanelWidget::resizeEvent(QResizeEvent* event)
 {
 	QWidget::resizeEvent(event);
-	// Recompute group widths to fit the new viewport size
 	adjustGroupWidths();
-}
-
-CollapsibleGroupBox* WorkflowPanelWidget::makeGroup(const QString& title)
-{
-	// Compatibility path: still allow dynamic creation of groups.
-	QWidget* parentForGroup = m_scrollContent ? m_scrollContent : this;
-	auto* g = new CollapsibleGroupBox(title, parentForGroup);
-	g->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-	return g;
-}
-
-QLabel* WorkflowPanelWidget::makePlaceholderLabel(const QString& text)
-{
-	auto* l = new QLabel(text, this);
-	l->setWordWrap(true);
-	l->setFrameStyle(QFrame::StyledPanel | QFrame::Plain);
-	l->setContentsMargins(4, 4, 4, 4);
-	return l;
-}
-
-void WorkflowPanelWidget::insertVolumeCroppingWidget(QWidget* widget)
-{
-	if (!widget) return;
-	// clear existing content
-	if (m_customCroppingWidget) {
-		m_customCroppingWidget->setParent(nullptr);
-	}
-	if (m_grpCropping) {
-		// Use group's setter to install the widget if available
-		m_grpCropping->setContentWidget(widget);
-	}
-	widget->setParent(m_grpCropping);
-	m_customCroppingWidget = widget;
-}
-
-void WorkflowPanelWidget::insertFiducialsWidget(QWidget* widget)
-{
-	if (!widget) return;
-	if (m_customFiducialsWidget) m_customFiducialsWidget->setParent(nullptr);
-	widget->setParent(m_fiducialsContainer ? m_fiducialsContainer : m_grpFiducials);
-	auto* lay = qobject_cast<QVBoxLayout*>((m_fiducialsContainer ? m_fiducialsContainer->layout() : nullptr));
-	if (lay) lay->insertWidget(0, widget);
-	m_customFiducialsWidget = widget;
-}
-
-void WorkflowPanelWidget::insertVolumeRotationWidget(QWidget* widget)
-{
-	if (!widget) return;
-	if (m_customRotationWidget) m_customRotationWidget->setParent(nullptr);
-	widget->setParent(m_rotationContainer ? m_rotationContainer : m_grpRotation);
-	auto* lay = qobject_cast<QVBoxLayout*>((m_rotationContainer ? m_rotationContainer->layout() : nullptr));
-	if (lay) lay->insertWidget(0, widget);
-	m_customRotationWidget = widget;
-}
-
-void WorkflowPanelWidget::insertSegmentationWidget(QWidget* widget)
-{
-	if (!widget) return;
-	if (m_customSegmentationWidget) m_customSegmentationWidget->setParent(nullptr);
-	widget->setParent(m_segmentationContainer ? m_segmentationContainer : m_grpSegmentation);
-	auto* lay = qobject_cast<QVBoxLayout*>((m_segmentationContainer ? m_segmentationContainer->layout() : nullptr));
-	if (lay) lay->insertWidget(0, widget);
-	m_customSegmentationWidget = widget;
-}
-
-void WorkflowPanelWidget::insertAppearanceWidget(QWidget* widget)
-{
-	if (!widget) return;
-	if (m_customAppearanceWidget) m_customAppearanceWidget->setParent(nullptr);
-	widget->setParent(m_appearanceContainer ? m_appearanceContainer : m_grpAppearance);
-	auto* lay = qobject_cast<QVBoxLayout*>((m_appearanceContainer ? m_appearanceContainer->layout() : nullptr));
-	if (lay) lay->insertWidget(0, widget);
-	m_customAppearanceWidget = widget;
 }
 
 void WorkflowPanelWidget::setCroppingEnabled(bool on)
 {
-	if (!m_grpCropping) return;
-
-	// Do NOT force the CropController's Define button ON when enabling the cropping group.
-	// We want the group to be available (user may press Define) but the Define button
-	// should remain OFF until the user explicitly toggles it.
-	// However, when disabling cropping we must ensure the CropController's Define
-	// button is also turned off to keep state consistent.
-	if (auto* c = qobject_cast<CropController*>(m_customCroppingWidget.data())) {
-		if (!on) {
-			// Only propagate when disabling so the Define button becomes unchecked.
-			c->onExternalCroppingChanged(false);
-		}
-		// If enabling, do not call onExternalCroppingChanged(true) here.
+	if (!m_grpCrop) {
+		return;
 	}
 
-	// Keep legacy button pointers in sync if present
-	if (m_btnDefineCrop) m_btnDefineCrop->setEnabled(on);
-	if (m_btnLoadCropped) m_btnLoadCropped->setEnabled(on);
-	if (m_btnSaveCropped) m_btnSaveCropped->setEnabled(on);
+	if (auto* widget = ui->cropWidget) {
+		widget->onExternalCroppingChanged(on);
+	}
 
-	// Enable/disable the cropping group itself and expand when enabled
-	m_grpCropping->setEnabled(on);
-	m_grpCropping->setCollapsed(!on);
+	m_grpCrop->setEnabled(on);
+	m_grpCrop->setCollapsed(!on);
 }
 
 bool WorkflowPanelWidget::isCroppingEnabled() const
 {
-	return m_grpCropping ? m_grpCropping->isEnabled() : false;
+	return m_grpCrop ? m_grpCrop->isEnabled() : false;
 }
 
-void WorkflowPanelWidget::setRotationEnabled(bool on)
+void WorkflowPanelWidget::setLandmarkingEnabled(bool on)
 {
-	if (!m_grpRotation) return;
+	if (!m_grpLandmark) {
+		return;
+	}
 
-	// Keep controls enabled/disabled for accessibility
-	if (m_btnStartInteractiveRotation) m_btnStartInteractiveRotation->setEnabled(on);
-	if (m_btnApplyRotation) m_btnApplyRotation->setEnabled(on);
-
-	m_grpRotation->setEnabled(on);
-	m_grpRotation->setCollapsed(!on);
+	m_grpLandmark->setEnabled(on);
+	m_grpLandmark->setCollapsed(!on);
 }
 
-bool WorkflowPanelWidget::isRotationEnabled() const
+bool WorkflowPanelWidget::isLandmarkingEnabled() const
 {
-	return m_grpRotation ? m_grpRotation->isEnabled() : false;
+	return m_grpLandmark ? m_grpLandmark->isEnabled() : false;
 }
 
-void WorkflowPanelWidget::setSegmentationEnabled(bool on)
-{
-	if (!m_grpSegmentation) return;
-
-	// Keep controls enabled/disabled for accessibility
-	if (m_btnComputeThreshold) m_btnComputeThreshold->setEnabled(on);
-	if (m_btnPreviewThreshold) m_btnPreviewThreshold->setEnabled(on);
-	if (m_btnRunSegmentation) m_btnRunSegmentation->setEnabled(on);
-	if (m_btnSaveSegment) m_btnSaveSegment->setEnabled(on);
-
-	m_grpSegmentation->setEnabled(on);
-	m_grpSegmentation->setCollapsed(!on);
-}
-
-bool WorkflowPanelWidget::isSegmentationEnabled() const
-{
-	return m_grpSegmentation ? m_grpSegmentation->isEnabled() : false;
-}
-
-void WorkflowPanelWidget::setFiducialsEnabled(bool on)
-{
-	if (!m_grpFiducials) return;
-
-	// Keep controls enabled/disabled for accessibility
-	if (m_btnPlaceFiducials) m_btnPlaceFiducials->setEnabled(on);
-
-	m_grpFiducials->setEnabled(on);
-	m_grpFiducials->setCollapsed(!on);
-}
-
-bool WorkflowPanelWidget::isFiducialsEnabled() const
-{
-	return m_grpFiducials ? m_grpFiducials->isEnabled() : false;
-}
-
-void WorkflowPanelWidget::setAppearanceEnabled(bool /*on*/)
+void WorkflowPanelWidget::setWindowLevellingEnabled(bool /*on*/)
 {
 	// Appearance controls are independent of processing pipeline.
-	// Always keep appearance group enabled and expanded so users can change
-	// visible properties (window/level, etc.) for any loaded image.
-	if (m_grpAppearance) {
-		m_grpAppearance->setEnabled(true);
-		m_grpAppearance->setCollapsed(false); // ensure open
+	if (m_grpWindowLevel) {
+		m_grpWindowLevel->setEnabled(true);
+		m_grpWindowLevel->setCollapsed(false);
 	}
 }
 
-bool WorkflowPanelWidget::isAppearanceEnabled() const
+bool WorkflowPanelWidget::isWindowLevellingEnabled() const
 {
-	// Appearance group is always available when created.
-	return m_grpAppearance ? m_grpAppearance->isEnabled() : false;
+	return m_grpWindowLevel ? m_grpWindowLevel->isEnabled() : false;
 }
 
-// -----------------------------------------------------------------------------
-// Missing slot definitions - emit the corresponding signals
-// -----------------------------------------------------------------------------
-void WorkflowPanelWidget::onLoadImageClicked()
+WindowLevelWidget* WorkflowPanelWidget::windowLevelWidget() const
 {
-	emit loadImageRequested();
+	return ui->windowLevelWidget;
 }
 
-void WorkflowPanelWidget::onDefineCropClicked()
+ImageInfoWidget* WorkflowPanelWidget::imageInfoWidget() const
 {
-	emit defineCropRequested();
+	return ui->imageInfoWidget;
 }
 
-void WorkflowPanelWidget::onLoadCroppedClicked()
+LandmarkWidget* WorkflowPanelWidget::landmarkWidget() const
 {
-	emit loadCroppedRequested();
+	return ui->landmarkWidget;
 }
 
-void WorkflowPanelWidget::onPlaceFiducialsClicked()
+void WorkflowPanelWidget::notifyWorkflowRestored(WorkflowStateMachine::State restoredState)
 {
-	emit placeFiducialsRequested();
-}
+	CollapsibleGroupBox* targetGroup = nullptr;
 
-void WorkflowPanelWidget::onStartInteractiveRotationClicked()
-{
-	emit startInteractiveRotationRequested();
-}
+	switch (restoredState) {
+	case WorkflowStateMachine::DefiningCrop:
+	case WorkflowStateMachine::LoadingCropped:
+		targetGroup = m_grpCrop;
+		break;
+	case WorkflowStateMachine::DefiningLandmarks:
+		targetGroup = m_grpLandmark;
+		break;
+	default:
+		return;
+	}
 
-void WorkflowPanelWidget::onApplyRotationClicked()
-{
-	emit applyRotationRequested();
-}
-
-void WorkflowPanelWidget::onComputeThresholdClicked()
-{
-	emit computeThresholdRequested();
-}
-
-void WorkflowPanelWidget::onPreviewThresholdClicked()
-{
-	emit previewThresholdRequested();
-}
-
-void WorkflowPanelWidget::onRunSegmentationClicked()
-{
-	emit runSegmentationRequested();
-}
-
-void WorkflowPanelWidget::onSaveSegmentClicked()
-{
-	emit saveSegmentRequested();
-}
-
-// new: save cropped slot
-void WorkflowPanelWidget::onSaveCroppedClicked()
-{
-	emit saveCroppedRequested();
-}
-
-// new fine-grained control implementations
-void WorkflowPanelWidget::setDefineCropEnabled(bool on)
-{
-	if (m_btnDefineCrop) m_btnDefineCrop->setEnabled(on);
+	if (targetGroup) {
+		targetGroup->setCollapsed(false);
+		qDebug() << "Restored workflow to"
+			<< WorkflowStateMachine::stateToString(restoredState);
+	}
 }
 
 void WorkflowPanelWidget::setSaveCroppedEnabled(bool on)
 {
-	if (m_btnSaveCropped) m_btnSaveCropped->setEnabled(on);
-}
-
-// New: centralized expand/collapse policy driven by state machine state.
-// NOTE: this only updates the visual collapsed/expanded state of the group boxes.
-// Enabling/disabling of controls remains the responsibility of the caller (MainWindow).
-void WorkflowPanelWidget::applyState(ImageProcessingStateMachine::State s, bool imagePresent, bool inputDerived)
-{
-	bool enableCropping = false;
-	bool enableRotation = false;
-	bool enableSegmentation = false;
-	bool enableFiducials = false;
-
-	// Default collapse policy flag for which group should be expanded
-	enum class ExpandTarget { None, Cropping, Rotation, Fiducials, Segmentation } expand = ExpandTarget::None;
-
-	switch (s) {
-		case ImageProcessingStateMachine::Idle:
-		case ImageProcessingStateMachine::Completed:
-		case ImageProcessingStateMachine::ErrorState:
-		// When idle/completed/error: behavior differs for project-derived vs normal images.
-		// - If the input is derived (part of a running/previous project) enable the full workflow
-		//   so the user may continue processing (rotation/segmentation/fiducials).
-		// - For plain images (not derived) only enable cropping (and appearance/info).
-		if (imagePresent) {
-			if (inputDerived) {
-				enableCropping = true;
-				enableRotation = true;
-				enableSegmentation = true;
-				enableFiducials = true;
-				// when derived, still highlight cropping by default (keeps previous UX)
-				expand = ExpandTarget::Cropping;
-			}
-			else {
-				// Non-derived image: only cropping + info/appearance should be available initially.
-				enableCropping = true;
-				enableRotation = false;
-				enableSegmentation = false;
-				enableFiducials = false;
-				expand = ExpandTarget::Cropping;
-			}
-		}
-		else {
-			// no image: nothing enabled
-			expand = ExpandTarget::None;
-		}
-		break;
-
-		case ImageProcessingStateMachine::LoadingImage:
-		// While loading everything should be disabled and collapsed.
-		// keep all flags false
-		expand = ExpandTarget::None;
-		break;
-
-		case ImageProcessingStateMachine::DefiningCrop:
-		enableCropping = true;
-		expand = ExpandTarget::Cropping;
-		break;
-
-		case ImageProcessingStateMachine::ApplyingRotation:
-		case ImageProcessingStateMachine::ComputingThreshold:
-		case ImageProcessingStateMachine::Segmenting:
-		case ImageProcessingStateMachine::SavingSegment:
-		// Long-running workers: disable UI
-		expand = ExpandTarget::None;
-		break;
-
-		case ImageProcessingStateMachine::PlacingFiducials:
-		enableFiducials = true;
-		expand = ExpandTarget::Fiducials;
-		break;
-
-		case ImageProcessingStateMachine::InteractiveRotation:
-		enableRotation = true;
-		expand = ExpandTarget::Rotation;
-		break;
-
-		default:
-		// conservative fallback: disable everything
-		expand = ExpandTarget::None;
-		break;
+	if (auto* crop = ui->cropWidget) {
+		crop->setSaveEnabled(on);
 	}
-
-	// Apply enable/disable using the public helpers (keeps encapsulation)
-	setCroppingEnabled(enableCropping);
-	setRotationEnabled(enableRotation);
-	setSegmentationEnabled(enableSegmentation);
-	setFiducialsEnabled(enableFiducials);
-
-	// Appearance group is always available; ensure it is visible/open when image present.
-	setAppearanceEnabled(true);
-
-	// Optionally adjust which group is visually expanded. We already setCollapsed in the
-	// individual enable helpers, but in case we want to force a particular focus we can:
-	// (Keep minimal behavior: ensure cropping expanded when requested and other groups collapsed if not enabled.)
-	if (expand == ExpandTarget::Cropping && m_grpCropping) m_grpCropping->setCollapsed(!enableCropping);
-	if (expand == ExpandTarget::Rotation && m_grpRotation) m_grpRotation->setCollapsed(!enableRotation);
-	if (expand == ExpandTarget::Fiducials && m_grpFiducials) m_grpFiducials->setCollapsed(!enableFiducials);
-	if (expand == ExpandTarget::Segmentation && m_grpSegmentation) m_grpSegmentation->setCollapsed(!enableSegmentation);
-}
-
-void WorkflowPanelWidget::setWindowLevelController(WindowLevelController* controller)
-{
-	// No-op if same controller already installed
-	if (m_windowLevelController == controller) return;
-
-	// If we previously had a controller, disconnect forwarding and remove it from appearance area.
-	if (m_windowLevelController) {
-		disconnect(m_windowLevelController, nullptr, this, nullptr);
-		if (m_customAppearanceWidget && m_customAppearanceWidget.data() == m_windowLevelController) {
-			m_customAppearanceWidget->setParent(nullptr);
-			m_customAppearanceWidget.clear();
-		}
-	}
-
-	m_windowLevelController = nullptr;
-
-	if (!controller) return;
-
-	// Ensure the controller is parented to this panel (so panel owns it) if caller didn't already parent it.
-	if (!controller->parent()) {
-		controller->setParent(this);
-	}
-
-	// Insert into appearance area (will reparent as needed)
-	insertAppearanceWidget(controller);
-
-	// Remember pointer and forward committed signals
-	m_windowLevelController = controller;
-	m_customAppearanceWidget = controller;
-
-	connect(m_windowLevelController, &WindowLevelController::windowLevelCommitted,
-			this, &WorkflowPanelWidget::windowLevelAdjusted, Qt::UniqueConnection);
 }
 
 void WorkflowPanelWidget::setLightboxWidget(LightboxWidget* lightbox)
 {
-	// no-op if identical
-	if (m_lightbox == lightbox) return;
-
-	// disconnect previous if any
+	// Disconnect previous Lightbox
 	if (m_lightbox) {
-		// disconnect panel -> lightbox cropping forward
-		disconnect(this, &WorkflowPanelWidget::croppingRegionChanged, m_lightbox, &LightboxWidget::setCroppingRegion);
-		// disconnect Lightbox extents -> CropController if previously connected
-		if (auto* crop = qobject_cast<CropController*>(m_customCroppingWidget.data())) {
-			disconnect(m_lightbox, &LightboxWidget::imageExtentsChanged, crop, &CropController::setRangeSliders);
-			// Also disconnect define/save wiring if previously connected
-			disconnect(crop, &CropController::defineCropToggled, nullptr, nullptr);
-			disconnect(crop, &CropController::saveCroppedRequested, nullptr, nullptr);
+		disconnect(this, &WorkflowPanelWidget::croppingRegionChanged,
+			m_lightbox, &LightboxWidget::setCroppingRegion);
+
+		if (auto* widget = ui->cropWidget) {
+			disconnect(m_lightbox, &LightboxWidget::imageExtentsChanged,
+				widget, &CropWidget::setRangeSliders);
+			disconnect(widget, &CropWidget::requestOutlineVisibility, nullptr, nullptr);
 		}
+
+		if (auto* widget = ui->landmarkWidget) {
+			disconnect(m_lightbox, &LightboxWidget::imageExtentsChanged,
+				widget, nullptr);
+			widget->setLightbox(nullptr);
+		}
+
 		m_lightbox.clear();
 	}
 
-	if (!lightbox) return;
+	if (!lightbox) {
+		return;
+	}
 
-	// store and connect panel cropping -> lightbox
 	m_lightbox = lightbox;
+
 	connect(this, &WorkflowPanelWidget::croppingRegionChanged,
-			m_lightbox, &LightboxWidget::setCroppingRegion, Qt::UniqueConnection);
+		m_lightbox, &LightboxWidget::setCroppingRegion,
+		Qt::UniqueConnection);
 
-	// Now connect LightboxWidget::imageExtentsChanged -> CropController::setRangeSliders,
-	// so Lightbox is the mediator regardless of which child view produced the image.
-	if (auto* crop = qobject_cast<CropController*>(m_customCroppingWidget.data())) {
+	if (auto* widget = ui->cropWidget) {
 		connect(m_lightbox, &LightboxWidget::imageExtentsChanged,
-				crop, &CropController::setRangeSliders, Qt::UniqueConnection);
+			widget, &CropWidget::setRangeSliders,
+			Qt::UniqueConnection);
 
-		// Connect the controller's outline visibility request to each view.
 		if (auto* xy = m_lightbox->getXYView()) {
-			connect(crop, &CropController::requestOutlineVisibility, xy, &SliceView::setOutlineVisible, Qt::UniqueConnection);
+			connect(widget, &CropWidget::requestOutlineVisibility,
+				xy, &SliceView::setOutlineVisible,
+				Qt::UniqueConnection);
 		}
 		if (auto* xz = m_lightbox->getXZView()) {
-			connect(crop, &CropController::requestOutlineVisibility, xz, &SliceView::setOutlineVisible, Qt::UniqueConnection);
+			connect(widget, &CropWidget::requestOutlineVisibility,
+				xz, &SliceView::setOutlineVisible,
+				Qt::UniqueConnection);
 		}
 		if (auto* yz = m_lightbox->getYZView()) {
-			connect(crop, &CropController::requestOutlineVisibility, yz, &SliceView::setOutlineVisible, Qt::UniqueConnection);
+			connect(widget, &CropWidget::requestOutlineVisibility,
+				yz, &SliceView::setOutlineVisible,
+				Qt::UniqueConnection);
 		}
 		if (auto* vol = m_lightbox->getVolumeView()) {
-			connect(crop, &CropController::requestOutlineVisibility, vol, &VolumeView::setOutlineVisible, Qt::UniqueConnection);
+			connect(widget, &CropWidget::requestOutlineVisibility,
+				vol, &VolumeView::setOutlineVisible,
+				Qt::UniqueConnection);
 		}
 	}
-}
 
+	if (auto* widget = ui->landmarkWidget) {
+		connect(m_lightbox, &LightboxWidget::imageExtentsChanged,
+			widget, &LandmarkWidget::updateExtents,
+			Qt::UniqueConnection);
+		widget->setLightbox(m_lightbox);
+	}
+}

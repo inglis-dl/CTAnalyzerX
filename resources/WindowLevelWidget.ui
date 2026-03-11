@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>WindowLevelController</class>
- <widget class="QWidget" name="WindowLevelController">
+ <class>WindowLevelWidget</class>
+ <widget class="QWidget" name="WindowLevelWidget">
   <property name="geometry">
    <rect>
     <x>0</x>

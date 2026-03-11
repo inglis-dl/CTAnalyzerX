@@ -10,17 +10,17 @@ class vtkImageData;
 // Compute Otsu threshold from an already-loaded VTK image (produced by ImageLoader).
 // The function will attempt to honor cooperative cancellation via the optional cancel flag.
 // Returns {ok, threshold}. Safe to call from a worker thread.
-std::pair<bool, double> computePrimaryOtsuThresholdFromVtk(vtkImageData* vtkImage, QAtomicInteger<int>* cancel = nullptr);
+std::pair<bool, double> computeOtsuThresholdFromVtk(vtkImageData* vtkImage, QAtomicInteger<int>* cancel = nullptr);
 
 // QObject-based worker wrapper so the computation can be moved to a QThread and wired via signals/slots.
 // - Emits signals on completion / error. Accepts an optional external QAtomicInteger<int>* cancellation flag.
 // - The free function above is preserved for compatibility with existing synchronous callers.
-class PrimaryThresholdWorker : public QObject
+class OtsuThresholdWorker : public QObject
 {
 	Q_OBJECT
 public:
-	explicit PrimaryThresholdWorker(QObject* parent = nullptr);
-	~PrimaryThresholdWorker() override;
+	explicit OtsuThresholdWorker(QObject* parent = nullptr);
+	~OtsuThresholdWorker() override;
 
 	// Convenience setter for an externally-managed cancel flag (not required).
 	void setCancelFlag(QAtomicInteger<int>* cancel);

@@ -31,7 +31,7 @@ public slots:
 	void updateFromMeta(const QJsonObject& meta);
 
 private:
-	Ui::ImageInfoWidget* ui;
+	Ui::ImageInfoWidget* ui = nullptr;
 
 	// Best-effort type detection from filename/extension.
 	QString detectFileType(const QString& filePath) const;

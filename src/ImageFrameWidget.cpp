@@ -277,7 +277,7 @@ void ImageFrameWidget::render()
 	// Ensure orientation marker exists and is attached to the interactor before render.
 	ensureOrientationMarkerInitialized();
 
-	if (auto* rw = getRenderWindow()) {
+	if (auto* rw = renderWindow()) {
 		if (auto* grw = vtkGenericOpenGLRenderWindow::SafeDownCast(rw)) {
 			if (!grw->GetReadyForRendering()) {
 				return; // avoid rendering before a current context exists
@@ -334,7 +334,7 @@ void ImageFrameWidget::notifyViewOrientationChanged()
 	emit viewOrientationChanged(m_viewOrientation);
 }
 
-vtkRenderWindow* ImageFrameWidget::getRenderWindow() const
+vtkRenderWindow* ImageFrameWidget::renderWindow() const
 {
 	return this->m_renderWindow;
 }
@@ -482,6 +482,10 @@ void ImageFrameWidget::onSelectionChanged(bool selected)
 			iren->Enable();
 		}
 	}
+
+	// Note: The base class SelectionFrameWidget::setSelected() already emits
+	// selectedChanged(bool) signal, so we don't need to emit it again here.
+	// This callback is triggered AFTER the signal has been emitted.
 }
 
 void ImageFrameWidget::resetWindowLevel()

@@ -2,6 +2,7 @@
 #include "ui_SliceView.h"
 #include "SunkenSliderStyle.h"
 #include "MenuButton.h"
+#include "vtkImageSlicePointPlacer.h"
 #include "vtkSliceOutlineSource.h"
 
 #include <QAction>
@@ -120,8 +121,11 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	// Enable automatic camera-facing for the slice
 	m_sliceMapper->SliceFacesCameraOff();
 	m_sliceMapper->SliceAtFocalPointOff();
-
 	m_sliceMapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+
+	m_pointPlacer = vtkSmartPointer<vtkImageSlicePointPlacer>::New();
+	m_pointPlacer->SetImageSliceMapper(m_sliceMapper);
+	m_pointPlacer->SetImageSlice(m_imageSlice);
 
 	m_qvtkConnection = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 	m_qvtkConnection->Connect(m_interactorStyle, vtkCommand::LeftButtonPressEvent,
@@ -1257,4 +1261,9 @@ void SliceView::setOutlineColor(const QColor& color)
 	}
 	// If visible, refresh rendering to show change immediately
 	if (m_outlineVisible) render();
+}
+
+vtkImageSlicePointPlacer* SliceView::pointPlacer() const
+{
+	return m_pointPlacer;
 }

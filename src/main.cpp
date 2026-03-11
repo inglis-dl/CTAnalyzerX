@@ -28,13 +28,13 @@ int main(int argc, char* argv[]) {
 	QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 
 	QApplication app(argc, argv);
-
+	/*
 	Logger::install();
 	// Ensure logger is uninstalled before VTK leak checks / app teardown
 	QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
 		Logger::uninstall();
 	});
-
+	*/
 	// Ensure the .qrc named "resources" is initialized in the binary.
 	// This must run before any use of :/ resource paths.
 	Q_INIT_RESOURCE(resources);
