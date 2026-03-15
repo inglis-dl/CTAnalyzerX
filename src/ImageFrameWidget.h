@@ -1,10 +1,11 @@
 #pragma once
-
 #include "SelectionFrameWidget.h"
 
 #include <QWidget>
 #include <QColor>
 #include <limits>
+
+#include <vtkSmartPointer.h>
 
 class vtkImageData;
 class vtkRenderer;
@@ -17,8 +18,6 @@ class vtkDataObject;
 class vtkOrientationMarkerWidget;
 class vtkActor;
 class vtkPropAssembly;
-
-#include <vtkSmartPointer.h>
 
 class ImageFrameWidget : public SelectionFrameWidget
 {
@@ -102,6 +101,10 @@ public:
 	void setGradientBackground(bool on);
 	bool gradientBackground() const;
 
+	vtkGenericOpenGLRenderWindow* genericRenderWindow() const { return m_renderWindow; }
+	vtkRenderWindow* renderWindow() const;
+	vtkRenderer* renderer() const { return m_renderer; }
+
 public slots:
 	virtual void updateData() {};
 
@@ -132,10 +135,11 @@ signals:
 	void foregroundColorChanged(const QColor& c);
 	void gradientBackgroundChanged(bool on);
 
-protected:
-	// SceneFrameWidget override: used by render() and tooling.
-	vtkRenderWindow* getRenderWindow() const;
+	// Notifies listeners when the image extents (voxel indices) changed on this view.
+	// Format: xMin, xMax, yMin, yMax, zMin, zMax
+	void imageExtentsChanged(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
 
+protected:
 	// Helper to install the scene content into the SelectionFrameWidget body.
 	void setSceneContent(QWidget* content) { setCentralWidget(content); }
 
@@ -150,10 +154,6 @@ protected:
 
 	// Hook from SelectionFrameWidget to gate VTK interactivity on selection
 	void onSelectionChanged(bool selected) override;
-
-	// Access to the shared renderer and render window for derived classes.
-	vtkRenderer* renderer() const { return m_renderer; }
-	vtkGenericOpenGLRenderWindow* genericRenderWindow() const { return m_renderWindow; }
 
 	// Optional: allow derived classes to adjust default renderer config.
 	virtual void initializeRendererDefaults();
@@ -176,7 +176,10 @@ protected:
 	// Mapping info derived from input
 	int    m_nativeScalarType = -1;
 	double m_scalarRangeMin = 0.0;
-	double m_scalarRangeMax = 1.0;
+	double m_scalarRangeMax = 255.0;
+	double m_mappedDataMin = 0.0;
+	double m_mappedDataMax = 255.0;
+
 	double m_scalarShift = 0.0;  // shift applied by shiftScaleFilter
 	double m_scalarScale = 1.0;  // scale applied by shiftScaleFilter
 	void computeShiftScaleFromInput();

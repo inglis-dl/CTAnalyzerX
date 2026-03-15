@@ -1,54 +1,58 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
-
-#include "LightboxWidget.h"
+#include "CropExporter.h"
+#include "ImageInfoWidget.h"
 #include "ImageLoader.h"
-#include "WindowLevelController.h"
-#include "WindowLevelBridge.h"
-#include "VolumeRotationWidget.h"
 #include "JsonSettings.h"
+#include "JsonUtils.h"
+#include "LandmarkWidget.h"
+#include "LightboxWidget.h"
+#include "Logger.h"
+#include "OtsuThresholdWorker.h"
+#include "WindowLevelBridge.h"
+#include "WindowLevelWidget.h"
+#include "WorkflowPanelWidget.h"
+#include "WorkflowStateMachine.h"
 
+#include <QtConcurrent/QtConcurrent>
+#include <QDateTime>
+#include <QDebug>
+#include <QDragEnterEvent>
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QSettings>
-#include <QKeyEvent>
-#include <QImage>
-#include <QSlider>
-#include <QLabel>
-#include <QPushButton>
-#include <QTextEdit>
-#include <QShowEvent>
-#include <QFileInfo>
-#include <QMimeData>
-#include <QUrl>
-#include <QSysInfo>
-#include <QOpenGLContext>
 #include <QOffscreenSurface>
-#include <QSurfaceFormat>
+#include <QOpenGLContext>
 #include <QOpenGLFunctions>
-#include <QDebug>
-#include <QElapsedTimer>
-#include <QThread>
-#include <QCoreApplication>
-#include <QCloseEvent>
-#include <QGuiApplication>
+#include <QRegularExpression>
 #include <QScreen>
-#include <QColor>
-#include <QPalette>
+#include <QSettings>
+#include <QSurfaceFormat>
+#include <QThread>
 
-#include <vtkVersion.h>   // VTK version macros
 #include <vtkEventQtSlotConnect.h>
 #include <vtkImageData.h>
 #include <vtkImageReslice.h>
+#include <vtkVersion.h>   // VTK version macros
 #include <itkVersion.h>   // ITK version macros
-#include <itkImage.h>
-#include <itkImageSeriesReader.h>
-#include <itkGDCMImageIO.h>
-#include <itkGDCMSeriesFileNames.h>
-#include <itkImageFileReader.h>
-#include <itkImageToVTKImageFilter.h>
 
-using ImageType = itk::Image<short, 3>;
+#ifndef CTANALYZERX_VERSION
+#define CTANALYZERX_VERSION "unknown"
+#endif
+#ifndef CTANALYZERX_BUILD_DATE
+#define CTANALYZERX_BUILD_DATE "unknown"
+#endif
+#ifndef CTANALYZERX_GIT_HASH
+#define CTANALYZERX_GIT_HASH "unknown"
+#endif
+#ifndef CTANALYZERX_BUILD_TYPE
+#define CTANALYZERX_BUILD_TYPE "unknown"
+#endif
+#ifndef CTANALYZERX_COMPILER
+#define CTANALYZERX_COMPILER "unknown"
+#endif
+#ifndef CTANALYZERX_VTKDICOM_VERSION
+#define CTANALYZERX_VTKDICOM_VERSION "unknown"
+#endif
 
 namespace {
 	QString queryOpenGLSummary()
@@ -94,18 +98,21 @@ MainWindow::MainWindow(QWidget* parent)
 
 	// Connect menu actions to slots
 	connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::onActionOpen);
+	connect(ui->actionResume, &QAction::triggered, this, &MainWindow::onActionResume);
 	connect(ui->actionSave, &QAction::triggered, this, &MainWindow::onActionSave);
 	connect(ui->actionExit, &QAction::triggered, this, &MainWindow::onActionExit);
 	connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::onActionAbout);
 	connect(ui->actionScreenshot, &QAction::triggered, this, &MainWindow::saveScreenshot);
+
+	m_projectsMenu = ui->menuProjects;
 
 	m_imageLoader = vtkSmartPointer<ImageLoader>::New();
 
 	vtkConnections = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 
 	vtkConnections->Connect(
-	m_imageLoader, vtkCommand::StartEvent,
-	this, SLOT(onVtkStartEvent()));
+		m_imageLoader, vtkCommand::StartEvent,
+		this, SLOT(onVtkStartEvent()));
 
 	vtkConnections->Connect(
 		m_imageLoader, vtkCommand::EndEvent,
@@ -115,54 +122,223 @@ MainWindow::MainWindow(QWidget* parent)
 		m_imageLoader, vtkCommand::ProgressEvent,
 		this, SLOT(onVtkProgressEvent()));
 
-	// Create volume rotation widget
-	m_volumeRotationWidget = new VolumeRotationWidget(this);
+	// --- Ensure WorkflowPanelWidget is present on the left ---
+	// Prefer the designer-provided widget if available (ui->workflowPanelWidget).
+	// Otherwise create one and insert it into controlPanel.
+	m_workflowPanelWidget = nullptr;
+	m_workflowPanelWidget = qobject_cast<WorkflowPanelWidget*>(ui->workflowPanelWidget);
+	Q_ASSERT(m_workflowPanelWidget); // or qWarning() if you prefer non-fatal
 
-	// Prefer inserting the rotation widget into the VolumeControlsWidget group box if present.
-	// Fall back to placing it into the controlPanelLayout (legacy) if VolumeControlsWidget is not available.
-	if (ui->volumeControlsWidget) {
-		ui->volumeControlsWidget->insertVolumeRotationWidget(m_volumeRotationWidget);
-	}
-	else if (ui->controlPanelLayout) {
-		ui->controlPanelLayout->addWidget(m_volumeRotationWidget);
+	// Initialize image processing state machine
+	m_workflowStateMachine = new WorkflowStateMachine(this);
+
+	// State machine request/notification connections
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestComputeThreshold,
+		this, &MainWindow::onProcessingRequestComputeThreshold);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestLoadImage,
+		this, &MainWindow::onProcessingRequestLoadImage);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestOpenImage,
+		this, &MainWindow::onProcessingRequestOpenImage, Qt::QueuedConnection);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::suggestedState,
+		this, &MainWindow::updateUiForState, Qt::QueuedConnection);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::projectLoaded,
+		this, &MainWindow::onProjectLoaded, Qt::QueuedConnection);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestSaveCropped,
+		this, &MainWindow::onProcessingRequestSaveCropped);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestLoadCropped,
+		this, &MainWindow::onProcessingRequestLoadCropped);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestLoadLandmarks,
+		this, &MainWindow::onProcessingRequestLoadLandmarks);
+	connect(m_workflowStateMachine, &WorkflowStateMachine::requestSaveLandmarks,
+		this, &MainWindow::onProcessingRequestSaveLandmarks);
+	// High-level state change notification (for progress/status/menus only)
+	connect(m_workflowStateMachine, &WorkflowStateMachine::stateChanged,
+		this, &MainWindow::updateUiForState, Qt::QueuedConnection);
+
+	// Sidecar persistence notifications
+	connect(m_workflowStateMachine, &WorkflowStateMachine::sidecarWritten,
+		this, [this](const QString& sidecarPath) {
+			addToRecentProjects(sidecarPath);
+			writeSettings();
+			updateRecentProjectsMenu();
+			statusBar()->showMessage(tr("Project saved: %1").arg(sidecarPath), 2000);
+		}, Qt::QueuedConnection);
+
+	connect(m_workflowStateMachine, &WorkflowStateMachine::sidecarWriteFailed,
+		this, [this](const QString& imagePath, const QString& reason) {
+			qWarning() << "Sidecar write failed for" << imagePath << ":" << reason;
+			statusBar()->showMessage(tr("Failed to save project for %1").arg(imagePath), 4000);
+		}, Qt::QueuedConnection);
+
+	// Top-level menu action gating (Save should be disabled when machine is active)
+	connect(m_workflowStateMachine, &WorkflowStateMachine::stateChanged, this,
+		[this](WorkflowStateMachine::State s) {
+			bool active = (s != WorkflowStateMachine::Idle &&
+				s != WorkflowStateMachine::Completed &&
+				s != WorkflowStateMachine::ErrorState);
+			ui->actionSave->setEnabled(!active);
+		});
+
+	// Phase 4: Workflow resumption support
+	connect(m_workflowStateMachine, &WorkflowStateMachine::workflowRestored,
+		this, [this](WorkflowStateMachine::State restoredState) {
+			statusBar()->showMessage(
+				tr("Resumed workflow at: %1").arg(
+					WorkflowStateMachine::stateToString(restoredState)),
+				5000);
+
+			// Notify workflow panel to highlight restored step
+			if (m_workflowPanelWidget) {
+				m_workflowPanelWidget->notifyWorkflowRestored(restoredState);
+			}
+		}, Qt::QueuedConnection);
+
+	// Auto-save workflow state on significant transitions
+	connect(m_workflowStateMachine, &WorkflowStateMachine::stateChanged,
+		this, [this](WorkflowStateMachine::State newState) {
+			// Save state at key workflow milestones (not during transient/loading states)
+			const bool shouldPersist = (newState == WorkflowStateMachine::DefiningCrop ||
+				newState == WorkflowStateMachine::DefiningLandmarks);
+
+			if (shouldPersist && m_workflowStateMachine) {
+				m_workflowStateMachine->saveWorkflowState();
+			}
+		}, Qt::QueuedConnection);
+
+	// ========================================================================
+	// Phase 3: Declarative UI property bindings
+	// State machine capabilities directly drive workflow panel controls
+	// ========================================================================
+	if (m_workflowStateMachine && m_workflowPanelWidget) {
+		// Cropping UI bindings
+		connect(m_workflowStateMachine, &WorkflowStateMachine::canDefineCropChanged,
+			m_workflowPanelWidget, &WorkflowPanelWidget::setCroppingEnabled, Qt::QueuedConnection);
+
+		connect(m_workflowStateMachine, &WorkflowStateMachine::canSaveCropChanged,
+			m_workflowPanelWidget, &WorkflowPanelWidget::setSaveCroppedEnabled, Qt::QueuedConnection);
+
+		// Landmarks UI bindings
+		connect(m_workflowStateMachine, &WorkflowStateMachine::canPlaceLandmarksChanged,
+			m_workflowPanelWidget, &WorkflowPanelWidget::setLandmarkingEnabled, Qt::QueuedConnection);
+
+		auto* landmarkWidget = m_workflowPanelWidget->landmarkWidget();
+		if (landmarkWidget) {
+			// Widget requests save ? State machine emits requestSaveLandmarks
+			connect(landmarkWidget, &LandmarkWidget::saveLandmarksRequested,
+				m_workflowStateMachine, &WorkflowStateMachine::requestSaveLandmarks);
+
+			qDebug() << "Connected LandmarkWidget save request to state machine";
+		}
+
+		// Initialize UI to match state machine's initial capabilities
+		m_workflowPanelWidget->setCroppingEnabled(m_workflowStateMachine->canDefineCrop());
+		m_workflowPanelWidget->setSaveCroppedEnabled(m_workflowStateMachine->canSaveCrop());
+		m_workflowPanelWidget->setLandmarkingEnabled(m_workflowStateMachine->canPlaceLandmarks());
+
+		// Appearance group is always available (not state-machine managed)
+		m_workflowPanelWidget->setWindowLevellingEnabled(true);
 	}
 
-	/*
-	// When the user explicitly applies a downsample, notify child ImageFrameWidget instances
-	// so they can re-check their vtkImageData and reconfigure (updateData()).
-	connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceApplied, this, [this]() {
-		if (!ui->lightboxWidget) return;
-		if (auto* yz = ui->lightboxWidget->getYZView()) yz->updateData();
-		if (auto* xz = ui->lightboxWidget->getXZView()) xz->updateData();
-		if (auto* xy = ui->lightboxWidget->getXYView()) xy->updateData();
-		if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
-	}, Qt::UniqueConnection);
-	*/
+	// Ensure UI initially reflects the machine's starting state (for progress/status only)
+	updateUiForState(m_workflowStateMachine->currentState());
+
+	// --- Wire workflow panel actions into state-machine-driven flow ---
+	if (m_workflowPanelWidget) {
+		// Save cropped request -> trigger export worker
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested, this, [this]() {
+			if (!m_cropExporter) {
+				statusBar()->showMessage(tr("No crop exporter available"), 5000);
+				return;
+			}
+			m_cropExporter->apply();
+			});
+	}
+
+	// Instantiate CropExporter (stateless w.r.t. stakeholders). MainWindow performs the wiring.
+	if (!m_cropExporter) {
+		m_cropExporter = new CropExporter(this);
+
+		// Panel -> exporter: extents only (Apply removed; Save triggers export)
+		if (m_workflowPanelWidget) {
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
+				m_cropExporter, &CropExporter::setCropRegion, Qt::UniqueConnection);
+		}
+
+		// MainWindow hooks: show loader/progress like ImageLoader
+		connect(m_cropExporter, &CropExporter::writeStarted,
+			this, &MainWindow::showProgressStart, Qt::QueuedConnection);
+		connect(m_cropExporter, &CropExporter::writeProgress,
+			this, &MainWindow::showProgressValue, Qt::QueuedConnection);
+		connect(m_cropExporter, &CropExporter::writeFinished,
+			this, [this](const QString& path, bool success, const QString& msg) {
+				this->showProgressEnd();
+
+				if (success && !path.isEmpty()) {
+					addToRecentFiles(path);
+					writeSettings();
+					statusBar()->showMessage(tr("Saved cropped volume: %1").arg(path), 8000);
+
+					// Automatically load the produced cropped volume
+					openFile(path);
+
+					// NOTE: Individual panel control states are now managed by Phase 3 property bindings.
+					// The state machine transitions (cropApplied/croppedLoaded) will trigger
+					// canPlaceLandmarksChanged signal which enables landmarks UI automatically.
+					if (m_workflowStateMachine) {
+						m_workflowStateMachine->cropApplied();
+						m_workflowStateMachine->croppedLoaded();
+					}
+				}
+				else {
+					statusBar()->showMessage(tr("Crop write failed: %1").arg(msg), 6000);
+				}
+			}, Qt::QueuedConnection);
+
+		// Forward sidecar requests to WorkflowStateMachine
+		if (m_workflowStateMachine) {
+			connect(m_cropExporter, &CropExporter::sidecarUpdateRequested,
+				m_workflowStateMachine, &WorkflowStateMachine::writeCropSidecarForOutput,
+				Qt::QueuedConnection);
+		}
+	}
+
 	setupPanelConnections();
 
-	// Load settings (geometry, recent files, appearance) using JsonSettings-backed QSettings
+	// Connect ImageLoader's JSON metadata emitter to the ImageInfoWidget
+	if (m_imageLoader && m_workflowPanelWidget && m_workflowPanelWidget->imageInfoWidget()) {
+		if (auto emitter = m_imageLoader->metaEmitter()) {
+			connect(emitter, &ImageLoaderMetaEmitter::metaUpdated,
+				m_workflowPanelWidget->imageInfoWidget(), &ImageInfoWidget::updateFromMeta, Qt::QueuedConnection);
+		}
+	}
+
+	// Connect LightboxWidget's default-image metaReady signal to ImageInfoWidget
+	if (ui->lightboxWidget && m_workflowPanelWidget && m_workflowPanelWidget->imageInfoWidget()) {
+		connect(ui->lightboxWidget, &LightboxWidget::metaReady,
+			m_workflowPanelWidget->imageInfoWidget(), &ImageInfoWidget::updateFromMeta, Qt::QueuedConnection);
+	}
+
+	// Load settings (geometry, recent files, appearance)
 	readSettings();
 
 	// --- connect LightboxWidget view setting requests to MainWindow slots
-	if (ui->lightboxWidget) {
-		if (auto* yz = ui->lightboxWidget->getYZView())
-			connect(this, &MainWindow::requestLoadViewSettings, yz, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
-		if (auto* xz = ui->lightboxWidget->getXZView())
-			connect(this, &MainWindow::requestLoadViewSettings, xz, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
-		if (auto* xy = ui->lightboxWidget->getXYView())
-			connect(this, &MainWindow::requestLoadViewSettings, xy, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
-		if (auto* vol = ui->lightboxWidget->getVolumeView())
-			connect(this, &MainWindow::requestLoadViewSettings, vol, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
+	if (auto* yz = ui->lightboxWidget->getYZView())
+		connect(this, &MainWindow::requestLoadViewSettings, yz, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
+	if (auto* xz = ui->lightboxWidget->getXZView())
+		connect(this, &MainWindow::requestLoadViewSettings, xz, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
+	if (auto* xy = ui->lightboxWidget->getXYView())
+		connect(this, &MainWindow::requestLoadViewSettings, xy, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
+	if (auto* vol = ui->lightboxWidget->getVolumeView())
+		connect(this, &MainWindow::requestLoadViewSettings, vol, &ImageFrameWidget::readSettings, Qt::UniqueConnection);
 
-		if (auto* yz = ui->lightboxWidget->getYZView())
-			connect(this, &MainWindow::requestSaveViewSettings, yz, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
-		if (auto* xz = ui->lightboxWidget->getXZView())
-			connect(this, &MainWindow::requestSaveViewSettings, xz, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
-		if (auto* xy = ui->lightboxWidget->getXYView())
-			connect(this, &MainWindow::requestSaveViewSettings, xy, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
-		if (auto* vol = ui->lightboxWidget->getVolumeView())
-			connect(this, &MainWindow::requestSaveViewSettings, vol, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
-	}
+	if (auto* yz = ui->lightboxWidget->getYZView())
+		connect(this, &MainWindow::requestSaveViewSettings, yz, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
+	if (auto* xz = ui->lightboxWidget->getXZView())
+		connect(this, &MainWindow::requestSaveViewSettings, xz, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
+	if (auto* xy = ui->lightboxWidget->getXYView())
+		connect(this, &MainWindow::requestSaveViewSettings, xy, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
+	if (auto* vol = ui->lightboxWidget->getVolumeView())
+		connect(this, &MainWindow::requestSaveViewSettings, vol, &ImageFrameWidget::writeSettings, Qt::UniqueConnection);
 }
 
 MainWindow::~MainWindow()
@@ -170,7 +346,8 @@ MainWindow::~MainWindow()
 	// persist settings (geometry, recent files, appearance) before shutdown
 	writeSettings();
 	delete ui;
-	// m_volumeRotationWidget has parent this and will be deleted automatically
+	// Note: widgets parented to 'this' or ui will be deleted automatically.
+	// m_workflowPanelWidget is owned by the UI (or this) and will be deleted accordingly.
 }
 
 void MainWindow::onActionOpen()
@@ -179,6 +356,21 @@ void MainWindow::onActionOpen()
 	if (fileName.isEmpty()) return;
 
 	openFile(fileName);
+}
+
+void MainWindow::onActionResume()
+{
+	QString projectPath = QFileDialog::getOpenFileName(
+		this,
+		tr("Select Project to Resume"),
+		QString(),
+		tr("Project Files (*.json);;All Files (*)"));
+
+	if (projectPath.isEmpty()) {
+		return; // User canceled
+	}
+
+	resumeProjectWorkflow(projectPath);
 }
 
 void MainWindow::onActionSave()
@@ -193,26 +385,6 @@ void MainWindow::onActionExit()
 
 void MainWindow::onActionAbout()
 {
-	// Compile-time fallbacks
-#ifndef CTANALYZERX_VERSION
-#define CTANALYZERX_VERSION "unknown"
-#endif
-#ifndef CTANALYZERX_BUILD_DATE
-#define CTANALYZERX_BUILD_DATE "unknown"
-#endif
-#ifndef CTANALYZERX_GIT_HASH
-#define CTANALYZERX_GIT_HASH "unknown"
-#endif
-#ifndef CTANALYZERX_BUILD_TYPE
-#define CTANALYZERX_BUILD_TYPE "unknown"
-#endif
-#ifndef CTANALYZERX_COMPILER
-#define CTANALYZERX_COMPILER "unknown"
-#endif
-#ifndef CTANALYZERX_VTKDICOM_VERSION
-#define CTANALYZERX_VTKDICOM_VERSION "unknown"
-#endif
-
 	const QString ver = QString::fromUtf8(CTANALYZERX_VERSION).trimmed();
 	const QString build = QString::fromUtf8(CTANALYZERX_BUILD_DATE).trimmed();
 	const QString fullHash = QString::fromUtf8(CTANALYZERX_GIT_HASH).trimmed();
@@ -231,8 +403,8 @@ void MainWindow::onActionAbout()
 	const QString vtkVer = QString::fromLatin1(vtkVersion::GetVTKVersionFull());
 	const QString itkVer = QStringLiteral("%1.%2.%3")
 		.arg(QString::number(ITK_VERSION_MAJOR),
-			 QString::number(ITK_VERSION_MINOR),
-			 QString::number(ITK_VERSION_PATCH));
+			QString::number(ITK_VERSION_MINOR),
+			QString::number(ITK_VERSION_PATCH));
 
 	// OpenGL summary (vendor | renderer | version)
 	const QString gl = queryOpenGLSummary();
@@ -251,61 +423,120 @@ void MainWindow::onActionAbout()
 		"VTK-DICOM: %11\n"
 		"OpenGL:    %12")
 		.arg(ver, build, shortHash, buildType, compiler,
-			 os, arch, qtVer, vtkVer, itkVer, vtkDicomVer, gl);
+			os, arch, qtVer, vtkVer, itkVer, vtkDicomVer, gl);
 
 	QMessageBox::about(this, tr("About CTAnalyzerX"), details);
 }
 
 void MainWindow::setupPanelConnections()
 {
-	// control the volume cropping planes in the volumeview
-	connect(ui->volumeControlsWidget, &VolumeControlsWidget::croppingRegionChanged,
-		ui->lightboxWidget->getVolumeView(), &VolumeView::setCroppingRegion);
+	// --- Window/Level controller (owned by WorkflowPanelWidget UI) ---
 
-	// toggle volume slice planes
-	connect(ui->volumeControlsWidget, &VolumeControlsWidget::slicePlaneToggle,
-		ui->lightboxWidget->getVolumeView(), &VolumeView::setOrthoPlanesVisible);
+	WindowLevelWidget* wlController = nullptr;
 
-	// update the range sliders when the image extents change
-	connect(ui->lightboxWidget->getVolumeView(), &VolumeView::imageExtentsChanged,
-		ui->volumeControlsWidget, &VolumeControlsWidget::setRangeSliders);
+	// Prefer the controller embedded in the WorkflowPanelWidget (uic placed one by default).
+	if (m_workflowPanelWidget) {
+		wlController = m_workflowPanelWidget->windowLevelWidget();
+	}
 
-	// synchronize cropping enabled state when VolumeView resets it (e.g., new image)
-	connect(ui->lightboxWidget->getVolumeView(), &VolumeView::croppingEnabledChanged,
-		ui->volumeControlsWidget, &VolumeControlsWidget::onExternalCroppingChanged);
+	// Fallback: if workflow panel is not present, ask the lightbox if it created one internally.
+	if (!wlController) {
+		wlController = ui->lightboxWidget->windowLevelWidget();
+	}
 
-	// --- Window/Level controller (now owned by LightboxWidget)
-	if (ui->lightboxWidget) {
-		if (auto* wlController = ui->lightboxWidget->windowLevelController()) {
-			// If VolumeControlsWidget exposes an insert helper, use it so the groupBoxWindowLevel
-			// will size itself to the controller. Otherwise fall back to previous behavior.
-			if (ui->volumeControlsWidget) {
-				ui->volumeControlsWidget->insertWindowLevelController(wlController);
-			}
-			else if (ui->controlPanelLayout) {
-				ui->controlPanelLayout->insertWidget(1, wlController); // insert after VolumeControlsWidget
-			}
-			else {
-				wlController->setParent(ui->controlPanel);
-			}
+	// Register the controller instance with the Lightbox so it can wire propagation.
+	if (wlController) {
+		ui->lightboxWidget->setWindowLevelWidget(wlController);
+
+		// Ensure the controller participates in global load/save settings hooks
+		connect(this, &MainWindow::requestLoadViewSettings, wlController, &WindowLevelWidget::readSettings, Qt::UniqueConnection);
+		connect(this, &MainWindow::requestSaveViewSettings, wlController, &WindowLevelWidget::writeSettings, Qt::UniqueConnection);
+
+		// Load controller settings immediately so UI reflects persisted state early
+		wlController->readSettings();
+	}
+
+	if (m_workflowStateMachine && wlController) {
+		if (ScalarOpacityFunctionWidget* scalarWidget = wlController->scalarOpacityFunctionWidget()) {
+			connect(m_workflowStateMachine, &WorkflowStateMachine::thresholdChanged,
+				this, [scalarWidget](bool present, double value) {
+					// If sidecar contains a threshold, set it on the widget and show the marker.
+					// Otherwise hide the marker. parseOtsuThreshold guarantees `value` is valid when `present` is true.
+					if (present) {
+						scalarWidget->setHistogramThreshold(value);
+					}
+					scalarWidget->setShowThresholdIndicator(present);
+				}, Qt::QueuedConnection);
 		}
 	}
 
-	// --- keep controls in sync when view mode changes (menu -> checkbox)
-	if (ui->lightboxWidget && ui->volumeControlsWidget) {
-		auto* volView = ui->lightboxWidget->getVolumeView();
-		auto* vcw = ui->volumeControlsWidget;
-		// Ensure checkbox exists before wiring; connect VolumeView signal -> QCheckBox::setChecked
-		if (volView && vcw && vcw->slicePlaneCheckBox()) {
-			connect(volView, &VolumeView::orthoPlanesVisibleChanged,
-					vcw->slicePlaneCheckBox(), &QCheckBox::setChecked,
-					Qt::UniqueConnection);
+	// Let the WorkflowPanelWidget own the live connection to the Lightbox for cropping updates.
+	if (m_workflowPanelWidget && ui->lightboxWidget) {
+		m_workflowPanelWidget->setLightboxWidget(ui->lightboxWidget);
+
+		// XY slice
+		if (auto* xy = ui->lightboxWidget->getXYView()) {
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
+				xy, [xy]() { xy->setOutlineVisible(true); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
+				xy, [xy]() { xy->setOutlineVisible(false); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
+				xy, &SliceView::setCroppingRegion, Qt::UniqueConnection);
 		}
+		// XZ slice
+		if (auto* xz = ui->lightboxWidget->getXZView()) {
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
+				xz, [xz]() { xz->setOutlineVisible(true); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
+				xz, [xz]() { xz->setOutlineVisible(false); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
+				xz, &SliceView::setCroppingRegion, Qt::UniqueConnection);
+		}
+		// YZ slice
+		if (auto* yz = ui->lightboxWidget->getYZView()) {
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
+				yz, [yz]() { yz->setOutlineVisible(true); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
+				yz, [yz]() { yz->setOutlineVisible(false); }, Qt::UniqueConnection);
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::croppingRegionChanged,
+				yz, &SliceView::setCroppingRegion, Qt::UniqueConnection);
+		}
+
+		if (auto* vol = ui->lightboxWidget->getVolumeView()) {
+			connect(vol, &VolumeView::croppingEnabledChanged,
+				m_workflowPanelWidget, &WorkflowPanelWidget::setCroppingEnabled, Qt::UniqueConnection);
+
+			// Show outline when user enters "define crop" mode (panel-level request)
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::defineCropRequested,
+				vol, [vol]() { vol->setOutlineVisible(true); }, Qt::UniqueConnection);
+
+			// Hide outline when user requests Save (crop completed / save initiated)
+			connect(m_workflowPanelWidget, &WorkflowPanelWidget::saveCroppedRequested,
+				vol, [vol]() { vol->setOutlineVisible(false); }, Qt::UniqueConnection);
+		}
+	}
+
+	if (m_workflowPanelWidget && m_workflowStateMachine) {
+		connect(m_workflowPanelWidget, &WorkflowPanelWidget::resetCropRequested,
+			m_workflowStateMachine, &WorkflowStateMachine::cropReset,
+			Qt::QueuedConnection);
 	}
 }
 
 void MainWindow::addToRecentFiles(const QString& filePath)
 {
+	// Guard: skip workflow-derived cropped volumes generated by CropExporter::makeAutoOutputPath.
+	// CropExporter produces names like "<base>_crop_<xdim>x<ydim>x<zdim>.nii".
+	// Match on the complete base name to avoid relying on timestamps or other variants.
+	QFileInfo fi(filePath);
+	const QString baseName = fi.completeBaseName();
+
+	static const QRegularExpression cropPattern(R"(_crop_\d+x\d+x\d+)", QRegularExpression::CaseInsensitiveOption);
+	if (cropPattern.match(baseName).hasMatch()) {
+		qDebug() << "Skipping workflow-derived cropped file for recents:" << filePath;
+		return;
+	}
+
 	recentFiles.removeAll(filePath);
 	recentFiles.prepend(filePath);
 	while (recentFiles.size() > 10)
@@ -350,21 +581,49 @@ void MainWindow::updateRecentFilesMenu()
 		QAction* action = new QAction(displayName, this);
 		action->setProperty("isRecentFile", true);
 		action->setToolTip(filePath);
-		// Optionally, set an icon based on file type
-		/*
-		if (displayName.endsWith(".isq", Qt::CaseInsensitive)) {
-			action->setIcon(QIcon(":/icons/isq.png")); // Provide a suitable icon resource
-		}
-		else if (displayName.endsWith(".dcm", Qt::CaseInsensitive) || displayName.endsWith(".dicom", Qt::CaseInsensitive)) {
-			action->setIcon(QIcon(":/icons/dicom.png")); // Provide a suitable icon resource
-		}
-		*/
 		if (displayName.endsWith(".dcm", Qt::CaseInsensitive) || displayName.endsWith(".dicom", Qt::CaseInsensitive)) {
 			action->setIcon(QIcon(":/icons/dicom.png")); // Provide a suitable icon resource
 		}
 		connect(action, &QAction::triggered, this, [this, filePath]() {
-			openFile(filePath);
-		});
+			// If no state machine is present fall back to immediate open (preserves current behavior).
+			if (!m_workflowStateMachine) {
+				openFile(filePath);
+				return;
+			}
+
+			// If the machine is idle, hand the path to it and start the workflow.
+			if (!m_workflowStateMachine->isWorkflowActive()) {
+				m_workflowStateMachine->setInputFilePath(filePath);
+				m_workflowStateMachine->start();
+				statusBar()->showMessage(tr("Queued file for processing: %1").arg(filePath), 2000);
+				return;
+			}
+
+			// Machine is active — prompt user to cancel and restart (same policy as drag/drop).
+			const auto resp = QMessageBox::question(this, tr("Processing in progress"),
+				tr("A processing job is currently running.\n\nCancel it and start processing the selected file?\n\n%1").arg(filePath),
+				QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+			if (resp == QMessageBox::Yes) {
+				// Wait for canceled() then start the new job. Use a self-disconnecting connection.
+				QMetaObject::Connection* conn = new QMetaObject::Connection;
+				*conn = connect(m_workflowStateMachine, &WorkflowStateMachine::canceled, this,
+					[this, filePath, conn]() {
+						m_workflowStateMachine->setInputFilePath(filePath);
+						m_workflowStateMachine->start();
+						disconnect(*conn);
+						delete conn;
+					}, Qt::QueuedConnection);
+
+				// Ask the machine to cancel current job; when it emits canceled() our lambda will start new job.
+				m_workflowStateMachine->cancel();
+				statusBar()->showMessage(tr("Canceling current job and will start processing selected file..."), 2000);
+				return;
+			}
+
+			// User declined: provide feedback and do nothing.
+			statusBar()->showMessage(tr("Selection ignored while processing is active"), 2000);
+			});
 		ui->menuFile->insertAction(ui->menuFile->actions().value(insertIndex), action);
 		++insertIndex;
 	}
@@ -403,100 +662,151 @@ void MainWindow::readSettings()
 			this->setGeometry(rect);
 		settings.endGroup();
 
-		// Recent files: load list
+		// Recent files & projects: load lists (we will verify them once on first show)
 		settings.beginGroup("recent");
 		QStringList rf = settings.value("recentFiles").toStringList();
 		if (!rf.isEmpty()) recentFiles = rf;
+		QStringList rp = settings.value("recentProjects").toStringList();
+		if (!rp.isEmpty()) recentProjects = rp;
 		settings.endGroup();
+
+		// Logging preferences (optional group)
+		settings.beginGroup("logging");
+		const bool rotateEnabled = settings.value("rotateEnabled", Logger::rotateEnabled()).toBool();
+		const int maxBackups = settings.value("maxBackupFiles", Logger::maxBackupFiles()).toInt();
+		const int maxFileSizeMB = settings.value("maxFileSizeMB", Logger::maxFileSizeMB()).toInt();
+		settings.endGroup();
+
+		// Apply to Logger runtime config (should be done before Logger::install/openLog if possible)
+		Logger::setRotateEnabled(rotateEnabled);
+		Logger::setMaxBackupFiles(maxBackups);
+		Logger::setMaxFileSizeMB(maxFileSizeMB);
 	}
 
 	// Ensure UI menu reflects loaded recent files
 	updateRecentFilesMenu();
+	updateRecentProjectsMenu();
 }
 
 void MainWindow::writeSettings()
 {
-	QSettings settings(JsonSettings::defaultSettingsPath(), JsonSettings::JsonFormat);
-	if (settings.status() == QSettings::NoError) {
-		// Application metadata (optional)
-		settings.beginGroup("application");
+	// Ask child views to persist their own groups first so their writes appear in the file.
+	// Slots connected to requestSaveViewSettings write synchronously, so emit + processEvents
+	// ensures their work is completed before we read/merge the file.
+	emit requestSaveViewSettings();
+	QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
 
-		// Compile-time fallbacks (match About dialog fallbacks)
-#ifndef CTANALYZERX_VERSION
-#define CTANALYZERX_VERSION "unknown"
+	const QString path = JsonSettings::defaultSettingsPath();
+
+	// Load existing JSON (if any) so we can merge our values without clobbering other groups.
+	QJsonObject root;
+	QFile in(path);
+	if (in.open(QIODevice::ReadOnly)) {
+		const QByteArray data = in.readAll();
+		in.close();
+		const QJsonDocument doc = QJsonDocument::fromJson(data);
+		if (doc.isObject()) root = doc.object();
+	}
+
+	// Application metadata (overwrite/ensure these keys)
+	QJsonObject app;
+	app.insert(QStringLiteral("version"), QString::fromUtf8(CTANALYZERX_VERSION).trimmed());
+	app.insert(QStringLiteral("buildDate"), QString::fromUtf8(CTANALYZERX_BUILD_DATE).trimmed());
+	const QString fullHash = QString::fromUtf8(CTANALYZERX_GIT_HASH).trimmed();
+	app.insert(QStringLiteral("gitHashShort"), fullHash.left(7));
+	app.insert(QStringLiteral("buildType"), QString::fromUtf8(CTANALYZERX_BUILD_TYPE).trimmed());
+	app.insert(QStringLiteral("compiler"), QString::fromUtf8(CTANALYZERX_COMPILER).trimmed());
+	app.insert(QStringLiteral("vtkDicomVersion"), QString::fromUtf8(CTANALYZERX_VTKDICOM_VERSION).trimmed());
+	app.insert(QStringLiteral("os"), QSysInfo::prettyProductName());
+	app.insert(QStringLiteral("architecture"), QSysInfo::currentCpuArchitecture());
+	app.insert(QStringLiteral("qtVersion"), QString::fromLatin1(QT_VERSION_STR));
+	app.insert(QStringLiteral("vtkVersion"), QString::fromLatin1(vtkVersion::GetVTKVersionFull()));
+	app.insert(QStringLiteral("itkVersion"),
+		QStringLiteral("%1.%2.%3")
+		.arg(QString::number(ITK_VERSION_MAJOR),
+			QString::number(ITK_VERSION_MINOR),
+			QString::number(ITK_VERSION_PATCH)));
+	// Query OpenGL / GPU parameters and persist them under application -> opengl.
+	QJsonObject opengl;
+
+	// 1) Try to get a render window from any ImageFrameWidget child so we can make the GL context current.
+	vtkGenericOpenGLRenderWindow* grw = nullptr;
+	const auto frames = this->findChildren<ImageFrameWidget*>();
+	for (ImageFrameWidget* f : frames) {
+		if (!f) continue;
+		vtkGenericOpenGLRenderWindow* candidate = vtkGenericOpenGLRenderWindow::SafeDownCast(f->genericRenderWindow());
+		if (candidate) {
+			grw = candidate;
+			break;
+		}
+	}
+
+	// If we have a render window, make its context current so glGetString / glGetIntegerv work.
+	if (grw) {
+		// MakeCurrent is safe here; we only use it if a render window exists.
+		grw->MakeCurrent();
+		// Query GL strings if context is available
+#if defined(GL_VENDOR) && defined(GL_RENDERER) && defined(GL_VERSION)
+		const GLubyte* gv = glGetString(GL_VENDOR);
+		const GLubyte* gr = glGetString(GL_RENDERER);
+		const GLubyte* gvrs = glGetString(GL_VERSION);
+		if (gv) opengl.insert(QStringLiteral("vendor"), QString::fromUtf8(reinterpret_cast<const char*>(gv)));
+		if (gr) opengl.insert(QStringLiteral("renderer"), QString::fromUtf8(reinterpret_cast<const char*>(gr)));
+		if (gvrs) opengl.insert(QStringLiteral("version"), QString::fromUtf8(reinterpret_cast<const char*>(gvrs)));
 #endif
-#ifndef CTANALYZERX_BUILD_DATE
-#define CTANALYZERX_BUILD_DATE "unknown"
+		// Query some GL limits as fallback (if available)
+#if defined(GL_MAX_TEXTURE_SIZE)
+		GLint maxTex = 0;
+		glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+		if (maxTex > 0) opengl.insert(QStringLiteral("maxTextureSize"), maxTex);
 #endif
-#ifndef CTANALYZERX_GIT_HASH
-#define CTANALYZERX_GIT_HASH "unknown"
+#if defined(GL_MAX_3D_TEXTURE_SIZE)
+		GLint max3D = 0;
+		glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max3D);
+		if (max3D > 0) opengl.insert(QStringLiteral("max3DTextureSize"), max3D);
 #endif
-#ifndef CTANALYZERX_BUILD_TYPE
-#define CTANALYZERX_BUILD_TYPE "unknown"
-#endif
-#ifndef CTANALYZERX_COMPILER
-#define CTANALYZERX_COMPILER "unknown"
-#endif
-#ifndef CTANALYZERX_VTKDICOM_VERSION
-#define CTANALYZERX_VTKDICOM_VERSION "unknown"
-#endif
+	}
 
-		const QString ver = QString::fromUtf8(CTANALYZERX_VERSION).trimmed();
-		const QString build = QString::fromUtf8(CTANALYZERX_BUILD_DATE).trimmed();
-		const QString fullHash = QString::fromUtf8(CTANALYZERX_GIT_HASH).trimmed();
-		const QString shortHash = fullHash.left(7);
-		const QString buildType = QString::fromUtf8(CTANALYZERX_BUILD_TYPE).trimmed();
-		const QString compiler = QString::fromUtf8(CTANALYZERX_COMPILER).trimmed();
-		const QString vtkDicomVer = QString::fromUtf8(CTANALYZERX_VTKDICOM_VERSION).trimmed();
+	app.insert(QStringLiteral("openGL"), opengl);
 
-		// Platform / libs
-		const QString os = QSysInfo::prettyProductName();
-		const QString arch = QSysInfo::currentCpuArchitecture();
-		const QString qtVer = QString::fromLatin1(QT_VERSION_STR);
-		const QString vtkVer = QString::fromLatin1(vtkVersion::GetVTKVersionFull());
-		const QString itkVer = QStringLiteral("%1.%2.%3")
-			.arg(QString::number(ITK_VERSION_MAJOR),
-				 QString::number(ITK_VERSION_MINOR),
-				 QString::number(ITK_VERSION_PATCH));
+	root.insert(QStringLiteral("application"), app);
 
-		// OpenGL summary (vendor | renderer | version)
-		const QString gl = queryOpenGLSummary();
+	// Recent lists (overwrite the recent group, but keep other top-level keys intact)
+	QJsonObject recent;
+	QJsonArray rf;
+	for (const QString& s : recentFiles) rf.append(s);
+	QJsonArray rp;
+	for (const QString& p : recentProjects) rp.append(p);
+	recent.insert(QStringLiteral("recentFiles"), rf);
+	recent.insert(QStringLiteral("recentProjects"), rp);
+	root.insert(QStringLiteral("recent"), recent);
 
-		// Persist concise about information for offline reporting
-		settings.setValue("version", ver);
-		settings.setValue("buildDate", build);
-		settings.setValue("gitHashShort", shortHash);
-		settings.setValue("buildType", buildType);
-		settings.setValue("compiler", compiler);
-		settings.setValue("vtkDicomVersion", vtkDicomVer);
+	// Appearance / geometry
+	QRect rect(this->geometry());
+	QJsonObject appearance;
+	appearance.insert(QStringLiteral("geometry_x"), rect.x());
+	appearance.insert(QStringLiteral("geometry_y"), rect.y());
+	appearance.insert(QStringLiteral("geometry_w"), rect.width());
+	appearance.insert(QStringLiteral("geometry_h"), rect.height());
+	root.insert(QStringLiteral("appearance"), appearance);
 
-		settings.setValue("os", os);
-		settings.setValue("architecture", arch);
-		settings.setValue("qtVersion", qtVer);
-		settings.setValue("vtkVersion", vtkVer);
-		settings.setValue("itkVersion", itkVer);
-		settings.setValue("openGL", gl);
+	// Persist logging configuration under "logging"
+	QJsonObject logging;
+	logging.insert(QStringLiteral("rotateEnabled"), Logger::rotateEnabled());
+	logging.insert(QStringLiteral("maxBackupFiles"), Logger::maxBackupFiles());
+	logging.insert(QStringLiteral("maxFileSizeMB"), Logger::maxFileSizeMB());
+	root.insert(QStringLiteral("logging"), logging);
 
-		settings.endGroup();
-
-		// Persist recent files
-		settings.beginGroup("recent");
-		settings.setValue("recentFiles", recentFiles);
-		settings.endGroup();
-
-		// Persist geometry/appearance
-		settings.beginGroup("appearance");
-		QRect rect(this->geometry());
-		settings.setValue("geometry_x", rect.x());
-		settings.setValue("geometry_y", rect.y());
-		settings.setValue("geometry_w", rect.width());
-		settings.setValue("geometry_h", rect.height());
-		settings.endGroup();
-
-		// Ask child views to persist their own per-view groups (they use settingsGroupKey()).
-		emit requestSaveViewSettings();
-
-		settings.sync();
+	// Write merged JSON back to disk atomically
+	QSaveFile out(path);
+	if (!out.open(QIODevice::WriteOnly)) {
+		qWarning() << "writeSettings: failed to open settings file for write:" << path;
+		return;
+	}
+	const QJsonDocument outDoc(root);
+	out.write(outDoc.toJson(QJsonDocument::Indented));
+	if (!out.commit()) {
+		qWarning() << "writeSettings: failed to commit settings file:" << path;
 	}
 }
 
@@ -569,7 +879,7 @@ void MainWindow::openFile(const QString& filePath)
 	catch (const std::exception& ex) {
 		QMessageBox::critical(this, "Error Loading File",
 			QString("An error occurred while loading the file:\n%1\n\nDetails: %2")
-				.arg(filePath, ex.what()));
+			.arg(filePath, ex.what()));
 		return;
 	}
 	catch (...) {
@@ -585,39 +895,19 @@ void MainWindow::openFile(const QString& filePath)
 			QString("The loaded volume has invalid dimensions and cannot be displayed.\n\nFile: %1").arg(filePath));
 
 		ui->lightboxWidget->setDefaultImage();
-		if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
 	}
-	else if (m_volumeRotationWidget) {
-
+	else {
 		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort(), true);
-
-		/*
-		// enable operational mode before attaching the pipeline
-		m_volumeRotationWidget->setOperational(true);
-
-		m_volumeRotationWidget->setInputConnection(m_imageLoader->GetOutputPort());
-
-		ui->lightboxWidget->setInputConnection(m_volumeRotationWidget->getOutputPort());
-		*/
-		/*
-		// pipeline mode: ask views to refresh when rotation widget updates the reslice
-		connect(m_volumeRotationWidget, &VolumeRotationWidget::resliceReady, this, [this]() {
-			if (!ui->lightboxWidget) return;
-			if (auto* yz = ui->lightboxWidget->getYZView()) yz->updateData();
-			if (auto* xz = ui->lightboxWidget->getXZView()) xz->updateData();
-			if (auto* xy = ui->lightboxWidget->getXYView()) xy->updateData();
-			if (auto* vol = ui->lightboxWidget->getVolumeView()) vol->updateData();
-		}, Qt::UniqueConnection);
-		*/
-
 
 		// Update recent files list
 		addToRecentFiles(filePath);
 		writeSettings();
-	}
-	else {
-		ui->lightboxWidget->setInputConnection(m_imageLoader->GetOutputPort(), true);
-		if (m_volumeRotationWidget) m_volumeRotationWidget->setOperational(false);
+
+		// Inform exporter about input pipeline and path so it can auto-generate output names later.
+		if (m_cropExporter && m_imageLoader) {
+			m_cropExporter->setInputConnection(m_imageLoader->GetOutputPort());
+			m_cropExporter->setInputFilePath(filePath);
+		}
 	}
 }
 
@@ -635,25 +925,25 @@ void MainWindow::onVtkStartEvent()
 {
 	// If we're already on the GUI thread update UI directly, otherwise queue it.
 	if (QThread::currentThread() == this->thread()) {
-		showLoaderStart();
+		showProgressStart();
 		// Ensure the progress bar is painted immediately while the read is running.
 		progressBar->update();
 		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	}
 	else {
-		QMetaObject::invokeMethod(this, "showLoaderStart", Qt::QueuedConnection);
+		QMetaObject::invokeMethod(this, "showProgressStart", Qt::QueuedConnection);
 	}
 }
 
 void MainWindow::onVtkEndEvent()
 {
 	if (QThread::currentThread() == this->thread()) {
-		showLoaderEnd();
+		showProgressEnd();
 		progressBar->update();
 		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	}
 	else {
-		QMetaObject::invokeMethod(this, "showLoaderEnd", Qt::QueuedConnection);
+		QMetaObject::invokeMethod(this, "showProgressEnd", Qt::QueuedConnection);
 	}
 }
 
@@ -667,13 +957,13 @@ void MainWindow::onVtkProgressEvent()
 	// is blocking the event loop. Otherwise use a queued invocation.
 	if (QThread::currentThread() == this->thread()) {
 		// Throttle client-side if needed (keep it responsive), but do immediate update.
-		setLoaderProgress(value);
+		showProgressValue(value);
 		progressBar->update();
 		// brief event pump so the widget repaints while the blocking read continues
 		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	}
 	else {
-		QMetaObject::invokeMethod(this, "setLoaderProgress", Qt::QueuedConnection, Q_ARG(int, value));
+		QMetaObject::invokeMethod(this, "showProgressValue", Qt::QueuedConnection, Q_ARG(int, value));
 	}
 }
 
@@ -693,37 +983,87 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* event)
 	event->ignore();
 }
 
-// Handle drop: open the first supported file
+// Handle drop: hand the first supported file to the state machine.
+// If a processing job is already running, prompt to cancel & restart.
 void MainWindow::dropEvent(QDropEvent* event)
 {
 	const QMimeData* mimeData = event->mimeData();
-	if (mimeData->hasUrls()) {
-		for (const QUrl& url : mimeData->urls()) {
-			QString filePath = url.toLocalFile();
-			if (ImageLoader::CanReadFile(filePath)) {
-				openFile(filePath);
-				event->acceptProposedAction();
-				return;
-			}
+	if (!mimeData->hasUrls()) {
+		event->ignore();
+		return;
+	}
+
+	QString droppedPath;
+	for (const QUrl& url : mimeData->urls()) {
+		QString filePath = url.toLocalFile();
+		if (ImageLoader::CanReadFile(filePath)) {
+			droppedPath = filePath;
+			break;
 		}
 	}
-	event->ignore();
+	if (droppedPath.isEmpty()) {
+		event->ignore();
+		return;
+	}
+
+	// If no state machine, fall back to original behavior
+	if (!m_workflowStateMachine) {
+		openFile(droppedPath);
+		event->acceptProposedAction();
+		return;
+	}
+
+	// If not active, start immediately (ask machine if it is active)
+	if (!m_workflowStateMachine->isWorkflowActive()) {
+		m_workflowStateMachine->setInputFilePath(droppedPath);
+		m_workflowStateMachine->start();
+		statusBar()->showMessage(tr("Queued file for processing: %1").arg(droppedPath), 2000);
+		event->acceptProposedAction();
+		return;
+	}
+
+	// Machine is active — prompt user to cancel and restart
+	const auto resp = QMessageBox::question(this, tr("Processing in progress"),
+		tr("A processing job is currently running.\n\nCancel it and start processing the dropped file?\n\n%1").arg(droppedPath),
+		QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+	if (resp == QMessageBox::Yes) {
+		// Wait for canceled signal, then start with droppedPath.
+		QMetaObject::Connection* conn = new QMetaObject::Connection;
+		*conn = connect(m_workflowStateMachine, &WorkflowStateMachine::canceled, this, [this, droppedPath, conn]() {
+			// now safe to start new job
+			m_workflowStateMachine->setInputFilePath(droppedPath);
+			m_workflowStateMachine->start();
+			disconnect(*conn);
+			delete conn;
+			}, Qt::QueuedConnection);
+
+		// Request cancellation; machine will emit canceled() and our lambda will start new job.
+		m_workflowStateMachine->cancel();
+		statusBar()->showMessage(tr("Canceling current job and will start processing dropped file..."), 2000);
+		event->acceptProposedAction();
+		return;
+	}
+
+	// User chose not to cancel — ignore or accept w/out action to indicate handled
+	statusBar()->showMessage(tr("Dropped file ignored while processing is active"), 2000);
+	event->acceptProposedAction();
 }
 
-void MainWindow::setLoaderProgress(int percent)
+void MainWindow::showProgressValue(int percent)
 {
 	progressBar->setValue(percent);
 	progressBar->setVisible(true);
 }
 
-void MainWindow::showLoaderStart()
+void MainWindow::showProgressStart()
 {
 	progressBar->setValue(0);
 	progressBar->setVisible(true);
 	progressBar->setEnabled(true);
 }
 
-void MainWindow::showLoaderEnd()
+void MainWindow::showProgressEnd()
 {
 	progressBar->setValue(100);
 	progressBar->setVisible(false);
@@ -732,6 +1072,7 @@ void MainWindow::showLoaderEnd()
 void MainWindow::showEvent(QShowEvent* e)
 {
 	QMainWindow::showEvent(e);
+	verifySettings();
 	emit requestLoadViewSettings();
 }
 
@@ -742,4 +1083,621 @@ void MainWindow::closeEvent(QCloseEvent* event)
 	// existing close behavior
 	writeSettings();
 	QMainWindow::closeEvent(event);
+}
+
+void MainWindow::onProcessingRequestSaveCropped()
+{
+	// Automatic save requested by the state machine.
+	if (!m_workflowStateMachine) return;
+	if (!m_cropExporter) {
+		statusBar()->showMessage(tr("No crop exporter available"), 5000);
+		return;
+	}
+
+	const QString inputPath = m_workflowStateMachine->inputFilePath();
+	if (inputPath.isEmpty()) {
+		statusBar()->showMessage(tr("StateMachine requested save but no input path is set"), 5000);
+		return;
+	}
+
+	// The CropExporter will auto-generate an output filename based on the input file path.
+	// Show loader and call apply() synchronously; CropExporter emits progress/finished signals.
+	showProgressStart();
+	m_cropExporter->apply();
+	// writeFinished handler (connected earlier) will hide the loader and handle post-save actions.
+}
+
+void MainWindow::onProcessingRequestComputeThreshold()
+{
+	if (!m_imageLoader || !m_imageLoader->GetOutput()) {
+		qWarning() << "No image loaded for threshold computation";
+		statusBar()->showMessage(tr("Cannot compute threshold: no image loaded"), 3000);
+		return;
+	}
+
+	vtkImageData* vtkImg = m_imageLoader->GetOutput();
+
+	// Create worker + thread
+	OtsuThresholdWorker* worker = new OtsuThresholdWorker();
+	QThread* workerThread = new QThread(this);
+	worker->moveToThread(workerThread);
+
+	// Start compute when thread starts
+	connect(workerThread, &QThread::started, worker, [worker, vtkImg]() {
+		worker->compute(vtkImg, nullptr);
+	}, Qt::QueuedConnection);
+
+	// Handle successful computation -> append to sidecar
+	connect(worker, &OtsuThresholdWorker::computeFinished, this,
+		[this](bool ok, double threshold) {
+				if (!m_workflowStateMachine) return;
+
+				if (ok) {
+					// NEW: let the state machine persist threshold in new canonical keys
+					m_workflowStateMachine->onThresholdComputed(threshold, QStringLiteral("otsu"));
+
+					statusBar()->showMessage(
+						tr("Computed threshold: %1").arg(threshold),
+						3000
+					);
+				}
+				else {
+					statusBar()->showMessage(
+						tr("Threshold computation returned invalid result"),
+						3000
+					);
+					// Optional later: set up manual threshold UI. For now, fail loudly.
+					m_workflowStateMachine->failed(QStringLiteral("Otsu threshold failed"));
+				}
+		}, Qt::QueuedConnection);
+
+	// Progress handling
+	connect(worker, &OtsuThresholdWorker::computeStarted,
+			this, &MainWindow::showProgressStart, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeProgress,
+			this, &MainWindow::showProgressValue, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeFinished,
+			this, &MainWindow::showProgressEnd, Qt::QueuedConnection);
+
+	// Error handling
+	connect(worker, &OtsuThresholdWorker::computeError, this,
+		[this](const QString& reason) {
+			qWarning() << "OtsuThresholdWorker error:" << reason;
+			this->showProgressEnd();
+			statusBar()->showMessage(
+				tr("Threshold compute error: %1").arg(reason),
+				5000
+			);
+		}, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeCanceled, this,
+		[this]() {
+			this->showProgressEnd();
+			statusBar()->showMessage(
+				tr("Threshold computation canceled"),
+				2000
+			);
+		}, Qt::QueuedConnection);
+
+	// Thread lifecycle
+	connect(worker, &OtsuThresholdWorker::computeFinished,
+			workerThread, &QThread::quit, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeError,
+			workerThread, &QThread::quit, Qt::QueuedConnection);
+
+	connect(worker, &OtsuThresholdWorker::computeCanceled,
+			workerThread, &QThread::quit, Qt::QueuedConnection);
+
+	// Cleanup
+	connect(workerThread, &QThread::finished,
+			worker, &QObject::deleteLater, Qt::QueuedConnection);
+
+	connect(workerThread, &QThread::finished,
+			workerThread, &QObject::deleteLater, Qt::QueuedConnection);
+
+	// Start worker thread
+	workerThread->start();
+
+	qDebug() << "Started Otsu threshold computation";
+}
+
+void MainWindow::updateUiForState(WorkflowStateMachine::State s)
+{
+	auto hasImage = [&]() -> bool {
+		if (!m_imageLoader) return false;
+		if (auto img = m_imageLoader->GetOutput()) {
+			int d[3];
+			img->GetDimensions(d);
+			return (d[0] > 1 && d[1] > 1 && d[2] > 1);
+		}
+		return false;
+		};
+
+	const bool imgPresent = hasImage();
+	const bool isIdle = (s == WorkflowStateMachine::Idle ||
+						 s == WorkflowStateMachine::Completed ||
+						 s == WorkflowStateMachine::ErrorState);
+
+	ui->actionSave->setEnabled(imgPresent && isIdle);
+
+	// Progress indicator
+	const bool showProgress = (s == WorkflowStateMachine::LoadingImage ||
+	 //s == WorkflowStateMachine::LoadingSidecar ||  // consider showing progress for sidecar load if it becomes a bottleneck
+	 //s == WorkflowStateMachine::ComputingThreshold || // consider showing progress for threshold compute if it becomes a bottleneck
+							   s == WorkflowStateMachine::LoadingCropped);
+
+	if (showProgress) {
+		showProgressStart();
+	}
+	else {
+		showProgressEnd();
+	}
+
+	// Status message
+	QString statusMsg = tr("Workflow: %1").arg(WorkflowStateMachine::stateToString(s));
+	statusBar()->showMessage(statusMsg, 2500);
+}
+
+// One-time verification of recent caches invoked when the main window is first shown.
+void MainWindow::verifySettings()
+{
+	if (m_settingsVerified) return;
+	m_settingsVerified = true;
+
+	// Prune invalid entries and persist cleaned lists if necessary.
+	verifyRecentFiles();
+	verifyRecentProjects();
+}
+
+void MainWindow::verifyRecentFiles()
+{
+	bool changed = false;
+	if (!recentFiles.isEmpty()) {
+		QStringList kept;
+		for (const QString& path : recentFiles) {
+			// Accept directories and files if they exist and the loader can read them.
+			if (QFile::exists(path) || QFileInfo(path).isDir()) {
+				if (ImageLoader::CanReadFile(path)) {
+					kept.append(path);
+					continue;
+				}
+			}
+			// drop invalid / missing entry
+			changed = true;
+		}
+		recentFiles = kept;
+	}
+
+	if (changed) {
+		writeSettings(); // persist cleaned list
+
+	}
+	// Refresh menu to reflect cleaned entries
+	updateRecentFilesMenu();
+}
+
+void MainWindow::verifyRecentProjects()
+{
+	bool changed = false;
+	if (!recentProjects.isEmpty()) {
+		QStringList kept;
+		for (const QString& projPath : recentProjects) {
+			// Check file exists
+			if (!QFile::exists(projPath)) {
+				qWarning() << "Removing missing project from recents:" << projPath;
+				changed = true;
+				continue;
+			}
+
+			// Check file is readable
+			QFile f(projPath);
+			if (!f.open(QIODevice::ReadOnly)) {
+				qWarning() << "Removing unreadable project from recents:" << projPath;
+				changed = true;
+				continue;
+			}
+
+			// Validate JSON structure
+			const QByteArray data = f.readAll();
+			f.close();
+			const QJsonDocument doc = QJsonDocument::fromJson(data);
+			if (!doc.isObject()) {
+				qWarning() << "Removing malformed project from recents:" << projPath;
+				changed = true;
+				continue;
+			}
+
+			// Validate it's a valid sidecar (has required "inputImage" key)
+			QJsonObject root = doc.object();
+			if (!root.contains("source")) {
+				qWarning() << "Removing invalid sidecar from recents (missing 'source'):" << projPath;
+				changed = true;
+				continue;
+			}
+
+			// All checks passed - keep this entry
+			kept.append(projPath);
+		}
+		recentProjects = kept;
+	}
+
+	if (changed) {
+		writeSettings();
+	}
+
+	// Refresh Projects menu to reflect cleaned entries
+	updateRecentProjectsMenu();
+}
+
+void MainWindow::updateRecentProjectsMenu()
+{
+	// Remove previous actions
+	QList<QAction*> old = m_projectsMenu->actions();
+	for (QAction* a : old) {
+		m_projectsMenu->removeAction(a);
+		delete a;
+	}
+
+	// Add recent projects (up to 10)
+	int count = 0;
+	for (const QString& proj : recentProjects) {
+		if (count++ >= 10) break;
+
+		QFileInfo fi(proj);
+		QString display = fi.fileName();
+		QAction* act = new QAction(display, this);
+		act->setToolTip(proj);
+		act->setProperty("isRecentProject", true);
+
+		connect(act, &QAction::triggered, this, [this, proj]() {
+			resumeProjectWorkflow(proj);
+			});
+
+		m_projectsMenu->addAction(act);
+	}
+
+	// Add clear or placeholder
+	if (!recentProjects.isEmpty()) {
+		m_projectsMenu->addSeparator();
+		QAction* clear = new QAction(tr("Clear recent projects"), this);
+		clear->setObjectName("actionClearRecentProjects");
+		connect(clear, &QAction::triggered, this, &MainWindow::clearRecentProjects);
+		m_projectsMenu->addAction(clear);
+	}
+	else {
+		QAction* none = new QAction(tr("No recent projects"), this);
+		none->setEnabled(false);
+		m_projectsMenu->addAction(none);
+	}
+}
+
+void MainWindow::clearRecentProjects()
+{
+	recentProjects.clear();
+	updateRecentProjectsMenu();
+	writeSettings();
+	statusBar()->showMessage(tr("Cleared recent projects"), 2000);
+}
+
+void MainWindow::addToRecentProjects(const QString& projectPath)
+{
+	if (projectPath.isEmpty()) return;
+
+	// Validate file exists
+	if (!QFile::exists(projectPath)) {
+		qWarning() << "Cannot add non-existent project to recents:" << projectPath;
+		return;
+	}
+
+	// Validate file is readable and contains valid JSON
+	QFile f(projectPath);
+	if (!f.open(QIODevice::ReadOnly)) {
+		qWarning() << "Cannot read project file:" << projectPath;
+		return;
+	}
+
+	const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+	f.close();
+
+	if (!doc.isObject()) {
+		qWarning() << "Invalid JSON project file:" << projectPath;
+		return;
+	}
+
+	// Validate it's a valid sidecar (has required "inputImage" key)
+	QJsonObject root = doc.object();
+	if (!root.contains("source")) {
+		qWarning() << "Project file missing 'source' key:" << projectPath;
+		return;
+	}
+
+	// Maintain most-recent-first unique list (max 10)
+	recentProjects.removeAll(projectPath);
+	recentProjects.prepend(projectPath);
+	while (recentProjects.size() > 10)
+		recentProjects.removeLast();
+
+	updateRecentProjectsMenu();
+}
+
+void MainWindow::resumeProjectWorkflow(const QString& projectPath)
+{
+	if (!m_workflowStateMachine) {
+		statusBar()->showMessage(tr("State machine not available"), 3000);
+		return;
+	}
+
+	// Check if workflow is already running
+	if (m_workflowStateMachine->isWorkflowActive()) {
+		auto reply = QMessageBox::question(this,
+			tr("Workflow Active"),
+			tr("A workflow is currently running.\n\nCancel it and resume the selected project?\n\n%1")
+			.arg(QFileInfo(projectPath).fileName()),
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+		if (reply != QMessageBox::Yes) {
+			return;
+		}
+
+		// Cancel current workflow and wait for cleanup
+		QMetaObject::Connection* conn = new QMetaObject::Connection;
+		*conn = connect(m_workflowStateMachine, &WorkflowStateMachine::canceled,
+			this, [this, projectPath, conn]() {
+				// Recursively call after cancel completes
+				resumeProjectWorkflow(projectPath);
+				disconnect(*conn);
+				delete conn;
+			}, Qt::QueuedConnection);
+
+		m_workflowStateMachine->cancel();
+		return;
+	}
+
+	// Load project sidecar
+	if (!m_workflowStateMachine->loadProjectSidecarFile(projectPath)) {
+		QMessageBox::warning(this, tr("Resume Failed"),
+			tr("Could not load workflow state from:\n%1\n\nThe file may be corrupted.")
+			.arg(projectPath));
+		return;
+	}
+
+	// Add to recent projects
+	addToRecentProjects(projectPath);
+	writeSettings();
+	updateRecentProjectsMenu();
+
+	// Resume workflow
+	statusBar()->showMessage(
+		tr("Resuming workflow: %1").arg(QFileInfo(projectPath).fileName()),
+		3000);
+
+	m_workflowStateMachine->resume();
+}
+
+void MainWindow::onProcessingRequestLoadImage()
+{
+	if (!m_workflowStateMachine) return;
+
+	const QString path = m_workflowStateMachine->inputFilePath();
+	if (path.isEmpty()) {
+		showProgressEnd();
+		return;
+	}
+
+	// Just load the image - state machine handles all workflow decisions
+	openAndNotifyImageLoaded(path, /*showProgress=*/true);
+}
+
+void MainWindow::onProcessingRequestOpenImage(const QString& path)
+{
+	if (path.isEmpty()) return;
+
+	// Quiet open invoked from project loader/state machine. Do not show progress UI.
+	openAndNotifyImageLoaded(path, /*showProgress=*/false);
+}
+
+void MainWindow::onProjectLoaded(const QString& projectPath)
+{
+	if (projectPath.isEmpty()) return;
+	// Ensure project is present in recents and persist settings.
+	addToRecentProjects(projectPath);
+	writeSettings();
+	updateRecentProjectsMenu();
+	statusBar()->showMessage(tr("Loaded project: %1").arg(projectPath), 3000);
+}
+
+bool MainWindow::openAndNotifyImageLoaded(const QString& path, bool showProgress)
+{
+	if (path.isEmpty()) return false;
+
+	if (showProgress) {
+		ui->actionOpen->setEnabled(false);
+		ui->actionSave->setEnabled(false);
+		showProgressStart();
+	}
+
+	// Just load the file
+	openFile(path);
+
+	// Validate image
+	bool success = false;
+	if (m_imageLoader) {
+		if (auto img = m_imageLoader->GetOutput()) {
+			int dims[3];
+			img->GetDimensions(dims);
+			if (dims[0] > 1 && dims[1] > 1 && dims[2] > 1) {
+				success = true;
+			}
+		}
+	}
+
+	if (showProgress) {
+		showProgressEnd();
+	}
+
+	if (!success) {
+		if (showProgress) {
+			statusBar()->showMessage(
+				tr("Failed to load image '%1'").arg(path),
+				5000
+			);
+			ui->actionOpen->setEnabled(true);
+			ui->actionSave->setEnabled(true);
+		}
+		return false;
+	}
+
+	// Notify state machine - it will handle sidecar and workflow orchestration
+	if (m_workflowStateMachine) {
+		// IMPORTANT:
+		// - Do NOT call readSidecarForInput() here; sidecar lifecycle is owned by LoadingSidecar/ensureSidecarForSource().
+		// - Do NOT overwrite the source input file when we're opening a derived image requested by the machine.
+		const bool isOpeningDerived = (!m_workflowStateMachine->lastDerivedPath().isEmpty() &&
+			path == m_workflowStateMachine->lastDerivedPath());
+
+		if (!isOpeningDerived) {
+			// Source open (user open or resume open source)
+			m_workflowStateMachine->setInputFilePath(path);
+		}
+
+		if (isOpeningDerived) {
+			m_workflowStateMachine->croppedLoaded();
+		}
+		else {
+			m_workflowStateMachine->imageLoaded();
+		}
+	}
+
+	if (showProgress) {
+		statusBar()->showMessage(
+			tr("Loaded image: %1").arg(path),
+			3000
+		);
+		ui->actionOpen->setEnabled(true);
+		ui->actionSave->setEnabled(true);
+	}
+
+	return true;
+}
+
+void MainWindow::onProcessingRequestLoadCropped()
+{
+	if (!m_workflowStateMachine) return;
+
+	const QString path = m_workflowStateMachine->lastDerivedPath();
+	if (path.isEmpty() || !QFile::exists(path)) {
+		qWarning() << "State machine requested load of a cropped image that does not exist:" << path;
+		// Optionally, tell the state machine it failed so it can transition to an error state or back to Idle.
+		// m_workflowStateMachine->failed(tr("Cropped image not found."));
+		return;
+	}
+
+	// Reuse the existing helper to load the image and notify the state machine.
+	// We can show progress here as it's an explicit loading step.
+	if (openAndNotifyImageLoaded(path, /*showProgress=*/true)) {
+		// After the image is loaded and the state machine is notified via imageLoaded(),
+		// we can now signal that the "cropped" image specifically is ready.
+		m_workflowStateMachine->croppedLoaded();
+	}
+}
+
+void MainWindow::onProcessingRequestLoadLandmarks(const QJsonObject& landmarksData)
+{
+	if (!m_workflowPanelWidget) {
+		qWarning() << "No workflow panel widget available for loading landmarks";
+		return;
+	}
+
+	// Get the LandmarkWidget from the panel
+	auto* landmarkWidget = m_workflowPanelWidget->landmarkWidget();
+
+	if (!landmarkWidget) {
+		qWarning() << "No landmark widget available";
+		statusBar()->showMessage(tr("Cannot load landmarks: widget not available"), 3000);
+		return;
+	}
+
+	// Extract landmarks array from the parameters object
+	// The sidecar stores landmarks in operations[].parameters
+	QJsonArray landmarksArray;
+
+	if (landmarksData.contains("landmarks") && landmarksData.value("landmarks").isArray()) {
+		// Format 1: Direct "landmarks" key
+		landmarksArray = landmarksData.value("landmarks").toArray();
+	}
+	else if (landmarksData.contains("parameters") && landmarksData.value("parameters").isObject()) {
+		// Format 2: Nested in "parameters.landmarks"
+		QJsonObject params = landmarksData.value("parameters").toObject();
+		if (params.contains("landmarks") && params.value("landmarks").isArray()) {
+			landmarksArray = params.value("landmarks").toArray();
+		}
+	}
+	else {
+		// Format 3: The entire object IS the parameters (most likely from state machine)
+		// Assume it contains a "landmarks" key directly
+		if (landmarksData.value("landmarks").isArray()) {
+			landmarksArray = landmarksData.value("landmarks").toArray();
+		}
+	}
+
+	if (landmarksArray.isEmpty()) {
+		qWarning() << "No landmarks array found in data";
+		statusBar()->showMessage(tr("No landmarks to load"), 2000);
+		return;
+	}
+
+	// Load landmarks using existing method
+	landmarkWidget->loadLandmarksFromJson(landmarksArray);
+
+	statusBar()->showMessage(
+		tr("Loaded %1 landmark(s)").arg(landmarksArray.size()),
+		2000
+	);
+
+	qDebug() << "Successfully loaded" << landmarksArray.size() << "landmarks from sidecar";
+}
+
+void MainWindow::onProcessingRequestSaveLandmarks(const QJsonArray& landmarks)
+{
+	// This is an executor slot triggered by state machine
+
+	if (!m_workflowStateMachine) {
+		qWarning() << "Cannot save landmarks: no state machine available";
+		return;
+	}
+
+	const QString inputPath = m_workflowStateMachine->inputFilePath();
+	if (inputPath.isEmpty()) {
+		qWarning() << "Cannot save landmarks: no input file path set";
+		statusBar()->showMessage(tr("Cannot save landmarks: no input file loaded"), 3000);
+		return;
+	}
+
+	if (landmarks.isEmpty()) {
+		qWarning() << "No landmarks to save";
+		statusBar()->showMessage(tr("No landmarks to save"), 2000);
+		return;
+	}
+
+	// Package landmarks into parameters object
+	QJsonObject params;
+	params.insert(QStringLiteral("landmarks"), landmarks);
+
+	// Delegate to state machine for sidecar persistence
+	m_workflowStateMachine->appendHistoryToSidecar(
+		inputPath,
+		QStringLiteral("place_landmarks"),
+		params
+	);
+
+	// Provide user feedback
+	statusBar()->showMessage(
+		tr("Saved %1 landmark(s) to project").arg(landmarks.size()),
+		3000
+	);
+
+	qDebug() << "Saved" << landmarks.size() << "landmarks via state machine to" << inputPath;
 }

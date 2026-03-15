@@ -81,7 +81,7 @@ endif()
 
 find_package(Qt${VTK_QT_VERSION} 
     CONFIG 
-	REQUIRED COMPONENTS Core Gui Widgets)
+	REQUIRED COMPONENTS Core Gui Widgets Charts)
 
 # ------------------------
 # Versioning
@@ -134,12 +134,8 @@ set(SOURCES
      src/ImageLoader.h
      src/SliceView.cpp
      src/SliceView.h
-    # src/ViewFactory.cpp 
-    # src/ViewFactory.h
      src/VolumeView.cpp 
      src/VolumeView.h
-     src/VolumeControlsWidget.cpp 
-     src/VolumeControlsWidget.h
      src/RangeSlider.cpp
      src/RangeSlider.h
      src/CollapsibleGroupBox.cpp
@@ -154,8 +150,8 @@ set(SOURCES
      src/SunkenSliderStyle.h
      src/ImageFrameWidget.cpp
      src/ImageFrameWidget.h
-     src/WindowLevelController.cpp
-	 src/WindowLevelController.h
+     src/WindowLevelWidget.cpp
+	 src/WindowLevelWidget.h
      src/WindowLevelBridge.cpp
      src/WindowLevelBridge.h
 	 src/ImageResliceHelper.cpp
@@ -166,10 +162,34 @@ set(SOURCES
      src/vtkImageOrthoPlanes.h
 	 src/JsonSettings.cpp
 	 src/JsonSettings.h
-	 src/vtkTransformWidget.cxx
-	 src/vtkTransformWidget.h
-	 src/vtkTransformRepresentation.cxx
-	 src/vtkTransformRepresentation.h
+     src/WorkflowStateMachine.cpp
+     src/WorkflowStateMachine.h
+     src/WorkflowPanelWidget.cpp
+     src/WorkflowPanelWidget.h
+     src/JsonUtils.cpp
+     src/JsonUtils.h
+     src/CropWidget.cpp
+     src/CropWidget.h
+     src/CropExporter.cpp
+     src/CropExporter.h
+     src/vtkSliceOutlineSource.cpp
+     src/vtkSliceOutlineSource.h
+     src/ImageInfoWidget.cpp
+     src/ImageInfoWidget.h
+     src/OtsuThresholdWorker.cpp
+     src/OtsuThresholdWorker.h
+     src/ScalarOpacityFunctionWidget.cpp
+     src/ScalarOpacityFunctionWidget.h
+     src/Logger.cpp
+     src/Logger.h
+     src/LandmarkWidget.cpp
+     src/LandmarkWidget.h
+     src/vtkImageSlicePointPlacer.cpp
+     src/vtkImageSlicePointPlacer.h
+     src/LandmarkHelper.cpp
+     src/LandmarkHelper.h
+     src/vtkLandmarkActor.cpp
+     src/vtkLandmarkActor.h
 )
 
 # Ensure automoc/autorcc/uic are enabled early
@@ -226,6 +246,7 @@ target_link_libraries(${PROJECT_NAME}
         Qt${VTK_QT_VERSION}::Core
         Qt${VTK_QT_VERSION}::Gui
         Qt${VTK_QT_VERSION}::Widgets
+        Qt${VTK_QT_VERSION}::Charts
         ${VTK_LIBRARIES}
         ${ITK_LIBRARIES}
         VTK::DICOM

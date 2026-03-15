@@ -28,6 +28,7 @@
 #include <QStyle>
 #include <QPropertyAnimation>
 #include <QEasingCurve>
+#include <QLayout>
 
 // CTK includes
 #include "CollapsibleGroupBox.h"
@@ -147,6 +148,7 @@ void CollapsibleGroupBoxPrivate::setChildVisibility(QWidget* childWidget)
 	}
 	this->ForcingVisibility = true;
 
+	// Decide target visibility based on collapsed state
 	bool visible = !q->collapsed();
 	// if the widget has been explicitly hidden, then hide it.
 	if (childWidget->property("visibilityToParent").isValid()
@@ -195,7 +197,6 @@ CollapsibleGroupBox::CollapsibleGroupBox(const QString& title, QWidget* _parent)
 //-----------------------------------------------------------------------------
 CollapsibleGroupBox::~CollapsibleGroupBox()
 {
-
 }
 
 //-----------------------------------------------------------------------------
@@ -267,29 +268,19 @@ void CollapsibleGroupBox::expand(bool _expand)
 		}
 	}
 
-	// Determine collapsed and expanded target heights
-	QStyleOptionGroupBox option;
-	this->initStyleOption(&option);
-	QRect labelRect = this->style()->subControlRect(
-	  QStyle::CC_GroupBox, &option, QStyle::SC_GroupBoxLabel, this);
-	const int collapsedTarget = labelRect.height() + d->CollapsedHeight;
-
 	if (_expand)
 	{
-		// Expand: animate from current to the previous content height (or a sane fallback)
-		const int current = this->height();
-		// Remember the original cap and then relax to animate
-		const int target = d->OldSize.isValid() ? d->OldSize.height()
-			: qMax(sizeHint().height(), collapsedTarget);
-		// Keep the original maximum to restore post animation
-		d->animateHeight(current, target, /*expanding*/ true);
+		this->setMaximumHeight(d->MaxHeight);
+		this->resize(d->OldSize);
 	}
 	else
 	{
-		// Collapse: remember current max cap to restore when expanding
 		d->MaxHeight = this->maximumHeight();
-		const int current = this->height();
-		d->animateHeight(current, collapsedTarget, /*expanding*/ false);
+		QStyleOptionGroupBox option;
+		this->initStyleOption(&option);
+		QRect labelRect = this->style()->subControlRect(
+			QStyle::CC_GroupBox, &option, QStyle::SC_GroupBoxLabel, this);
+		this->setMaximumHeight(labelRect.height() + d->CollapsedHeight);
 	}
 }
 
@@ -381,4 +372,40 @@ bool CollapsibleGroupBox::eventFilter(QObject* child, QEvent* e)
 		child->setProperty("visibilityToParent", false);
 	}
 	return this->QGroupBox::eventFilter(child, e);
+}
+
+//-----------------------------------------------------------------------------
+void CollapsibleGroupBox::setContentWidget(QWidget* widget)
+{
+	Q_D(CollapsibleGroupBox);
+	// Remove any existing layout and children except the title
+	QLayout* oldLayout = this->layout();
+	if (oldLayout) {
+		QLayoutItem* item;
+		while ((item = oldLayout->takeAt(0)) != nullptr) {
+			if (QWidget* w = item->widget()) {
+				w->setParent(nullptr);
+			}
+			delete item;
+		}
+		delete oldLayout;
+	}
+	if (widget) {
+		widget->setParent(this);
+		auto* lay = new QVBoxLayout();
+		lay->setContentsMargins(0, 0, 0, 0);
+		lay->addWidget(widget);
+		this->setLayout(lay);
+
+		// Ensure layout metrics are computed now so OldSize gets a sensible value.
+		// adjustSize() and activate() help compute sizeHints/geometry for children
+		// even if the widget hasn't been shown yet.
+		this->layout()->activate();
+		this->adjustSize();
+
+		// Initialize OldSize so first programmatic expand has a reasonable target.
+		// If the group is not yet shown this will be based on sizeHint/adjustSize;
+		// later collapses will overwrite OldSize with the real on-screen size.
+		d->OldSize = this->size();
+	}
 }

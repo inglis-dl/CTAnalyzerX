@@ -277,7 +277,7 @@ void ImageFrameWidget::render()
 	// Ensure orientation marker exists and is attached to the interactor before render.
 	ensureOrientationMarkerInitialized();
 
-	if (auto* rw = getRenderWindow()) {
+	if (auto* rw = renderWindow()) {
 		if (auto* grw = vtkGenericOpenGLRenderWindow::SafeDownCast(rw)) {
 			if (!grw->GetReadyForRendering()) {
 				return; // avoid rendering before a current context exists
@@ -334,7 +334,7 @@ void ImageFrameWidget::notifyViewOrientationChanged()
 	emit viewOrientationChanged(m_viewOrientation);
 }
 
-vtkRenderWindow* ImageFrameWidget::getRenderWindow() const
+vtkRenderWindow* ImageFrameWidget::renderWindow() const
 {
 	return this->m_renderWindow;
 }
@@ -453,6 +453,14 @@ void ImageFrameWidget::computeShiftScaleFromInput()
 		}
 	}
 
+	// mapped = (native + shift) * scale
+	double a = (m_scalarRangeMin + m_scalarShift) * m_scalarScale;
+	double b = (m_scalarRangeMax + m_scalarShift) * m_scalarScale;
+	if (b < a) std::swap(a, b);
+
+	m_mappedDataMin = a;
+	m_mappedDataMax = b;
+
 	// Program the shared filter (it already outputs unsigned short)
 	m_shiftScaleFilter->SetShift(m_scalarShift);
 	m_shiftScaleFilter->SetScale(m_scalarScale);
@@ -474,6 +482,10 @@ void ImageFrameWidget::onSelectionChanged(bool selected)
 			iren->Enable();
 		}
 	}
+
+	// Note: The base class SelectionFrameWidget::setSelected() already emits
+	// selectedChanged(bool) signal, so we don't need to emit it again here.
+	// This callback is triggered AFTER the signal has been emitted.
 }
 
 void ImageFrameWidget::resetWindowLevel()
@@ -555,6 +567,12 @@ void ImageFrameWidget::cacheImageGeometry()
 	m_imageData->GetExtent(m_extent);
 	m_imageData->GetSpacing(m_spacing);
 	m_imageData->GetOrigin(m_origin);
+
+	// Emit a generic extents-changed signal for any ImageFrameWidget-derived view.
+	// m_extent layout: [xmin, xmax, ymin, ymax, zmin, zmax]
+	emit imageExtentsChanged(m_extent[0], m_extent[1],
+							 m_extent[2], m_extent[3],
+							 m_extent[4], m_extent[5]);
 }
 
 void ImageFrameWidget::refreshEndpointFromUpstream()

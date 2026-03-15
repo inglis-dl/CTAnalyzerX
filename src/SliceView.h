@@ -18,13 +18,19 @@
 class vtkEventQtSlotConnect;
 class vtkObject; // forward declare for slot
 class QLineEdit;
-class QLabel;    // added
+class QLabel;
+class vtkImageSlicePointPlacer;
+class vtkSliceOutlineSource;
+class vtkPolyDataMapper;
+class vtkActor;
 
 namespace Ui { class SliceView; }
 
 class SliceView : public ImageFrameWidget
 {
 	Q_OBJECT
+		Q_PROPERTY(bool outlineVisible READ outlineVisible WRITE setOutlineVisible)
+		Q_PROPERTY(QColor outlineColor READ outlineColor WRITE setOutlineColor NOTIFY outlineColorChanged)
 
 public:
 	explicit SliceView(QWidget* parent = nullptr, ViewOrientation orientation = VIEW_ORIENTATION_XY);
@@ -54,8 +60,16 @@ public:
 	// Expose resetWindowLevel as public so LightboxWidget can call it
 	void resetWindowLevel() override;
 
+	bool outlineVisible() const { return m_outlineVisible; }
+	QColor outlineColor() const { return m_outlineColor; }
+
+	vtkImageSlicePointPlacer* pointPlacer() const;
+
 public slots:
 	void updateData() override;
+	void setOutlineVisible(bool visible);
+	void setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int zMin, int zMax);
+	void setOutlineColor(const QColor& color);
 
 signals:
 	void sliceChanged(int);
@@ -63,6 +77,7 @@ signals:
 	// Emitted when the user requests a reset (e.g. presses 'r').  LightboxWidget
 	// or a central controller should perform the coordinated reset on all views.
 	void requestResetWindowLevel();
+	void outlineColorChanged(const QColor& color);
 
 protected:
 	void resetCamera() override;
@@ -93,11 +108,22 @@ private:
 	double m_savedMappedLevel = std::numeric_limits<double>::quiet_NaN();
 	bool m_hasSavedState = false;
 
-	vtkSmartPointer<vtkInteractorStyleImage> interactorStyle;
-	vtkSmartPointer<vtkImageSliceMapper> sliceMapper;
-	vtkSmartPointer<vtkImageSlice> imageSlice;
-	vtkSmartPointer<vtkImageProperty> imageProperty;
-	vtkSmartPointer<vtkEventQtSlotConnect> qvtkConnection;
+	vtkSmartPointer<vtkInteractorStyleImage> m_interactorStyle;
+	vtkSmartPointer<vtkImageSliceMapper> m_sliceMapper;
+	vtkSmartPointer<vtkImageSlice> m_imageSlice;
+	vtkSmartPointer<vtkImageProperty> m_imageProperty;
+	vtkSmartPointer<vtkEventQtSlotConnect> m_qvtkConnection;
+
+	vtkSmartPointer<vtkImageSlicePointPlacer> m_pointPlacer;
+
+	vtkSmartPointer<vtkSliceOutlineSource> m_outlineSource;
+	vtkSmartPointer<vtkPolyDataMapper>   m_outlineMapper;
+	vtkSmartPointer<vtkActor>            m_outlineActor;
+	bool m_outlineVisible = false;
+	QColor m_outlineColor = QColor(255, 0, 0);
+
+	bool m_requestedCroppingEnabled = false;
+	int  m_requestedCroppingRegion[6] = { 0, -1, 0, -1, 0, -1 };
 
 	QLineEdit* m_editSliceIndex = nullptr;
 	QLabel* m_labelMinSlice = nullptr;

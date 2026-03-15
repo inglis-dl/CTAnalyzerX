@@ -5,38 +5,34 @@
 #include "JsonSettings.h" // Add this include at the top of the file
 
 #include <QAction>
-#include <QMenu>
-#include <QFrame>
-#include <QTimer>
-#include <QLayout>
-#include <QSizePolicy>
 #include <QDebug>
+#include <QFrame>
+#include <QLayout>
+#include <QMenu>
+#include <QSizePolicy>
+#include <QTimer>
 
-#include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkRenderer.h>
-#include <vtkRenderWindowInteractor.h>
-#include <vtkGPUVolumeRayCastMapper.h>
-#include <vtkVolume.h>
-#include <vtkVolumeProperty.h>
-#include <vtkImageData.h>
-#include <vtkImageSlice.h>
-#include <vtkInteractorStyleTrackballCamera.h>
-#include <vtkColorTransferFunction.h>
-#include <vtkPiecewiseFunction.h>
+#include <vtkActor.h>
 #include <vtkCamera.h>
-#include <vtkMath.h>
-#include <vtkProperty.h>
+#include <vtkColorTransferFunction.h>
 #include <vtkCommand.h>
 #include <vtkEventQtSlotConnect.h>
+#include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkGPUVolumeRayCastMapper.h>
+#include <vtkImageData.h>
 #include <vtkImageShiftScale.h>
-#include <vtkImageSliceMapper.h>
-#include <vtkImageProperty.h>
+#include <vtkInteractorStyleTrackballCamera.h>
+#include <vtkMath.h>
+#include <vtkPiecewiseFunction.h>
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
-#include <vtkActor.h>
-
-#include <cmath> // added for std::lround
-
+#include <vtkProperty.h>
+#include <vtkRenderer.h>
+#include <vtkRenderWindowInteractor.h>
+#include <vtkTextureObject.h>
+#include <vtkVolume.h>
+#include <vtkVolumeOutlineSource.h>
+#include <vtkVolumeProperty.h>
 
 VolumeView::VolumeView(QWidget* parent)
 	: ImageFrameWidget(parent)
@@ -71,7 +67,9 @@ VolumeView::VolumeView(QWidget* parent)
 	// Volume pipeline core
 	m_mapper = vtkSmartPointer<vtkGPUVolumeRayCastMapper>::New();
 	m_mapper->SetBlendModeToComposite();
-	m_mapper->SetAutoAdjustSampleDistances(1);
+	m_mapper->AutoAdjustSampleDistancesOn(); // for faster rendering turn auto adjust on and set a desired frame rate
+	m_mapper->LockSampleDistanceToInputSpacingOn();
+
 	m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
 	m_volumeProperty = vtkSmartPointer<vtkVolumeProperty>::New();
@@ -86,6 +84,7 @@ VolumeView::VolumeView(QWidget* parent)
 	m_actualColorTF = vtkSmartPointer<vtkColorTransferFunction>::New();
 	m_colorTF = vtkSmartPointer<vtkColorTransferFunction>::New();
 	m_actualScalarOpacity = vtkSmartPointer<vtkPiecewiseFunction>::New();
+	m_actualScalarOpacity->AllowDuplicateScalarsOn();
 	m_scalarOpacity = vtkSmartPointer<vtkPiecewiseFunction>::New();
 
 	initializeDefaultTransferFunctions();
@@ -117,20 +116,40 @@ VolumeView::VolumeView(QWidget* parent)
 	}
 
 	// at end of createSliceOutlineActors(), after XY/XZ/YZ props are prepared
-	if (m_orthoPlanes) {
-		vtkActor* ax = m_orthoPlanes->GetOutlineActorX(); // X: YZ plane
-		vtkActor* ay = m_orthoPlanes->GetOutlineActorY(); // Y: XZ plane
-		vtkActor* az = m_orthoPlanes->GetOutlineActorZ(); // Z: XY plane
-		if (ax) {
-			ax->GetProperty()->SetColor(1.0, 0.0, 0.0);
-		}
-		if (ay) {
-			ay->GetProperty()->SetColor(0.0, 1.0, 0.0);
-		}
-		if (az) {
-			az->GetProperty()->SetColor(0.0, 0.0, 1.0);
-		}
+	vtkActor* ax = m_orthoPlanes->GetOutlineActorX(); // X: YZ plane
+	vtkActor* ay = m_orthoPlanes->GetOutlineActorY(); // Y: XZ plane
+	vtkActor* az = m_orthoPlanes->GetOutlineActorZ(); // Z: XY plane
+	if (ax) {
+		ax->GetProperty()->SetColor(1.0, 0.0, 0.0);
 	}
+	if (ay) {
+		ay->GetProperty()->SetColor(0.0, 1.0, 0.0);
+	}
+	if (az) {
+		az->GetProperty()->SetColor(0.0, 0.0, 1.0);
+	}
+
+	m_outlineSource = vtkSmartPointer<vtkVolumeOutlineSource>::New();
+	m_outlineMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+	m_outlineActor = vtkSmartPointer<vtkActor>::New();
+
+	m_outlineSource->SetVolumeMapper(m_mapper);
+	m_outlineSource->GenerateOutlineOn();
+	m_outlineSource->GenerateFacesOff();
+	m_outlineSource->SetColor(1, 0, 0);
+
+	m_outlineMapper->SetInputConnection(m_outlineSource->GetOutputPort());
+	m_outlineMapper->ScalarVisibilityOff();
+
+	m_outlineActor->SetMapper(m_outlineMapper);
+
+	m_outlineVisible = false;
+	m_outlineActor->SetVisibility(m_outlineVisible);
+	m_outlineActor->GetProperty()->SetColor(1, 0, 0);
+
+	m_renderer->AddViewProp(m_outlineActor);
+
+	m_minTFNodeX = 1.0;
 }
 
 VolumeView::~VolumeView()
@@ -179,19 +198,39 @@ void VolumeView::createMenuAndActions()
 	}
 }
 
+vtkPiecewiseFunction* VolumeView::actualScalarOpacity() const
+{
+	return m_actualScalarOpacity.GetPointer();
+}
+
 void VolumeView::initializeDefaultTransferFunctions()
 {
+	const double range[2] = { m_scalarRangeMin, m_scalarRangeMax };
+
 	// Default grayscale in "actual" domain; mapped TFs are derived later
 	m_actualColorTF->RemoveAllPoints();
-	m_actualColorTF->AddRGBPoint(0.0, 0.0, 0.0, 0.0);
-	m_actualColorTF->AddRGBPoint(65535.0, 1.0, 1.0, 1.0);
+	m_actualColorTF->AddRGBPoint(range[0], 0.0, 0.0, 0.0);
+	m_actualColorTF->AddRGBPoint(range[1], 1.0, 1.0, 1.0);
 	m_actualColorTF->Build();
 
-	// Scalar opacity default to simple 0..1 ramp
+	double window = range[1] - range[0];
+
+	// Window/level boundaries
+	const double half = window * 0.5;
+	const double lower = std::max(range[0], half - std::fabs(half));
+	const double upper = std::min(range[1], half + std::fabs(half));
+
+	// Opacity values based on window sign
+	const double lowVal = (window < 0.0) ? 1.0 : 0.0;
+	const double highVal = 1.0 - lowVal;
+
 	m_actualScalarOpacity->RemoveAllPoints();
-	m_actualScalarOpacity->AddPoint(0.0, 0.0);
-	m_actualScalarOpacity->AddPoint(65535.0, 1.0);
-	m_actualScalarOpacity->Modified();
+
+	// edge order: min -> lower -> upper -> max
+	m_actualScalarOpacity->AddPoint(m_scalarRangeMin, lowVal);
+	m_actualScalarOpacity->AddPoint(lower, lowVal);
+	m_actualScalarOpacity->AddPoint(upper, highVal);
+	m_actualScalarOpacity->AddPoint(m_scalarRangeMax, highVal);
 
 	// Initialize mapped TFs to match actual until we know shift/scale
 	m_colorTF->DeepCopy(m_actualColorTF);
@@ -221,6 +260,9 @@ void VolumeView::updateData()
 	const int cz = (m_extent[4] + m_extent[5]) / 2;
 
 	if (!m_imageInitialized) {
+
+
+
 		if (m_orthoPlanes) {
 			// Ensure the ortho-planes source is wired to the shared shifted/scaled image
 			m_orthoPlanes->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
@@ -239,14 +281,25 @@ void VolumeView::updateData()
 		m_imageInitialized = true;
 	}
 
-	// Rebuild the ACTUAL color TF to span the native image range (not 0..65535)
+	// Rebuild the actual color TF to span the native image range
 	const double diff = m_scalarRangeMax - m_scalarRangeMin;
-	const double lb = diff > 0.0 ? (m_scalarRangeMin + 0.01 * diff) : m_scalarRangeMin;
-	const double ub = diff > 0.0 ? (m_scalarRangeMax - 0.01 * diff) : m_scalarRangeMax;
+
+	// Configure mapper memory limits now that OpenGL context is ready
+	if (m_mapper && m_renderWindow) {
+		const double maxWidth = std::max(vtkTextureObject::GetMaximumTextureSize(m_renderWindow), 1024);
+		m_minTFNodeX = diff / maxWidth;
+	}
+
+	const double lb = m_scalarRangeMin + 0.01 * diff;
+	const double ub = m_scalarRangeMax - 0.01 * diff;
+
+	// Handle the degenerate case (diff == 0)
+	const double lower = (diff > 0.0) ? lb : m_scalarRangeMin;
+	const double upper = (diff > 0.0) ? ub : m_scalarRangeMax;
 
 	m_actualColorTF->RemoveAllPoints();
-	m_actualColorTF->AddRGBPoint(lb, 0.0, 0.0, 0.0);
-	m_actualColorTF->AddRGBPoint(ub, 1.0, 1.0, 1.0);
+	m_actualColorTF->AddRGBPoint(lower, 0.0, 0.0, 0.0);
+	m_actualColorTF->AddRGBPoint(upper, 1.0, 1.0, 1.0);
 	m_actualColorTF->Build();
 
 	// Remap ACTUAL -> MAPPED using current shift/scale, then attach to property
@@ -293,25 +346,111 @@ void VolumeView::updateData()
 
 void VolumeView::setColorWindowLevel(double window, double level)
 {
-	// Implement like vtkVolumeScene::DoWindowLevel, but in the native scalar domain.
-	// Map to four points across [lower, upper] with outer plateaus.
-	const double lower = level - 0.5 * std::fabs(window);
-	const double upper = level + 0.5 * std::fabs(window);
+	// Compute window bounds in native scalar domain
+	const double half = 0.5 * std::fabs(window);
+	double lower = std::max(level - half, m_scalarRangeMin);
+	double upper = std::min(level + half, m_scalarRangeMax);
 
-	const double lb = std::max(lower, m_scalarRangeMin);
-	const double ub = std::min(upper, m_scalarRangeMax);
+	// If the ramp collapsed, enforce a minimum width
+	if (lower == upper) {
+		const double eps = 1e-6 * (m_scalarRangeMax - m_scalarRangeMin);
+		lower = std::max(m_scalarRangeMin, lower - eps);
+		upper = std::min(m_scalarRangeMax, upper + eps);
+	}
 
-	// Construct the "actual" scalar opacity 4-point function
+	// enforce minimum spacing between all 4 nodes
+	const double minNodeSpacing = m_minTFNodeX;
+	const double rangeSpan = m_scalarRangeMax - m_scalarRangeMin;
+	const double minRequiredSpan = 3.0 * minNodeSpacing; // 3 gaps between 4 nodes
+
+	// Strategy: Always use 4 nodes, but adjust spacing when constrained
+	if (rangeSpan < minRequiredSpan) {
+		// Range too small for ideal spacing - distribute nodes evenly with max possible spacing
+		const double actualSpacing = rangeSpan / 3.0; // Best we can do
+
+		lower = m_scalarRangeMin + actualSpacing;
+		upper = m_scalarRangeMax - actualSpacing;
+	}
+	else {
+		// Sufficient range - enforce minimum spacing constraints
+
+		// Constraint 1: Ensure spacing from min (node 0) to lower (node 1)
+		const double minLowerBound = m_scalarRangeMin + minNodeSpacing;
+		if (lower < minLowerBound) {
+			lower = minLowerBound;
+		}
+
+		// Constraint 2: Ensure spacing from upper (node 2) to max (node 3)
+		const double maxUpperBound = m_scalarRangeMax - minNodeSpacing;
+		if (upper > maxUpperBound) {
+			upper = maxUpperBound;
+		}
+
+		// Constraint 3: Ensure spacing between lower (node 1) and upper (node 2)
+		const double currentSpacing = upper - lower;
+		if (currentSpacing < minNodeSpacing) {
+			// Nodes too close - need to push them apart
+			// Strategy: expand symmetrically from midpoint
+			const double midpoint = 0.5 * (lower + upper);
+			const double halfSpacing = 0.5 * minNodeSpacing;
+
+			double adjustedLower = midpoint - halfSpacing;
+			double adjustedUpper = midpoint + halfSpacing;
+
+			// Re-check boundary constraints after expansion
+			if (adjustedLower < minLowerBound) {
+				// Hit lower boundary - shift both nodes up
+				adjustedLower = minLowerBound;
+				adjustedUpper = adjustedLower + minNodeSpacing;
+
+				// Verify upper doesn't exceed max bound
+				if (adjustedUpper > maxUpperBound) {
+					// Can't maintain spacing - use max available space
+					adjustedUpper = maxUpperBound;
+					adjustedLower = adjustedUpper - minNodeSpacing;
+
+					// Final sanity check
+					if (adjustedLower < minLowerBound) {
+						// Impossible situation - use whatever space we have
+						adjustedLower = minLowerBound;
+					}
+				}
+			}
+			else if (adjustedUpper > maxUpperBound) {
+				// Hit upper boundary - shift both nodes down
+				adjustedUpper = maxUpperBound;
+				adjustedLower = adjustedUpper - minNodeSpacing;
+
+				// Verify lower doesn't go below min bound
+				if (adjustedLower < minLowerBound) {
+					// Can't maintain spacing - use max available space
+					adjustedLower = minLowerBound;
+				}
+			}
+
+			lower = adjustedLower;
+			upper = adjustedUpper;
+		}
+	}
+
+	// Final validation: verify all spacings
+	const double spacing01 = lower - m_scalarRangeMin;
+	const double spacing12 = upper - lower;
+	const double spacing23 = m_scalarRangeMax - upper;
+
+	// Determine plateau values based on window sign
+	double lowVal = (window < 0.0) ? 1.0 : 0.0;
+	double highVal = 1.0 - lowVal;
+
+	if (lowVal > highVal) {
+		std::swap(lowVal, highVal);
+	}
+
 	m_actualScalarOpacity->RemoveAllPoints();
-	// edge order: min -> lb -> ub -> max
-	const double lowVal = (window < 0.0) ? 1.0 : 0.0;
-	const double highVal = (window < 0.0) ? 0.0 : 1.0;
-
-	m_actualScalarOpacity->AddPoint(m_scalarRangeMin, lowVal);
-	m_actualScalarOpacity->AddPoint(lb, lowVal);
-	m_actualScalarOpacity->AddPoint(ub, highVal);
-	m_actualScalarOpacity->AddPoint(m_scalarRangeMax, highVal);
-	m_actualScalarOpacity->Modified();
+	m_actualScalarOpacity->AddPoint(m_scalarRangeMin, lowVal);  // Node 0 (fixed at min)
+	m_actualScalarOpacity->AddPoint(lower, lowVal);             // Node 1 (moveable)
+	m_actualScalarOpacity->AddPoint(upper, highVal);            // Node 2 (moveable)
+	m_actualScalarOpacity->AddPoint(m_scalarRangeMax, highVal); // Node 3 (fixed at max)
 
 	// Recompute mapped TFs using current shift/scale
 	updateMappedOpacityFromActual();
@@ -321,6 +460,8 @@ void VolumeView::setColorWindowLevel(double window, double level)
 	// For color TF, keep grayscale but ensure mapping is current
 	updateMappedColorsFromActual();
 	m_volumeProperty->SetColor(m_colorTF);
+
+	emit actualScalarOpacityUpdated();
 
 	setSliceWindowLevelNative(window, level);
 
@@ -481,6 +622,8 @@ void VolumeView::setCroppingRegion(int xMin, int xMax, int yMin, int yMax, int z
 		physMin[1], physMax[1],
 		physMin[2], physMax[2]
 	);
+
+	m_outlineSource->Update();
 
 	render();
 }
@@ -673,41 +816,82 @@ void VolumeView::setViewOrientation(ImageFrameWidget::ViewOrientation orientatio
 // Map actual -> mapped for opacity using current shift/scale (like vtkVolumeScene::UpdateOpacityFunction)
 void VolumeView::updateMappedOpacityFromActual()
 {
-	// Rebuild target function to match the actual function's nodes
+	if (!m_actualScalarOpacity || !m_scalarOpacity) return;
+
+	// Fast-path: no mapping needed: copy whole function quickly
+	if (m_scalarShift == 0.0 && m_scalarScale == 1.0) {
+		m_scalarOpacity->DeepCopy(m_actualScalarOpacity);
+		m_scalarOpacity->Modified();
+		return;
+	}
+
+	// Rebuild target function to match the actual function's nodes with affine-mapped x
 	m_scalarOpacity->RemoveAllPoints();
 
 	const int n = m_actualScalarOpacity->GetSize();
+	if (n <= 0) {
+		m_scalarOpacity->Modified();
+		return;
+	}
+
 	double node[4];
 	for (int i = 0; i < n; ++i) {
 		m_actualScalarOpacity->GetNodeValue(i, node); // node[0]=x, node[1]=y, node[2..3] tension/continuity
-		// apply (x + shift) * scale to map into the filter's post-mapping domain
 		const double xMapped = (node[0] + m_scalarShift) * m_scalarScale;
 		m_scalarOpacity->AddPoint(xMapped, node[1], node[2], node[3]);
 	}
+
 	m_scalarOpacity->Modified();
 }
 
 // Map actual -> mapped for color using current shift/scale (like vtkVolumeScene::UpdateColorFunction)
 void VolumeView::updateMappedColorsFromActual()
 {
-	// Keep color space consistent
+	if (!m_actualColorTF || !m_colorTF) return;
+
+	// Fast-path: if there is no mapping to apply, just copy the actual TF (much cheaper than per-point
+	// iteration + Add*Point calls). DeepCopy copies full internal state; call Build() to be safe.
+	if (m_scalarShift == 0.0 && m_scalarScale == 1.0) {
+		m_colorTF->DeepCopy(m_actualColorTF);
+		m_colorTF->Build();
+		return;
+	}
+
+	// Ensure color space is synced only when necessary (avoids redundant work)
+	const int actualSpace = m_actualColorTF->GetColorSpace();
+	if (m_colorTF->GetColorSpace() != actualSpace)
+		m_colorTF->SetColorSpace(actualSpace);
+
+	// Rebuild target function applying affine map to X values
 	m_colorTF->RemoveAllPoints();
-	m_colorTF->SetColorSpace(m_actualColorTF->GetColorSpace());
 
 	const int n = m_actualColorTF->GetSize();
-	double node[6];
-	const bool useRGB = (m_actualColorTF->GetColorSpace() == 0);
+	if (n <= 0) {
+		m_colorTF->Build();
+		return;
+	}
 
-	for (int i = 0; i < n; ++i) {
-		m_actualColorTF->GetNodeValue(i, node); // node[0]=x, node[1..3]=rgb/hsv, node[4..5]=mid/sharp
-		const double xMapped = (node[0] + m_scalarShift) * m_scalarScale;
-		if (useRGB) {
+	double node[6];
+
+	// Pull out local copies to avoid member access overhead inside the loop
+	const bool useRGB = (actualSpace == VTK_CTF_RGB);
+
+	if (useRGB) {
+		for (int i = 0; i < n; ++i) {
+			m_actualColorTF->GetNodeValue(i, node); // node[0]=x, node[1..3]=rgb, node[4..5]=mid/sharp
+			const double xMapped = (node[0] + m_scalarShift) * m_scalarScale;
 			m_colorTF->AddRGBPoint(xMapped, node[1], node[2], node[3], node[4], node[5]);
 		}
-		else {
+	}
+	else {
+		for (int i = 0; i < n; ++i) {
+			m_actualColorTF->GetNodeValue(i, node); // node[0]=x, node[1..3]=hsv, node[4..5]=mid/sharp
+			const double xMapped = (node[0] + m_scalarShift) * m_scalarScale;
 			m_colorTF->AddHSVPoint(xMapped, node[1], node[2], node[3], node[4], node[5]);
 		}
 	}
+
+	// Rebuild internal table used by the volume mapper
 	m_colorTF->Build();
 }
 
@@ -1032,3 +1216,31 @@ void VolumeView::writeSettings() const
 	settings.sync();
 }
 
+void VolumeView::setOutlineVisible(bool visible)
+{
+	m_outlineActor->SetVisibility(visible);
+	m_outlineVisible = visible;
+	render();
+}
+
+void VolumeView::setOutlineColor(const QColor& color)
+{
+	if (!m_outlineActor) return;
+
+	// Normalize QColor to vtk prop range [0..1]
+	const double r = color.redF();
+	const double g = color.greenF();
+	const double b = color.blueF();
+
+	vtkProperty* prop = m_outlineActor->GetProperty();
+	if (prop) {
+		prop->SetColor(r, g, b);
+	}
+	// update stored value and notify listeners if changed
+	if (m_outlineColor != color) {
+		m_outlineColor = color;
+		emit outlineColorChanged(m_outlineColor);
+	}
+	// If visible, refresh rendering to show change immediately
+	if (m_outlineVisible) render();
+}

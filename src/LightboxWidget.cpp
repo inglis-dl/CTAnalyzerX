@@ -1,31 +1,35 @@
 #include "LightboxWidget.h"
+
 #include "SliceView.h"
-#include "VolumeView.h"
 #include "SelectionFrameWidget.h"
-#include "WindowLevelController.h"
+#include "VolumeView.h"
 #include "WindowLevelBridge.h"
+#include "WindowLevelWidget.h"
 
-#include <vtkImageSinusoidSource.h>
-#include <vtkSmartPointer.h>
+#include <vtkAlgorithmOutput.h>
 #include <vtkImageProperty.h>
+#include <vtkImageSinusoidSource.h>
+#include <vtkPiecewiseFunction.h>
+#include <vtkSmartPointer.h>
 
-#include <QShowEvent>
-#include <QTimer>
-#include <QLabel>
-#include <QPropertyAnimation>
-#include <QEasingCurve>
-#include <QParallelAnimationGroup>
-#include <array>
-#include <cmath>
 #include <QColor>
-
+#include <QDateTime>
 #include <QDragEnterEvent>
 #include <QDropEvent>
-#include <QMimeData>
-
+#include <QEasingCurve>
 #include <QGridLayout>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QLabel>
 #include <QLayoutItem>
+#include <QMimeData>
+#include <QParallelAnimationGroup>
+#include <QPropertyAnimation>
+#include <QShowEvent>
+#include <QTimer>
 
+#include <array>
+#include <cmath>
 
 namespace {
 	void swapWidgets(QGridLayout* grid, QWidget* a, QWidget* b)
@@ -65,11 +69,23 @@ namespace {
 	}
 } // namespace
 
-
 LightboxWidget::LightboxWidget(QWidget* parent)
 	: QWidget(parent)
 {
 	ui.setupUi(this);
+
+	// Forward image extents from any child frame to LightboxWidget so it can mediate updates.
+	auto forwardExtentsFrom = [this](ImageFrameWidget* v) {
+		if (!v) return;
+		// connect derived-class emission to LightboxWidget forwarding signal
+		connect(v, &ImageFrameWidget::imageExtentsChanged,
+				this, &LightboxWidget::imageExtentsChanged, Qt::UniqueConnection);
+		};
+
+	forwardExtentsFrom(ui.YZView);
+	forwardExtentsFrom(ui.XZView);
+	forwardExtentsFrom(ui.XYView);
+	forwardExtentsFrom(ui.volumeView);
 
 	// Allow drag/drop reordering
 	this->setAcceptDrops(true);
@@ -91,26 +107,47 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 	// Optional: choose a default selected/highlighted view
 	if (ui.XYView) ui.XYView->setSelected(true);
 
-	// Minimal, safe encapsulation:
-	// create WindowLevelController and WindowLevelBridge here, parented to this widget.
-	// MainWindow will only take the controller widget to insert into its layout.
-	if (!m_wlController) {
-		m_wlController = new WindowLevelController(this);
-	}
+	// Create the WindowLevelBridge now (bridge is owned by Lightbox)
 	if (!m_wlBridge) {
-		// Bridge targets the volume view; slice-to-bridge connections are wired below.
 		m_wlBridge = new WindowLevelBridge(getVolumeView(), nullptr, this);
 	}
 
-	// Connect controller -> local propagator (so controller updates slices + volume)
-	connect(m_wlController, &WindowLevelController::windowLevelChanged, this, [this](double w, double l) {
+	// NOTE:
+	// Do NOT create a WindowLevelWidget here. The controller may be provided by
+	// the WorkflowPanelWidget UI and registered via setWindowLevelWidget().
+	// All controller-related wiring is performed in setWindowLevelWidget().
+	// This avoids duplicate controllers and duplicate connections.
+}
+
+// New: install an externally-owned WindowLevelWidget instance (Lightbox does not take ownership)
+void LightboxWidget::setWindowLevelWidget(WindowLevelWidget* ctrl)
+{
+	// If the controller is identical, nothing to do.
+	if (m_wlController == ctrl) return;
+
+	// Disconnect and unwire previous controller if any
+	if (m_wlController) {
+		disconnect(m_wlController, nullptr, this, nullptr);
+		// Do not delete the controller; its lifetime is owned by the WorkflowPanelWidget (caller).
+		m_wlController = nullptr;
+	}
+
+	// Adopt new controller reference (Lightbox does NOT take ownership)
+	m_wlController = ctrl;
+	if (!m_wlController) return;
+
+	// Ensure we have a bridge (bridge remains parented to this Lightbox)
+	if (!m_wlBridge) {
+		m_wlBridge = new WindowLevelBridge(getVolumeView(), nullptr, this);
+	}
+
+	// Controller -> Lightbox propagation (apply to volume via bridge and to all slice views)
+	connect(m_wlController, &WindowLevelWidget::windowLevelChanged, this, [this](double w, double l) {
 		if (m_propagatingWindowLevel) return;
 		m_propagatingWindowLevel = true;
 
-		// Apply to volume via bridge (native domain)
 		if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
 
-		// Also apply to all slice views (mapped via each slice's mapping)
 		if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
 		if (auto* xz = getXZView()) xz->setWindowLevelNative(w, l);
 		if (auto* xy = getXYView()) xy->setWindowLevelNative(w, l);
@@ -118,11 +155,10 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 		m_propagatingWindowLevel = false;
 	}, Qt::UniqueConnection);
 
-	connect(m_wlController, &WindowLevelController::windowLevelCommitted, this, [this](double w, double l) {
+	connect(m_wlController, &WindowLevelWidget::windowLevelCommitted, this, [this](double w, double l) {
 		if (m_propagatingWindowLevel) return;
 		m_propagatingWindowLevel = true;
 
-		// call the bridge's changed handler directly (committed semantics treated same)
 		if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
 
 		if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
@@ -132,22 +168,20 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 		m_propagatingWindowLevel = false;
 	}, Qt::UniqueConnection);
 
-	// Keep controller UI in sync when the active VolumeView emits windowLevelChanged
+	// Controller reset -> Lightbox reset propagation
+	connect(m_wlController, &WindowLevelWidget::requestResetWindowLevel,
+			this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+
+	// Volume -> controller update (keep controller UI synchronized if the volume changes WL)
 	if (auto* vol = getVolumeView()) {
 		connect(vol, &VolumeView::windowLevelChanged, this, [this](double w, double l) {
-			// When a VolumeView resets WL (e.g. user pressed 'r' in Volume mode)
-			// we must propagate that reset to the controller, the bridge (volume),
-			// and all slice views so they stay synchronized.
 			if (m_propagatingWindowLevel) return;
 			m_propagatingWindowLevel = true;
 
-			// Update controller UI
 			if (m_wlController) {
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
 			}
-
-			// Notify bridge (volume side) and all slices (native-domain mapping per slice)
 			if (m_wlBridge) m_wlBridge->onWindowLevelChanged(w, l);
 			if (auto* yz = getYZView()) yz->setWindowLevelNative(w, l);
 			if (auto* xz = getXZView()) xz->setWindowLevelNative(w, l);
@@ -155,30 +189,55 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 
 			m_propagatingWindowLevel = false;
 		}, Qt::UniqueConnection);
+
+		if (m_wlController) {
+			ScalarOpacityFunctionWidget* scalarWidget = m_wlController->scalarOpacityFunctionWidget();
+			vtkPiecewiseFunction* master = vol->actualScalarOpacity();
+
+			double range[2] = { std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() };
+			if (vol->imageData()) {
+				vol->imageData()->GetScalarRange(range);
+			}
+			else if (master) {
+				double node[4];
+				for (int i = 0; i < master->GetSize(); ++i) {
+					master->GetNodeValue(i, node);
+					range[0] = std::min(range[0], node[0]);
+					range[1] = std::max(range[1], node[0]);
+				}
+			}
+			if (std::isfinite(range[0]) || std::isfinite(range[1])) {
+				range[0] = std::isfinite(range[0]) ? range[0] : 0.0;
+				range[1] = std::isfinite(range[1]) ? range[1] : 1.0;
+			}
+
+			scalarWidget->setSceneXRange(range[0], range[1]);
+			scalarWidget->setFunction(master);
+
+			connect(vol, &VolumeView::actualScalarOpacityUpdated, scalarWidget,
+				&ScalarOpacityFunctionWidget::updateFunction, Qt::UniqueConnection);
+		}
 	}
 
-	// Hook slice -> local propagator so slice-driven WL updates siblings + volume
+	// Hook slice -> local propagator so slice-driven WL updates siblings + volume + controller
 	if (auto* yz = getYZView()) {
 		connect(yz, &SliceView::windowLevelChanged, this, [this, yz](double w, double l) {
 			if (m_propagatingWindowLevel) return;
 			m_propagatingWindowLevel = true;
 
-			// Update volume via bridge
 			if (m_wlBridge) m_wlBridge->onWindowLevelFromSlice(w, l);
 
-			// Update controller UI so spinboxes reflect interactive slice changes
 			if (m_wlController) {
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
 			}
-
-			// Update other slices (slaves)
 			if (auto* xz = getXZView()) { if (xz != yz) xz->setWindowLevelNative(w, l); }
 			if (auto* xy = getXYView()) { if (xy != yz) xy->setWindowLevelNative(w, l); }
 
 			m_propagatingWindowLevel = false;
 		}, Qt::UniqueConnection);
 	}
+
 	if (auto* xz = getXZView()) {
 		connect(xz, &SliceView::windowLevelChanged, this, [this, xz](double w, double l) {
 			if (m_propagatingWindowLevel) return;
@@ -190,13 +249,13 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
 			}
-
 			if (auto* yz = getYZView()) { if (yz != xz) yz->setWindowLevelNative(w, l); }
 			if (auto* xy = getXYView()) { if (xy != xz) xy->setWindowLevelNative(w, l); }
 
 			m_propagatingWindowLevel = false;
 		}, Qt::UniqueConnection);
 	}
+
 	if (auto* xy = getXYView()) {
 		connect(xy, &SliceView::windowLevelChanged, this, [this, xy](double w, double l) {
 			if (m_propagatingWindowLevel) return;
@@ -208,7 +267,6 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 				m_wlController->setWindow(w);
 				m_wlController->setLevel(l);
 			}
-
 			if (auto* yz = getYZView()) { if (yz != xy) yz->setWindowLevelNative(w, l); }
 			if (auto* xz = getXZView()) { if (xz != xy) xz->setWindowLevelNative(w, l); }
 
@@ -216,19 +274,10 @@ LightboxWidget::LightboxWidget(QWidget* parent)
 		}, Qt::UniqueConnection);
 	}
 
-	// Wire controller reset request to propagate to our child views
-	connect(m_wlController, &WindowLevelController::requestResetWindowLevel,
-			this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
-
-	if (auto* yz = getYZView()) {
-		connect(yz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
-	}
-	if (auto* xz = getXZView()) {
-		connect(xz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
-	}
-	if (auto* xy = getXYView()) {
-		connect(xy, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
-	}
+	// Ensure reset requests from slices still reach Lightbox (idempotent because of UniqueConnection)
+	if (auto* yz = getYZView()) connect(yz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	if (auto* xz = getXZView()) connect(xz, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
+	if (auto* xy = getXYView()) connect(xy, &SliceView::requestResetWindowLevel, this, &LightboxWidget::resetWindowLevel, Qt::UniqueConnection);
 }
 
 void LightboxWidget::showEvent(QShowEvent* e)
@@ -241,6 +290,8 @@ void LightboxWidget::showEvent(QShowEvent* e)
 void LightboxWidget::setDefaultImage()
 {
 	// Provide a simple textured default image when no input is available.
+	// Produces a non-isotropic sinusoidal pattern for visual interest
+	// with output scalar range -255 to +255.
 	auto sinusoid = vtkSmartPointer<vtkImageSinusoidSource>::New();
 	sinusoid->SetPeriod(32);
 	sinusoid->SetPhase(0);
@@ -263,6 +314,65 @@ void LightboxWidget::setDefaultImage()
 		// Fallback: attach as a pipeline connection if output is not a concrete image.
 		setInputConnection(sinusoid->GetOutputPort(), true);
 	}
+
+	// Build JSON metadata for the synthetic default image and emit so ImageInfoWidget can update.
+	QJsonObject meta;
+	meta.insert(QStringLiteral("fileName"), QStringLiteral("memory"));
+	meta.insert(QStringLiteral("fileType"), QStringLiteral("Synthetic (sinusoid)"));
+	meta.insert(QStringLiteral("date"), QDateTime::currentDateTime().toString(Qt::ISODate));
+
+	if (img) {
+		// scalar range
+		double range[2] = { 0.0, 0.0 };
+		img->GetScalarRange(range);
+		QJsonArray rangeA;
+		rangeA.append(range[0]);
+		rangeA.append(range[1]);
+		meta.insert(QStringLiteral("range"), rangeA);
+
+		// dimensions
+		int dims[3] = { 0, 0, 0 };
+		img->GetDimensions(dims);
+		QJsonArray dimsA;
+		dimsA.append(dims[0]);
+		dimsA.append(dims[1]);
+		dimsA.append(dims[2]);
+		meta.insert(QStringLiteral("dims"), dimsA);
+
+		// origin
+		double origin[3] = { 0.0, 0.0, 0.0 };
+		img->GetOrigin(origin);
+		QJsonArray originA;
+		originA.append(origin[0]);
+		originA.append(origin[1]);
+		originA.append(origin[2]);
+		meta.insert(QStringLiteral("origin"), originA);
+
+		// spacing
+		double spacing[3] = { 1.0, 1.0, 1.0 };
+		img->GetSpacing(spacing);
+		QJsonArray spacingA;
+		spacingA.append(spacing[0]);
+		spacingA.append(spacing[1]);
+		spacingA.append(spacing[2]);
+		meta.insert(QStringLiteral("spacing"), spacingA);
+
+		// scalar type
+		const char* st = img->GetScalarTypeAsString();
+		if (st && *st) meta.insert(QStringLiteral("scalarType"), QString::fromUtf8(st));
+		else meta.insert(QStringLiteral("scalarType"), QStringLiteral("unknown"));
+	}
+	else {
+		// fallback placeholders if concrete data is not available
+		meta.insert(QStringLiteral("range"), QJsonArray{ 0.0, 0.0 });
+		meta.insert(QStringLiteral("dims"), QJsonArray{ 0, 0, 0 });
+		meta.insert(QStringLiteral("origin"), QJsonArray{ 0.0, 0.0, 0.0 });
+		meta.insert(QStringLiteral("spacing"), QJsonArray{ 1.0, 1.0, 1.0 });
+		meta.insert(QStringLiteral("scalarType"), QStringLiteral("unknown"));
+	}
+
+	// Emit the metadata so consumers (ImageInfoWidget) can call updateFromMeta.
+	emit metaReady(meta);
 }
 
 void LightboxWidget::setImageData(vtkImageData* image)
@@ -279,6 +389,10 @@ void LightboxWidget::setImageData(vtkImageData* image)
 		if (ui.YZView) ui.YZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
+	}
+
+	if (m_wlController) {
+		m_wlController->setImageData(image);
 	}
 }
 
@@ -364,6 +478,40 @@ void LightboxWidget::connectMaximizeSignals()
 	connectOne(ui.XZView);
 	connectOne(ui.XYView);
 	connectOne(ui.volumeView);
+}
+
+void LightboxWidget::setCroppingRegion(int xMin, int xMax,
+									   int yMin, int yMax,
+									   int zMin, int zMax)
+{
+	// Forward cropping region to the VolumeView if present.
+	if (ui.volumeView) {
+		ui.volumeView->setCroppingRegion(xMin, xMax, yMin, yMax, zMin, zMax);
+	}
+
+	// Compute center indices for each axis and clamp to provided ranges.
+	auto clamp = [](int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); };
+	int xCenter = clamp((xMin + xMax) / 2, xMin, xMax);
+	int yCenter = clamp((yMin + yMax) / 2, yMin, yMax);
+	int zCenter = clamp((zMin + zMax) / 2, zMin, zMax);
+
+	// Map axes to views:
+	//  - YZ view is the X-axis slice
+	//  - XZ view is the Y-axis slice
+	//  - XY view is the Z-axis slice
+	// Only change a view's current slice if it falls outside the requested crop region.
+	if (auto* yz = getYZView()) {
+		const int cur = yz->getSliceIndex();
+		if (cur < xMin || cur > xMax) setYZSlice(xCenter);
+	}
+	if (auto* xz = getXZView()) {
+		const int cur = xz->getSliceIndex();
+		if (cur < yMin || cur > yMax) setXZSlice(yCenter);
+	}
+	if (auto* xy = getXYView()) {
+		const int cur = xy->getSliceIndex();
+		if (cur < zMin || cur > zMax) setXYSlice(zCenter);
+	}
 }
 
 // Utility: map a child frame geometry into this widget's coordinate system
@@ -547,10 +695,52 @@ void LightboxWidget::resetWindowLevel()
 	if (m_propagatingWindowLevel) return;
 	m_propagatingWindowLevel = true;
 
+	// Ask each view to restore its retained baseline (they will apply mapped/native baselines and render).
 	if (auto* yz = getYZView()) yz->resetWindowLevel();
 	if (auto* xz = getXZView()) xz->resetWindowLevel();
 	if (auto* xy = getXYView()) xy->resetWindowLevel();
 	if (auto* vol = getVolumeView()) vol->resetWindowLevel();
+
+	// Ensure the controller UI (spinboxes) and the interactive nodes reflect the baseline we just applied.
+	// Prefer VolumeView baseline if present (most authoritative), otherwise fall back to any slice view.
+	double baselineW = std::numeric_limits<double>::quiet_NaN();
+	double baselineL = std::numeric_limits<double>::quiet_NaN();
+
+	if (auto* vol = getVolumeView()) {
+		baselineW = vol->baselineWindowNative();
+		baselineL = vol->baselineLevelNative();
+	}
+	if (!std::isfinite(baselineW) || !std::isfinite(baselineL)) {
+		if (auto* xy = getXYView()) {
+			baselineW = xy->baselineWindowNative();
+			baselineL = xy->baselineLevelNative();
+		}
+	}
+	if (!std::isfinite(baselineW) || !std::isfinite(baselineL)) {
+		if (auto* xz = getXZView()) {
+			baselineW = xz->baselineWindowNative();
+			baselineL = xz->baselineLevelNative();
+		}
+	}
+	if (!std::isfinite(baselineW) || !std::isfinite(baselineL)) {
+		if (auto* yz = getYZView()) {
+			baselineW = yz->baselineWindowNative();
+			baselineL = yz->baselineLevelNative();
+		}
+	}
+
+	// If we found a valid baseline, update the registered controller (if any).
+	// Keep m_propagatingWindowLevel==true while doing this so the normal signal-path lambdas
+	// that would re-propagate to views are temporarily suppressed (we already applied resets).
+	if (m_wlController && std::isfinite(baselineW) && std::isfinite(baselineL)) {
+		// Direct setter updates spinboxes and calls applyWindowLevelToNodes, but does not emit change signals
+		// because setWindow/setLevel use QSignalBlocker internally.
+		m_wlController->setWindow(baselineW);
+		m_wlController->setLevel(baselineL);
+
+		// Also emit a committed event so any listeners can react to the coordinated reset.
+		emit m_wlController->windowLevelCommitted(baselineW, baselineL);
+	}
 
 	m_propagatingWindowLevel = false;
 }
@@ -568,6 +758,28 @@ void LightboxWidget::setInputConnection(vtkAlgorithmOutput* port, bool newImg)
 		if (ui.YZView) ui.YZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XZView) ui.XZView->setSharedImageProperty(m_sharedImageProperty);
 		if (ui.XYView) ui.XYView->setSharedImageProperty(m_sharedImageProperty);
+	}
+
+	if (m_wlController) {
+		vtkImageData* image = nullptr;
+		if (port) {
+			vtkAlgorithm* producer = port->GetProducer();
+			if (producer) {
+				// Try to read the producer's current output data object without forcing a pipeline update.
+				vtkDataObject* out = producer->GetOutputDataObject(port->GetIndex());
+				image = vtkImageData::SafeDownCast(out);
+
+				// Fallback: if output is not a concrete vtkImageData, attempt to update the producer
+				// and re-check. This forces pipeline execution which may be expensive, so it's only
+				// done as a fallback.
+				if (!image) {
+					producer->Update();
+					out = producer->GetOutputDataObject(port->GetIndex());
+					image = vtkImageData::SafeDownCast(out);
+				}
+			}
+		}
+		m_wlController->setImageData(image); // image may be nullptr if concrete data is unavailable
 	}
 }
 

@@ -189,6 +189,7 @@ protected:
 	void mousePressEvent(QMouseEvent* ev) override;
 	void mouseMoveEvent(QMouseEvent* ev) override;
 	void mouseReleaseEvent(QMouseEvent* ev) override;
+	void mouseDoubleClickEvent(QMouseEvent* ev) override;
 	void keyPressEvent(QKeyEvent* ev) override;
 	void wheelEvent(QWheelEvent* ev) override;
 

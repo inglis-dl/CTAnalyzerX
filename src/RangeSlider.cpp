@@ -788,6 +788,17 @@ void RangeSlider::mouseReleaseEvent(QMouseEvent* mouseEvent)
 }
 
 // --------------------------------------------------------------------------
+// Double-click resets the selection to the full range
+void RangeSlider::mouseDoubleClickEvent(QMouseEvent* /*ev*/)
+{
+	Q_D(RangeSlider);
+	// Reset values to the widget's minimum and maximum
+	this->setValues(this->minimum(), this->maximum());
+	// ensure a repaint / signals are emitted by setValues implementation
+	this->update();
+}
+
+// --------------------------------------------------------------------------
 bool RangeSlider::isMinimumSliderDown()const
 {
 	Q_D(const RangeSlider);
