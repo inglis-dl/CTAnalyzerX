@@ -559,15 +559,31 @@ bool WorkflowStateMachine::loadProjectSidecarFile(const QString& sidecarPath)
 	m_derivedFrom.clear();
 	m_lastDerivedPath.clear();
 
-	// Notify consumers: project loaded (for recents/menu) and open the SOURCE image only.
+	// Notify consumers: project loaded (for recents/menu).
 	emit projectLoaded(sidecarPath);
 
-	// IMPORTANT: do not suggest a UI state here; LoadingSidecar/ComputingThreshold/DefiningCrop will drive it.
-	emit requestOpenImage(src);
+	// Choose the best initial image:
+	// - Prefer an existing crop output if present in the sidecar.
+	// - Otherwise open the canonical source image.
+	QString initialPath = src;
+
+	const QJsonObject cropObj = obj.value(QStringLiteral("crop")).toObject();
+	const QString cropPath = cropObj.value(QStringLiteral("outputPath")).toString();
+	if (!cropPath.isEmpty() && QFile::exists(cropPath)) {
+		initialPath = cropPath;
+
+		// Prime derived tracking so MainWindow treats this as "opening derived" and emits croppedLoaded().
+		// This reduces unnecessary source loads while keeping the "landmarks must be on crop" invariant.
+		m_lastDerivedPath = cropPath;
+		m_isDerived = true;
+		m_derivedFrom = src;
+	}
+
+	// IMPORTANT: do not suggest a UI state here; workflow logic will drive it.
+	emit requestOpenImage(initialPath);
 
 	// We do not start/resume the internal machine here because MainWindow will call resume()
-	// and the workflow history will choose the correct state. Keeping this function side-effect
-	// free avoids race conditions (open image async vs. state transitions).
+	// and the workflow history will choose the correct state.
 	return true;
 }
 
