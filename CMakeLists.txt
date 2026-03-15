@@ -48,18 +48,18 @@ if(MSVC)
 endif()
 
 # Dependencies
-
-find_package(VTK 9.3 REQUIRED COMPONENTS 
-  ImagingCore 
+find_package(VTK 9.3 REQUIRED COMPONENTS
+  ImagingCore
   ImagingGeneral
-  RenderingCore 
-  RenderingOpenGL2 
-  InteractionStyle 
-  RenderingContextOpenGL2 
+  RenderingCore
+  RenderingOpenGL2
+  InteractionStyle
+  RenderingContextOpenGL2
   RenderingVolume
   RenderingVolumeOpenGL2
   GUISupportQt
 )
+
 if(NOT DEFINED VTK_QT_VERSION)
   set(VTK_QT_VERSION 5)
 endif()
@@ -67,9 +67,7 @@ endif()
 find_package(ITK 5.2.0 CONFIG REQUIRED QUIET)
 include(${ITK_USE_FILE})
 
-find_package(DICOM 0.8.15
-	CONFIG REQUIRED
-)
+find_package(DICOM 0.8.15 CONFIG REQUIRED)
 
 # Expose VTK-DICOM version (if the package provides it)
 set(CTANALYZERX_VTKDICOM_VERSION "unknown")
@@ -79,9 +77,9 @@ elseif(DEFINED DICOM_VERSION_STRING)
   set(CTANALYZERX_VTKDICOM_VERSION "${DICOM_VERSION_STRING}")
 endif()
 
-find_package(Qt${VTK_QT_VERSION} 
-    CONFIG 
-	REQUIRED COMPONENTS Core Gui Widgets Charts)
+find_package(Qt${VTK_QT_VERSION}
+    CONFIG
+    REQUIRED COMPONENTS Core Gui Widgets Charts)
 
 # ------------------------
 # Versioning
@@ -123,155 +121,32 @@ else()
 endif()
 message(STATUS "BUILD DATE: ${CTANALYZERX_BUILD_DATE}")
 
-# Source files
-set(SOURCES
-     src/main.cpp
-     src/MainWindow.cpp
-     src/MainWindow.h
-     src/LightboxWidget.cpp
-     src/LightboxWidget.h
-     src/ImageLoader.cpp
-     src/ImageLoader.h
-     src/SliceView.cpp
-     src/SliceView.h
-     src/VolumeView.cpp 
-     src/VolumeView.h
-     src/RangeSlider.cpp
-     src/RangeSlider.h
-     src/CollapsibleGroupBox.cpp
-     src/CollapsibleGroupBox.h
-     src/ProxyStyle.cpp
-     src/ProxyStyle.h
-	 src/MenuButton.cpp
-	 src/MenuButton.h
-	 src/SelectionFrameWidget.cpp
-	 src/SelectionFrameWidget.h
-     src/SunkenSliderStyle.cpp
-     src/SunkenSliderStyle.h
-     src/ImageFrameWidget.cpp
-     src/ImageFrameWidget.h
-     src/WindowLevelWidget.cpp
-	 src/WindowLevelWidget.h
-     src/WindowLevelBridge.cpp
-     src/WindowLevelBridge.h
-	 src/ImageResliceHelper.cpp
- 	 src/ImageResliceHelper.h
-	 src/VolumeRotationWidget.cpp
-	 src/VolumeRotationWidget.h
-     src/vtkImageOrthoPlanes.cpp
-     src/vtkImageOrthoPlanes.h
-	 src/JsonSettings.cpp
-	 src/JsonSettings.h
-     src/WorkflowStateMachine.cpp
-     src/WorkflowStateMachine.h
-     src/WorkflowPanelWidget.cpp
-     src/WorkflowPanelWidget.h
-     src/JsonUtils.cpp
-     src/JsonUtils.h
-     src/CropWidget.cpp
-     src/CropWidget.h
-     src/CropExporter.cpp
-     src/CropExporter.h
-     src/vtkSliceOutlineSource.cpp
-     src/vtkSliceOutlineSource.h
-     src/ImageInfoWidget.cpp
-     src/ImageInfoWidget.h
-     src/OtsuThresholdWorker.cpp
-     src/OtsuThresholdWorker.h
-     src/ScalarOpacityFunctionWidget.cpp
-     src/ScalarOpacityFunctionWidget.h
-     src/Logger.cpp
-     src/Logger.h
-     src/LandmarkWidget.cpp
-     src/LandmarkWidget.h
-     src/vtkImageSlicePointPlacer.cpp
-     src/vtkImageSlicePointPlacer.h
-     src/LandmarkHelper.cpp
-     src/LandmarkHelper.h
-     src/vtkLandmarkActor.cpp
-     src/vtkLandmarkActor.h
-)
-
-# Ensure automoc/autorcc/uic are enabled early
+# Ensure automoc/autorcc/uic for Qt targets in subdirectories
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC_SEARCH_PATHS
-	${CMAKE_CURRENT_SOURCE_DIR}/resources
-)
 
-# Explicitly point to the .qrc using absolute project path
-set(CTANALYZERX_RESOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/resources/resources.qrc
-)
+# ------------------------
+# Subdirectories
+# ------------------------
+add_subdirectory(lib/core)
+add_subdirectory(lib/gui)
+add_subdirectory(app)
 
-# Verify resource file exists at configure time (helps catch wrong paths)
-if(NOT EXISTS "${CTANALYZERX_RESOURCES}")
-  message(FATAL_ERROR "Resource file not found: ${CTANALYZERX_RESOURCES}\nPlease ensure resources/resources.qrc exists and paths inside it are correct.")
+option(CTAX_BUILD_TOOLS "Build tools" ON)
+if(CTAX_BUILD_TOOLS)
+  add_subdirectory(tools)
 endif()
 
-add_executable(${PROJECT_NAME} ${SOURCES})
-
-# Prefer explicit resource helper for Qt6/Qt5 so we get a generated source variable.
-# The helper will create a generated source (e.g., qrc_resources.cpp) that we add to the target.
-if (TARGET Qt6::Core AND COMMAND qt_add_resources)
-  qt_add_resources(CTANALYZERX_QRC ${CTANALYZERX_RESOURCES})
-  target_sources(${PROJECT_NAME} PRIVATE ${CTANALYZERX_QRC})
-elseif (TARGET Qt5::Core AND COMMAND qt5_add_resources)
-  qt5_add_resources(CTANALYZERX_QRC ${CTANALYZERX_RESOURCES})
-  target_sources(${PROJECT_NAME} PRIVATE ${CTANALYZERX_QRC})
-else()
-  # Fallback: rely on CMAKE_AUTORCC; still attach the .qrc so autorcc will process it.
-  target_sources(${PROJECT_NAME} PRIVATE ${CTANALYZERX_RESOURCES})
+option(CTAX_BUILD_TESTS "Build tests" OFF)
+if(CTAX_BUILD_TESTS)
+  add_subdirectory(tests)
 endif()
-
-# Expose version/build/git + build/env details to code
-target_compile_definitions(${PROJECT_NAME}
-  PRIVATE
-    CTANALYZERX_VERSION="${PROJECT_VERSION}"
-    CTANALYZERX_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
-    CTANALYZERX_VERSION_MINOR=${PROJECT_VERSION_MINOR}
-    CTANALYZERX_VERSION_PATCH=${PROJECT_VERSION_PATCH}
-    CTANALYZERX_BUILD_DATE="${CTANALYZERX_BUILD_DATE}"
-    CTANALYZERX_GIT_HASH="${CTANALYZERX_GIT_HASH}"
-    CTANALYZERX_BUILD_TYPE="$<CONFIG>"
-    CTANALYZERX_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
-    CTANALYZERX_SYSTEM="${CMAKE_SYSTEM_NAME}"
-    CTANALYZERX_ARCH="${CMAKE_SYSTEM_PROCESSOR}"
-    CTANALYZERX_VTKDICOM_VERSION="${CTANALYZERX_VTKDICOM_VERSION}"
-)
-
-target_link_libraries(${PROJECT_NAME}
-    PRIVATE
-        Qt${VTK_QT_VERSION}::Core
-        Qt${VTK_QT_VERSION}::Gui
-        Qt${VTK_QT_VERSION}::Widgets
-        Qt${VTK_QT_VERSION}::Charts
-        ${VTK_LIBRARIES}
-        ${ITK_LIBRARIES}
-        VTK::DICOM
-)
 
 # Globally silence MSVC deprecation warnings for non-standard stdext iterators
-add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
-
-# Optional: Doxygen documentation
-option(BUILD_DOC "Build documentation" OFF)
-if(BUILD_DOC)
-    find_package(Doxygen)
-    if(DOXYGEN_FOUND)
-        set(DOXYGEN_IN ${CMAKE_CURRENT_SOURCE_DIR}/doc/doxyfile.in)
-        set(DOXYGEN_OUT ${CMAKE_CURRENT_BINARY_DIR}/doxyfile)
-        configure_file(${DOXYGEN_IN} ${DOXYGEN_OUT} @ONLY)
-        add_custom_target(doc_doxygen ALL
-            COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYGEN_OUT}
-            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-            COMMENT "Generating API documentation with Doxygen"
-            VERBATIM
-        )
-    else()
-        message("Doxygen not found. Documentation will not be generated.")
-    endif()
+if(MSVC)
+    add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
+    add_compile_definitions(_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING)
 endif()
 
 # Packaging
@@ -282,7 +157,7 @@ set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
 set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
 set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "CTAnalyzerX")
-set(CPACK_PACKAGE_EXECUTABLES "${PROJECT_NAME}" "CTAnalyzerX")
+set(CPACK_PACKAGE_EXECUTABLES "CTAnalyzerX" "CTAnalyzerX")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_GENERATOR "NSIS")
 include(CPack)
