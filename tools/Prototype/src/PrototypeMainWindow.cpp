@@ -1,32 +1,26 @@
 #include "PrototypeMainWindow.h"
+#include "PrototypeHelpers.h"
 #include "ui_MainWindow.h"
 
 #include "VolumeView.h"
 #include "ImageLoader.h"
 #include "JsonUtils.h"
 
-#include <vtkActor.h>
-#include <vtkCellArray.h>
-#include <vtkDataArray.h>
 #include <vtkEventQtSlotConnect.h>
 #include <vtkImageData.h>
-#include <vtkImageThreshold.h>
-#include <vtkLine.h>
+#include <vtkImageReslice.h>
 #include <vtkMath.h>
-#include <vtkPoints.h>
-#include <vtkPointData.h>
-#include <vtkPolyData.h>
-#include <vtkPolyDataMapper.h>
-#include <vtkProperty.h>
-#include <vtkRegularPolygonSource.h>
+#include <vtkMatrix4x4.h>
 #include <vtkRenderer.h>
 #include <vtkSmartPointer.h>
-#include <vtkSphereSource.h>
-#include <vtkSuperquadricSource.h>
 
+#include <QAction>
+#include <QCloseEvent>
 #include <QDebug>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTimer>
@@ -34,338 +28,8 @@
 
 #include <array>
 #include <cmath>
-#include <functional>
 #include <stdexcept>
 #include <string>
-
-// ---------------------------------------------------------------------------
-// Internal helpers (file-scope)
-// ---------------------------------------------------------------------------
-namespace
-{
-	static QJsonObject readJsonObjectFileOrThrow(const QString& path)
-	{
-		QFile f(path);
-		if (!f.open(QIODevice::ReadOnly))
-			throw std::runtime_error(("Failed to open JSON file: " + path).toStdString());
-
-		const QByteArray data = f.readAll();
-		f.close();
-
-		const QJsonDocument doc = QJsonDocument::fromJson(data);
-		if (!doc.isObject())
-			throw std::runtime_error(("Invalid JSON (expected object): " + path).toStdString());
-
-		return doc.object();
-	}
-
-	static QString cropPathFromSidecarOrThrow(const QJsonObject& obj)
-	{
-		const QString cropPath = obj.value(QStringLiteral("crop"))
-			.toObject()
-			.value(QStringLiteral("outputPath"))
-			.toString();
-
-		if (cropPath.isEmpty())
-			throw std::runtime_error("Sidecar missing crop.outputPath (crop not completed?).");
-
-		return cropPath;
-	}
-
-	// Returns the threshold value from the sidecar, or quiet_NaN if absent.
-	static double thresholdFromSidecar(const QJsonObject& obj)
-	{
-		const QJsonValue v = obj.value(QStringLiteral("threshold"))
-			.toObject()
-			.value(QStringLiteral("value"));
-
-		if (v.isDouble())
-		{
-			qDebug("Threshold: %f", v.toDouble());
-			return v.toDouble();
-		}
-
-		qDebug("Threshold: (not present)");
-		return std::numeric_limits<double>::quiet_NaN();
-	}
-
-	// Computes the population standard deviation of the image's scalar values.
-	static double computeScalarStdDev(vtkImageData* image)
-	{
-		if (!image)
-			return 1.0;
-
-		const vtkIdType nPoints = image->GetNumberOfPoints();
-		if (nPoints <= 0)
-			return 1.0;
-
-		double sum   = 0.0;
-		double sumSq = 0.0;
-
-		for (vtkIdType i = 0; i < nPoints; ++i)
-		{
-			const double v = image->GetPointData()->GetScalars()->GetTuple1(i);
-			sum   += v;
-			sumSq += v * v;
-		}
-
-		const double mean     = sum / static_cast<double>(nPoints);
-		const double variance = (sumSq / static_cast<double>(nPoints)) - (mean * mean);
-		return std::sqrt(std::max(variance, 0.0));
-	}
-
-	// ---------------------------------------------------------------------------
-	// PCA overlay helpers
-	// ---------------------------------------------------------------------------
-
-	// Result of PCA + circumsphere computation on the binary voxel set.
-	struct PcaResult
-	{
-		double centroid[3];       // binary-volume centroid in world coordinates
-		double axes[3][3];        // eigenvectors as rows: axes[i] = i-th principal axis (unit vector)
-		double eigenvalues[3];    // eigenvalues in descending order
-		double circumRadius;      // radius of the circumsphere (fits outside the bounding box)
-	};
-
-	// Compute PCA of the above-threshold voxels.
-	// progressCb(percent) is called at key milestones [0..100] so the caller
-	// can update a progress bar. Pass nullptr to skip all progress reporting.
-	// Returns false and logs a warning when there are too few voxels.
-	static bool computePca(vtkImageData* image, double threshold, PcaResult& result,
-	                       const std::function<void(int)>& progressCb = nullptr)
-	{
-		if (!image)
-			return false;
-
-		const double* spacing = image->GetSpacing();
-		const double* origin  = image->GetOrigin();
-		const int*    dims    = image->GetDimensions();
-		vtkDataArray* scalars = image->GetPointData()->GetScalars();
-
-		if (!scalars)
-			return false;
-
-		// Report 0 % at the start of the first pass.
-		if (progressCb) progressCb(0);
-
-		// --- Pass 1: centroid and count ---
-		double sumX = 0.0, sumY = 0.0, sumZ = 0.0;
-		vtkIdType count = 0;
-
-		for (int k = 0; k < dims[2]; ++k)
-		{
-			for (int j = 0; j < dims[1]; ++j)
-			{
-				for (int i = 0; i < dims[0]; ++i)
-				{
-					const vtkIdType idx = static_cast<vtkIdType>(k) * dims[1] * dims[0]
-					                    + static_cast<vtkIdType>(j) * dims[0]
-					                    + i;
-					if (scalars->GetTuple1(idx) < threshold)
-						continue;
-
-					const double wx = origin[0] + i * spacing[0];
-					const double wy = origin[1] + j * spacing[1];
-					const double wz = origin[2] + k * spacing[2];
-
-					sumX += wx;
-					sumY += wy;
-					sumZ += wz;
-					++count;
-				}
-			}
-		}
-
-		// Pass 1 complete: 40 %
-		if (progressCb) progressCb(40);
-
-		if (count < 3)
-		{
-			qWarning("computePca: fewer than 3 above-threshold voxels (%lld); PCA skipped.",
-			         static_cast<long long>(count));
-			return false;
-		}
-
-		const double n = static_cast<double>(count);
-		result.centroid[0] = sumX / n;
-		result.centroid[1] = sumY / n;
-		result.centroid[2] = sumZ / n;
-
-		// --- Pass 2: 3×3 covariance (upper-triangle, population formula) ---
-		double c00 = 0.0, c01 = 0.0, c02 = 0.0;
-		double c11 = 0.0, c12 = 0.0;
-		double c22 = 0.0;
-
-		// Track bounding box of the binary voxels (world space) for circumsphere radius
-		double bbMin[3] = { std::numeric_limits<double>::max(),
-		                    std::numeric_limits<double>::max(),
-		                    std::numeric_limits<double>::max() };
-		double bbMax[3] = { std::numeric_limits<double>::lowest(),
-		                    std::numeric_limits<double>::lowest(),
-		                    std::numeric_limits<double>::lowest() };
-
-		for (int k = 0; k < dims[2]; ++k)
-		{
-			for (int j = 0; j < dims[1]; ++j)
-			{
-				for (int i = 0; i < dims[0]; ++i)
-				{
-					const vtkIdType idx = static_cast<vtkIdType>(k) * dims[1] * dims[0]
-					                    + static_cast<vtkIdType>(j) * dims[0]
-					                    + i;
-					if (scalars->GetTuple1(idx) < threshold)
-						continue;
-
-					const double wx = origin[0] + i * spacing[0] - result.centroid[0];
-					const double wy = origin[1] + j * spacing[1] - result.centroid[1];
-					const double wz = origin[2] + k * spacing[2] - result.centroid[2];
-
-					c00 += wx * wx;  c01 += wx * wy;  c02 += wx * wz;
-					c11 += wy * wy;  c12 += wy * wz;
-					c22 += wz * wz;
-
-					// bounding box
-					const double awx = wx + result.centroid[0];
-					const double awy = wy + result.centroid[1];
-					const double awz = wz + result.centroid[2];
-					bbMin[0] = std::min(bbMin[0], awx); bbMax[0] = std::max(bbMax[0], awx);
-					bbMin[1] = std::min(bbMin[1], awy); bbMax[1] = std::max(bbMax[1], awy);
-					bbMin[2] = std::min(bbMin[2], awz); bbMax[2] = std::max(bbMax[2], awz);
-				}
-			}
-		}
-
-		// Pass 2 complete: 80 %
-		if (progressCb) progressCb(80);
-
-		c00 /= n; c01 /= n; c02 /= n;
-		c11 /= n; c12 /= n;
-		c22 /= n;
-
-		// --- Eigen-decomposition via vtkMath::Jacobi ---
-		// vtkMath::Jacobi expects a double** (array of row pointers)
-		double row0[3] = { c00, c01, c02 };
-		double row1[3] = { c01, c11, c12 };
-		double row2[3] = { c02, c12, c22 };
-		double* cov[3] = { row0, row1, row2 };
-
-		double evecData[3][3]; // columns = eigenvectors after Jacobi
-		double* evecs[3] = { evecData[0], evecData[1], evecData[2] };
-		double  evals[3];
-
-		vtkMath::Jacobi(cov, evals, evecs);
-		// vtkMath::Jacobi returns eigenvalues in DESCENDING order
-
-		// Transpose: Jacobi stores eigenvectors as columns of evecs[][] matrix
-		// evecs[col][row], so axis i = (evecs[0][i], evecs[1][i], evecs[2][i])
-		for (int i = 0; i < 3; ++i)
-		{
-			result.axes[i][0] = evecs[0][i];
-			result.axes[i][1] = evecs[1][i];
-			result.axes[i][2] = evecs[2][i];
-			vtkMath::Normalize(result.axes[i]);
-			result.eigenvalues[i] = evals[i];
-		}
-
-		// Circumsphere radius: half-diagonal of the binary bounding box,
-		// centred on the centroid, guaranteed to lie outside the bounding box.
-		const double dx = bbMax[0] - bbMin[0];
-		const double dy = bbMax[1] - bbMin[1];
-		const double dz = bbMax[2] - bbMin[2];
-		result.circumRadius = 0.5 * std::sqrt(dx * dx + dy * dy + dz * dz);
-
-		qDebug("PCA centroid: (%.2f, %.2f, %.2f)", result.centroid[0], result.centroid[1], result.centroid[2]);
-		qDebug("PCA eigenvalues: %.4f  %.4f  %.4f", evals[0], evals[1], evals[2]);
-		qDebug("PCA circumsphere radius: %.2f", result.circumRadius);
-
-		// Eigen-decomposition complete: 100 %
-		if (progressCb) progressCb(100);
-
-		return true;
-	}
-
-	// Build a thin line actor between two world-space points.
-	static vtkSmartPointer<vtkActor> makeLineActor(
-		const double p0[3], const double p1[3],
-		double r, double g, double b, double lineWidth = 2.0)
-	{
-		auto pts  = vtkSmartPointer<vtkPoints>::New();
-		auto line = vtkSmartPointer<vtkLine>::New();
-		auto cells = vtkSmartPointer<vtkCellArray>::New();
-		auto pd   = vtkSmartPointer<vtkPolyData>::New();
-
-		pts->InsertNextPoint(p0);
-		pts->InsertNextPoint(p1);
-		line->GetPointIds()->SetId(0, 0);
-		line->GetPointIds()->SetId(1, 1);
-		cells->InsertNextCell(line);
-
-		pd->SetPoints(pts);
-		pd->SetLines(cells);
-
-		auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-		mapper->SetInputData(pd);
-
-		auto actor = vtkSmartPointer<vtkActor>::New();
-		actor->SetMapper(mapper);
-		actor->GetProperty()->SetColor(r, g, b);
-		actor->GetProperty()->SetLineWidth(static_cast<float>(lineWidth));
-		actor->GetProperty()->SetLighting(false);
-
-		return actor;
-	}
-
-	// Build a sphere glyph actor centred at `centre`.
-	static vtkSmartPointer<vtkActor> makeSphereActor(
-		const double centre[3], double radius,
-		double r, double g, double b)
-	{
-		auto sphere = vtkSmartPointer<vtkSphereSource>::New();
-		sphere->SetCenter(centre);
-		sphere->SetRadius(radius);
-		sphere->SetPhiResolution(16);
-		sphere->SetThetaResolution(16);
-
-		auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-		mapper->SetInputConnection(sphere->GetOutputPort());
-
-		auto actor = vtkSmartPointer<vtkActor>::New();
-		actor->SetMapper(mapper);
-		actor->GetProperty()->SetColor(r, g, b);
-
-		return actor;
-	}
-
-	// Build a ring (closed polygon) actor.
-	// centre    : world-space centre of the ring
-	// normal    : unit vector perpendicular to the ring plane (eigen direction)
-	// radius    : circumsphere radius
-	// r,g,b     : line colour
-	// lineWidth : rendered line width in pixels
-	static vtkSmartPointer<vtkActor> makeRingActor(
-		const double centre[3], const double normal[3], double radius,
-		double r, double g, double b, double lineWidth = 2.0)
-	{
-		auto ring = vtkSmartPointer<vtkRegularPolygonSource>::New();
-		ring->SetNumberOfSides(64);
-		ring->SetRadius(radius);
-		ring->SetCenter(centre);
-		ring->SetNormal(normal);
-		ring->GeneratePolygonOff(); // outline (closed polyline) only, no filled face
-
-		auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-		mapper->SetInputConnection(ring->GetOutputPort());
-
-		auto actor = vtkSmartPointer<vtkActor>::New();
-		actor->SetMapper(mapper);
-		actor->GetProperty()->SetColor(r, g, b);
-		actor->GetProperty()->SetLineWidth(static_cast<float>(lineWidth));
-		actor->GetProperty()->SetLighting(false);
-
-		return actor;
-	}
-
-} // namespace
 
 // ---------------------------------------------------------------------------
 // PrototypeMainWindow
@@ -383,6 +47,18 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	m_progressBar->setValue(0);
 	m_progressBar->setVisible(false);
 	statusBar()->addPermanentWidget(m_progressBar);
+
+	// "Landmark" toolbar button: searches along each PCA axis for surface transitions
+	QAction* actLandmark = new QAction(tr("Landmark"), this);
+	actLandmark->setToolTip(tr("Find surface landmark points along the PCA axes"));
+	ui->toolBar->addAction(actLandmark);
+	connect(actLandmark, &QAction::triggered, this, &PrototypeMainWindow::onLandmark);
+
+	// "Reslice" toolbar button: reslice the volume aligned to the PCA axes
+	QAction* actReslice = new QAction(tr("Reslice"), this);
+	actReslice->setToolTip(tr("Reslice the volume aligned to the PCA principal axes"));
+	ui->toolBar->addAction(actReslice);
+	connect(actReslice, &QAction::triggered, this, &PrototypeMainWindow::onReslice);
 
 	// ImageLoader + VTK event wiring
 	m_imageLoader    = vtkSmartPointer<ImageLoader>::New();
@@ -404,6 +80,16 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 PrototypeMainWindow::~PrototypeMainWindow()
 {
 	delete ui;
+}
+
+// ---------------------------------------------------------------------------
+// Window close — flush the JSON cache to the prototype sidecar
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::closeEvent(QCloseEvent* event)
+{
+	writePrototypeSidecar();
+	QMainWindow::closeEvent(event);
 }
 
 // ---------------------------------------------------------------------------
@@ -505,18 +191,103 @@ void PrototypeMainWindow::clearPcaOverlay()
 }
 
 // ---------------------------------------------------------------------------
+// PCA JSON serialisation helper
+// ---------------------------------------------------------------------------
+
+// static
+QJsonObject PrototypeMainWindow::pcaResultToJson(const PcaResult& pca)
+{
+	auto packVec3 = [](const double v[3]) -> QJsonArray
+	{
+		return QJsonArray{ v[0], v[1], v[2] };
+	};
+
+	// Axes: array of 3 objects, one per principal axis
+	QJsonArray axesArray;
+	for (int i = 0; i < 3; ++i)
+	{
+		QJsonObject axisObj;
+		axisObj[QStringLiteral("index")]      = i;
+		axisObj[QStringLiteral("eigenvalue")] = pca.eigenvalues[i];
+		axisObj[QStringLiteral("direction")]  = packVec3(pca.axes[i]);
+		axesArray.append(axisObj);
+	}
+
+	QJsonObject obj;
+	obj[QStringLiteral("centroid")]     = packVec3(pca.centroid);
+	obj[QStringLiteral("circumRadius")] = pca.circumRadius;
+	obj[QStringLiteral("axes")]         = axesArray;
+	return obj;
+}
+
+// ---------------------------------------------------------------------------
+// Prototype sidecar output path + write
+// ---------------------------------------------------------------------------
+
+QString PrototypeMainWindow::prototypeOutputPath() const
+{
+	if (m_sidecarPath.isEmpty() || m_cropPath.isEmpty())
+		return {};
+
+	// Derive the output filename from the crop image basename:
+	//   <crop_basename>_prototype.json
+	const QString cropBaseName = QFileInfo(m_cropPath).completeBaseName();
+	const QString outputName   = cropBaseName + QStringLiteral("_prototype.json");
+
+	// Place the file in the same directory as the source sidecar.
+	const QString sidecarDir = QFileInfo(m_sidecarPath).absolutePath();
+	return QDir(sidecarDir).filePath(outputName);
+}
+
+bool PrototypeMainWindow::writePrototypeSidecar() const
+{
+	// Nothing to write if no landmark run has completed yet.
+	if (m_landmarkJson.isEmpty())
+	{
+		qDebug("writePrototypeSidecar: no landmark data to write; skipping.");
+		return true;
+	}
+
+	const QString outputPath = prototypeOutputPath();
+	if (outputPath.isEmpty())
+	{
+		qWarning("writePrototypeSidecar: cannot determine output path "
+		         "(sidecar or crop path not set); skipping.");
+		return false;
+	}
+
+	QFile f(outputPath);
+	if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+	{
+		qWarning("writePrototypeSidecar: failed to open '%s' for writing: %s",
+		         qUtf8Printable(outputPath),
+		         qUtf8Printable(f.errorString()));
+		return false;
+	}
+
+	const QByteArray json = QJsonDocument(m_landmarkJson).toJson(QJsonDocument::Indented);
+	f.write(json);
+	f.close();
+
+	qDebug("writePrototypeSidecar: wrote %lld bytes to '%s'",
+	       static_cast<long long>(json.size()),
+	       qUtf8Printable(outputPath));
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 void PrototypeMainWindow::loadFromSidecar(const QString& sidecarPath)
 {
-	const QJsonObject sidecar = readJsonObjectFileOrThrow(sidecarPath);
+	const QJsonObject sidecar = PrototypeHelpers::readJsonObjectFileOrThrow(sidecarPath);
 
-	const QString cropPath = cropPathFromSidecarOrThrow(sidecar);
+	const QString cropPath = PrototypeHelpers::cropPathFromSidecarOrThrow(sidecar);
 	qDebug("Project:   %s", qUtf8Printable(sidecarPath));
 	qDebug("Crop path: %s", qUtf8Printable(cropPath));
 
-	m_threshold = thresholdFromSidecar(sidecar);
+	m_threshold = PrototypeHelpers::thresholdFromSidecar(sidecar);
 
 	if (!QFileInfo::exists(cropPath))
 	{
@@ -531,6 +302,10 @@ void PrototypeMainWindow::loadFromSidecar(const QString& sidecarPath)
 
 	if (!ImageLoader::CanReadFile(cropPath))
 		throw std::runtime_error(("Unsupported or unreadable file: " + cropPath).toStdString());
+
+	// Cache the paths so closeEvent() can derive the prototype output filename.
+	m_sidecarPath = QFileInfo(sidecarPath).absoluteFilePath();
+	m_cropPath    = cropPath;
 
 	m_imageLoader->SetInputPath(cropPath);
 	m_imageLoader->SetImageType(ImageLoader::ImageType::NIFTI);
@@ -555,6 +330,13 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	// Remove any PCA overlay from a previous image.
 	clearPcaOverlay();
 
+	// Cache raw pointer for use by onLandmark() (lifetime owned by m_imageLoader pipeline).
+	m_image = image;
+
+	// Invalidate any previously cached PCA result and landmark data.
+	m_pca.valid      = false;
+	m_landmarkResult = QJsonObject{};
+
 	ui->volumeView->setImageData(image);
 	ui->volumeView->updateData();
 
@@ -571,7 +353,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 		? m_threshold
 		: 0.5 * (scalarRange[0] + scalarRange[1]);
 
-	const double window = 2.0 * computeScalarStdDev(image);
+	const double window = 2.0 * PrototypeHelpers::computeScalarStdDev(image);
 
 	ui->volumeView->setColorWindowLevel(window, level);
 
@@ -595,19 +377,36 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	};
 
-	PcaResult pca;
-	const bool ok = computePca(image, m_threshold, pca, pcaProgress);
+	const bool ok = PrototypeHelpers::computePca(image, m_threshold, m_pca, pcaProgress);
 	showProgressEnd();
 
 	if (!ok)
 		return;
+
+	// ------------------------------------------------------------------
+	// Cache the PCA result to JSON.
+	//
+	// m_originalPcaJson is written ONLY on the first (original) load, i.e.
+	// when no resliced image exists yet.  This ensures callers can always
+	// retrieve the pre-reslice PCA as the definitive starting point even
+	// after multiple reslice passes have been performed.
+	//
+	// m_reslicedPcaJson is written by onReslice() after this function
+	// returns, so we do not touch it here.
+	// ------------------------------------------------------------------
+	if (!m_reslicedImage)
+	{
+		m_originalPcaJson = pcaResultToJson(m_pca);
+		qDebug("setImage: original PCA JSON cached:\n%s",
+		       qUtf8Printable(QJsonDocument(m_originalPcaJson).toJson(QJsonDocument::Indented)));
+	}
 
 	vtkRenderer* ren = ui->volumeView->renderer();
 	if (!ren)
 		return;
 
 	// Sphere glyph radius = 8 % of the circumsphere radius (4× the previous 2 % size)
-	const double glyphR = 0.08 * pca.circumRadius;
+	const double glyphR = 0.08 * m_pca.circumRadius;
 
 	// Axis colours: R=axis0 (largest variance), G=axis1, B=axis2
 	const double axisColors[3][3] = {
@@ -619,38 +418,295 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	for (int i = 0; i < 3; ++i)
 	{
 		const double* col = axisColors[i];
-		const double  R   = pca.circumRadius;
+		const double  R   = m_pca.circumRadius;
 
 		// Tip points along +axis and -axis
 		double tipPos[3], tipNeg[3];
 		for (int d = 0; d < 3; ++d)
 		{
-			tipPos[d] = pca.centroid[d] + R * pca.axes[i][d];
-			tipNeg[d] = pca.centroid[d] - R * pca.axes[i][d];
+			tipPos[d] = m_pca.centroid[d] + R * m_pca.axes[i][d];
+			tipNeg[d] = m_pca.centroid[d] - R * m_pca.axes[i][d];
 		}
 
 		// Shaft from -tip to +tip
-		m_axisActors[i] = makeLineActor(tipNeg, tipPos, col[0], col[1], col[2], 2.5);
+		m_axisActors[i] = PrototypeHelpers::makeLineActor(tipNeg, tipPos, col[0], col[1], col[2], 2.5);
 		ren->AddActor(m_axisActors[i]);
 
-		// Sphere glyphs at both ends (4x larger than the original 2 % size)
-		m_tipActors[static_cast<std::size_t>(i * 2)]     = makeSphereActor(tipPos, glyphR, col[0], col[1], col[2]);
-		m_tipActors[static_cast<std::size_t>(i * 2 + 1)] = makeSphereActor(tipNeg, glyphR, col[0], col[1], col[2]);
+		// Sphere glyphs at both ends (4× the original 2 % size)
+		m_tipActors[static_cast<std::size_t>(i * 2)]     = PrototypeHelpers::makeSphereActor(tipPos, glyphR, col[0], col[1], col[2]);
+		m_tipActors[static_cast<std::size_t>(i * 2 + 1)] = PrototypeHelpers::makeSphereActor(tipNeg, glyphR, col[0], col[1], col[2]);
 		ren->AddActor(m_tipActors[static_cast<std::size_t>(i * 2)]);
 		ren->AddActor(m_tipActors[static_cast<std::size_t>(i * 2 + 1)]);
 
-		// Circumsphere ring i:
-		//   - centre  : positive tip of axis i (centroid + R * axes[i])
+		// Ring i:
+		//   - centre  : PCA centroid (all three rings share the same centre)
 		//   - normal  : axes[i]  (the eigen direction for this axis)
 		//   - radius  : circumsphere radius R
-		// The ring therefore lies in the plane perpendicular to axes[i]
-		// that passes through the positive axis tip on the circumsphere.
-		m_ringActors[i] = makeRingActor(pca.centroid, pca.axes[i], R,
-		                                col[0], col[1], col[2], 2.0);
+		// The ring lies in the plane perpendicular to axes[i] passing through
+		// the centroid, so each ring slices through the centre of the point cloud.
+		m_ringActors[i] = PrototypeHelpers::makeRingActor(m_pca.centroid, m_pca.axes[i], R,
+		                                                   col[0], col[1], col[2], 2.0);
 		ren->AddActor(m_ringActors[i]);
 	}
 
 	ui->volumeView->render();
+}
+
+// ---------------------------------------------------------------------------
+// Landmark slot
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::onLandmark()
+{
+	if (!m_pca.valid)
+	{
+		qWarning("onLandmark: no valid PCA result available; load an image first.");
+		return;
+	}
+
+	if (!m_image)
+	{
+		qWarning("onLandmark: no image cached.");
+		return;
+	}
+
+	if (!std::isfinite(m_threshold))
+	{
+		qWarning("onLandmark: threshold is not finite; cannot search for surface.");
+		return;
+	}
+
+	vtkRenderer* ren = (ui && ui->volumeView) ? ui->volumeView->renderer() : nullptr;
+
+	// Sphere glyph radius reused from setImage() (8 % of circumsphere radius)
+	const double glyphR = 0.08 * m_pca.circumRadius;
+
+	// Axis colours matching those in setImage()
+	const double axisColors[3][3] = {
+		{ 1.0, 0.2, 0.2 },  // axis 0 - red
+		{ 0.2, 1.0, 0.2 },  // axis 1 - green
+		{ 0.2, 0.2, 1.0 },  // axis 2 - blue
+	};
+
+	// JSON arrays to accumulate per-axis landmark data
+	QJsonArray jsonLandmarks;
+
+	for (int i = 0; i < 3; ++i)
+	{
+		const double* col = axisColors[i];
+
+		// Each eigen axis has two directions (+/-) relative to the centroid.
+		// For each direction the search ray is cast from the centroid outward,
+		// intersected with the image bounding box, and then walked INWARD from
+		// that bounding-box entry point toward the centroid.  The first voxel
+		// whose scalar value crosses from below-threshold to above-threshold is
+		// the surface landmark point.
+		//
+		// axisDir (+): centroid ? +axis  (outward direction for the + half)
+		// axisDir (-): centroid ? -axis  (outward direction for the - half)
+		const double axisDirPos[3] = {  m_pca.axes[i][0],  m_pca.axes[i][1],  m_pca.axes[i][2] };
+		const double axisDirNeg[3] = { -m_pca.axes[i][0], -m_pca.axes[i][1], -m_pca.axes[i][2] };
+
+		PrototypeHelpers::findSurfacePointFromBoundary(
+			m_image, m_pca.centroid, axisDirPos, m_threshold,
+			m_landmarkPoints[static_cast<std::size_t>(i)][0].data());
+		PrototypeHelpers::findSurfacePointFromBoundary(
+			m_image, m_pca.centroid, axisDirNeg, m_threshold,
+			m_landmarkPoints[static_cast<std::size_t>(i)][1].data());
+
+		const double* lPos = m_landmarkPoints[static_cast<std::size_t>(i)][0].data();
+		const double* lNeg = m_landmarkPoints[static_cast<std::size_t>(i)][1].data();
+
+		qDebug("Landmark axis %d  +: (%.2f, %.2f, %.2f)  -: (%.2f, %.2f, %.2f)",
+		       i,
+		       lPos[0], lPos[1], lPos[2],
+		       lNeg[0], lNeg[1], lNeg[2]);
+
+		// Relocate the existing tip sphere actors to the new surface positions.
+		// The actors are already in the renderer from setImage(); we replace them
+		// in-place rather than removing and re-adding to avoid flicker.
+		if (ren)
+		{
+			const std::size_t posIdx = static_cast<std::size_t>(i * 2);
+			const std::size_t negIdx = static_cast<std::size_t>(i * 2 + 1);
+
+			if (m_tipActors[posIdx]) ren->RemoveActor(m_tipActors[posIdx]);
+			if (m_tipActors[negIdx]) ren->RemoveActor(m_tipActors[negIdx]);
+
+			m_tipActors[posIdx] = PrototypeHelpers::makeSphereActor(lPos, glyphR, col[0], col[1], col[2]);
+			m_tipActors[negIdx] = PrototypeHelpers::makeSphereActor(lNeg, glyphR, col[0], col[1], col[2]);
+
+			ren->AddActor(m_tipActors[posIdx]);
+			ren->AddActor(m_tipActors[negIdx]);
+		}
+
+		// Accumulate JSON for this axis
+		auto packVec3 = [](const double v[3]) -> QJsonArray
+		{
+			return QJsonArray{ v[0], v[1], v[2] };
+		};
+
+		QJsonObject axisObj;
+		axisObj[QStringLiteral("index")]       = i;
+		axisObj[QStringLiteral("eigenvalue")]  = m_pca.eigenvalues[i];
+		axisObj[QStringLiteral("eigenvector")] = packVec3(m_pca.axes[i]);
+		axisObj[QStringLiteral("landmarkPos")] = packVec3(lPos);
+		axisObj[QStringLiteral("landmarkNeg")] = packVec3(lNeg);
+		jsonLandmarks.append(axisObj);
+	}
+
+	// ------------------------------------------------------------------
+	// Build and cache the per-axis raw landmark result (existing behaviour)
+	// ------------------------------------------------------------------
+	auto packVec3 = [](const double v[3]) -> QJsonArray
+	{
+		return QJsonArray{ v[0], v[1], v[2] };
+	};
+
+	m_landmarkResult = QJsonObject{};
+	m_landmarkResult[QStringLiteral("centroid")]     = packVec3(m_pca.centroid);
+	m_landmarkResult[QStringLiteral("circumRadius")] = m_pca.circumRadius;
+	m_landmarkResult[QStringLiteral("threshold")]    = m_threshold;
+	m_landmarkResult[QStringLiteral("axes")]         = jsonLandmarks;
+
+	// ------------------------------------------------------------------
+	// Build the consolidated landmark JSON cache (written to disk on close).
+	//
+	// Structure:
+	// {
+	//   "sourceSidecar"  : "<path>",
+	//   "cropImage"      : "<path>",
+	//   "threshold"      : <value>,
+	//   "originalPca"    : { ... },          // always present after first load
+	//   "reslicedPca"    : { ... },          // present only after onReslice()
+	//   "landmarks"      : { ... }           // same as m_landmarkResult
+	// }
+	// ------------------------------------------------------------------
+	m_landmarkJson = QJsonObject{};
+	m_landmarkJson[QStringLiteral("sourceSidecar")] = m_sidecarPath;
+	m_landmarkJson[QStringLiteral("cropImage")]     = m_cropPath;
+	m_landmarkJson[QStringLiteral("threshold")]     = m_threshold;
+
+	if (!m_originalPcaJson.isEmpty())
+		m_landmarkJson[QStringLiteral("originalPca")] = m_originalPcaJson;
+
+	if (!m_reslicedPcaJson.isEmpty())
+		m_landmarkJson[QStringLiteral("reslicedPca")] = m_reslicedPcaJson;
+
+	m_landmarkJson[QStringLiteral("landmarks")] = m_landmarkResult;
+
+	qDebug("onLandmark: landmark JSON cached:\n%s",
+	       qUtf8Printable(QJsonDocument(m_landmarkJson).toJson(QJsonDocument::Indented)));
+
+	if (ren)
+		ui->volumeView->render();
+}
+
+// ---------------------------------------------------------------------------
+// Reslice slot
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::onReslice()
+{
+	if (!m_pca.valid)
+	{
+		qWarning("onReslice: no valid PCA result available; load an image first.");
+		return;
+	}
+
+	if (!m_image)
+	{
+		qWarning("onReslice: no image cached.");
+		return;
+	}
+
+	// ------------------------------------------------------------------
+	// Build the 4×4 reslice-axes matrix from the PCA result.
+	//
+	// vtkImageReslice::SetResliceAxes() expects a matrix whose columns
+	// describe the output coordinate frame expressed in input (world) space:
+	//   col 0 (rows 0-2) = output X axis  ? PCA axis 0 (largest variance)
+	//   col 1 (rows 0-2) = output Y axis  ? PCA axis 1
+	//   col 2 (rows 0-2) = output Z axis  ? PCA axis 2
+	//   col 3 (rows 0-2) = origin         ? PCA centroid
+	//   row 3            = (0, 0, 0, 1)   (homogeneous)
+	// ------------------------------------------------------------------
+	auto resliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
+	resliceAxes->Identity();
+
+	for (int row = 0; row < 3; ++row)
+	{
+		resliceAxes->SetElement(row, 0, m_pca.axes[0][row]); // output X = PCA axis 0
+		resliceAxes->SetElement(row, 1, m_pca.axes[1][row]); // output Y = PCA axis 1
+		resliceAxes->SetElement(row, 2, m_pca.axes[2][row]); // output Z = PCA axis 2
+		resliceAxes->SetElement(row, 3, m_pca.centroid[row]); // origin  = centroid
+	}
+
+	qDebug("onReslice: reslice axes matrix:");
+	for (int r = 0; r < 4; ++r)
+	{
+		qDebug("  [ %8.4f  %8.4f  %8.4f  %8.4f ]",
+		       resliceAxes->GetElement(r, 0),
+		       resliceAxes->GetElement(r, 1),
+		       resliceAxes->GetElement(r, 2),
+		       resliceAxes->GetElement(r, 3));
+	}
+
+	// ------------------------------------------------------------------
+	// Configure and execute vtkImageReslice.
+	// AutoCropOutputOn() ensures the output extent covers the whole
+	// rotated volume; no voxels are clipped.
+	// ------------------------------------------------------------------
+	showProgressStart();
+	showProgressValue(10);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	auto reslice = vtkSmartPointer<vtkImageReslice>::New();
+	reslice->SetInputData(m_image);
+	reslice->SetResliceAxes(resliceAxes);
+	reslice->SetInterpolationModeToLinear();
+	reslice->AutoCropOutputOn();
+	reslice->SetOutputDimensionality(3);
+	reslice->Update();
+
+	showProgressValue(90);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	vtkImageData* resliced = reslice->GetOutput();
+	if (!resliced)
+	{
+		qWarning("onReslice: vtkImageReslice produced null output.");
+		showProgressEnd();
+		return;
+	}
+
+	const int* outDims = resliced->GetDimensions();
+	qDebug("onReslice: output dimensions: %d x %d x %d", outDims[0], outDims[1], outDims[2]);
+
+	// Keep the resliced volume alive (VolumeView does not take ownership).
+	m_reslicedImage = vtkSmartPointer<vtkImageData>::New();
+	m_reslicedImage->DeepCopy(resliced);
+
+	showProgressEnd();
+
+	// ------------------------------------------------------------------
+	// Visualise the resliced volume.  setImage() recomputes PCA on the
+	// new volume and stores the result in m_pca.  Because m_reslicedImage
+	// is non-null at this point, setImage() will NOT overwrite
+	// m_originalPcaJson — the original PCA remains intact.
+	// ------------------------------------------------------------------
+	setImage(m_reslicedImage);
+
+	// ------------------------------------------------------------------
+	// Cache the resliced-volume PCA to JSON now that setImage() has
+	// populated m_pca with the post-reslice result.
+	// ------------------------------------------------------------------
+	if (m_pca.valid)
+	{
+		m_reslicedPcaJson = pcaResultToJson(m_pca);
+		qDebug("onReslice: resliced PCA JSON cached:\n%s",
+		       qUtf8Printable(QJsonDocument(m_reslicedPcaJson).toJson(QJsonDocument::Indented)));
+	}
 }
 
 void PrototypeMainWindow::loadFromSidecarAsync(const QString& sidecarPath)

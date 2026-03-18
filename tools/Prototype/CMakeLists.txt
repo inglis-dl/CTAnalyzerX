@@ -4,9 +4,11 @@ target_sources(CTAXPrototype
   PRIVATE
     src/main.cpp
     src/PrototypeMainWindow.cpp
+    src/PrototypeHelpers.cpp
     resources/MainWindow.ui
   PUBLIC
     include/PrototypeMainWindow.h
+    include/PrototypeHelpers.h
 )
 
 # Make sure generated ui_*.h is found and local headers are visible.
