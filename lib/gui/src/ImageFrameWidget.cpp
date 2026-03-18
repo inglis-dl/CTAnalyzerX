@@ -339,6 +339,11 @@ vtkRenderWindow* ImageFrameWidget::renderWindow() const
 	return this->m_renderWindow;
 }
 
+vtkRenderer* ImageFrameWidget::renderer() const
+{ 
+	return m_renderer;
+}
+
 QString ImageFrameWidget::orientationLabel(ViewOrientation orient) const
 {
 	switch (orient) {

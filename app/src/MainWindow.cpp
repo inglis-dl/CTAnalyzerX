@@ -734,7 +734,7 @@ void MainWindow::writeSettings()
 	const auto frames = this->findChildren<ImageFrameWidget*>();
 	for (ImageFrameWidget* f : frames) {
 		if (!f) continue;
-		vtkGenericOpenGLRenderWindow* candidate = vtkGenericOpenGLRenderWindow::SafeDownCast(f->genericRenderWindow());
+		vtkGenericOpenGLRenderWindow* candidate = vtkGenericOpenGLRenderWindow::SafeDownCast(f->renderWindow());
 		if (candidate) {
 			grw = candidate;
 			break;

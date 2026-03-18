@@ -101,9 +101,8 @@ public:
 	void setGradientBackground(bool on);
 	bool gradientBackground() const;
 
-	vtkGenericOpenGLRenderWindow* genericRenderWindow() const { return m_renderWindow; }
 	vtkRenderWindow* renderWindow() const;
-	vtkRenderer* renderer() const { return m_renderer; }
+	vtkRenderer* renderer() const;
 
 public slots:
 	virtual void updateData() {};

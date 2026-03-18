@@ -24,11 +24,40 @@ target_include_directories(CTAXCore
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# Ensure targets linking CTAXCore can compile code that includes ITK headers (e.g., itkVersion.h)
+if(ITK_INCLUDE_DIRS)
+  target_include_directories(CTAXCore PUBLIC ${ITK_INCLUDE_DIRS})
+endif()
+
+set(CTAXCORE_VTK_LIBS
+  VTK::ImagingCore
+  VTK::ImagingGeneral
+  VTK::RenderingCore
+  VTK::RenderingOpenGL2
+  VTK::InteractionStyle
+  VTK::RenderingContextOpenGL2
+  VTK::RenderingVolume
+  VTK::RenderingVolumeOpenGL2
+  VTK::DICOM
+)
+
+# ITK brings in itkdouble-conversion-5.2.lib, which conflicts with Qt5Core[d].lib's
+# internal double-conversion.obj on Windows. Remove it from the link line.
+set(CTAXCORE_ITK_LIBS ${ITK_LIBRARIES})
+list(FILTER CTAXCORE_ITK_LIBS EXCLUDE REGEX "itkdouble-conversion")
+
+message(STATUS "CTAXCore: linking ITK libs (filtered): ${CTAXCORE_ITK_LIBS}")
+
 target_link_libraries(CTAXCore
   PUBLIC
-    ${VTK_LIBRARIES}
-    ${ITK_LIBRARIES}
-    VTK::DICOM
+    ${CTAXCORE_VTK_LIBS}
+  PRIVATE
+    ${CTAXCORE_ITK_LIBS}
+)
+
+vtk_module_autoinit(
+  TARGETS CTAXCore
+  MODULES ${CTAXCORE_VTK_LIBS}
 )
 
 target_compile_definitions(CTAXCore

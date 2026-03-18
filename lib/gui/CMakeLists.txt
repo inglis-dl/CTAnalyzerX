@@ -70,6 +70,12 @@ target_include_directories(CTAXGui
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# Define Qt+VTK GUI module list
+set(CTAXGUI_VTK_LIBS
+  VTK::ImagingStatistics
+  VTK::GUISupportQt
+)
+
 target_link_libraries(CTAXGui
   PUBLIC
     CTAXCore
@@ -77,6 +83,15 @@ target_link_libraries(CTAXGui
     Qt${VTK_QT_VERSION}::Gui
     Qt${VTK_QT_VERSION}::Widgets
     Qt${VTK_QT_VERSION}::Charts
+    Eigen3::Eigen
+  PRIVATE
+    ${CTAXGUI_VTK_LIBS}
+)
+
+# VTK module autoinit for GUI components
+vtk_module_autoinit(
+  TARGETS CTAXGui
+  MODULES ${CTAXGUI_VTK_LIBS}
 )
 
 # Ensure uic can find .ui templates that live under lib/gui/resources

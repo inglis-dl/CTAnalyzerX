@@ -28,19 +28,7 @@ target_link_libraries(CTAnalyzerX
 # Ensure uic sees the app's .ui files AND any ui_*.h included from linked libs (e.g., CTAXGui)
 set_property(TARGET CTAnalyzerX PROPERTY AUTOUIC_SEARCH_PATHS
   ${CMAKE_CURRENT_SOURCE_DIR}/resources
-  ${CMAKE_CURRENT_SOURCE_DIR}/../lib/gui/resources
+  ${CTAX_GUI_RESOURCES_DIR}
 )
 
-# Suppress linker duplicate symbol errors
-if(MSVC)
-    target_link_options(CTAnalyzerX PRIVATE 
-        /FORCE:MULTIPLE
-        /IGNORE:4006  # Ignore duplicate symbol warnings
-    )
-    
-    # Suppress STL deprecation warnings
-    target_compile_definitions(CTAnalyzerX PRIVATE
-        _SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING
-        _SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS
-    )
-endif()
+# VTK autoinit is handled by CTAXCore and CTAXGui, no need to repeat here

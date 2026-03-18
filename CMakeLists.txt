@@ -29,6 +29,25 @@ elseif(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "${DEFAULT_BUILD_TYPE}" CACHE STRING "Choose the type of build." FORCE)
 endif()
 
+# Globally silence MSVC deprecation warnings for non-standard stdext iterators
+if(MSVC)
+    add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
+    add_compile_definitions(_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING)
+endif()
+
+# Work around ITK/Qt double-conversion symbol collisions on MSVC.
+# Qt5Core[d].lib contains double-conversion objects; ITK may also link itkdouble-conversion-5.2.lib.
+# If both are linked into the same final binary, LNK2005 occurs.
+function(ctax_msvc_exclude_itk_double_conversion target_name)
+  if(MSVC)
+    target_link_options(
+        ${target_name} PRIVATE 
+        "/NODEFAULTLIB:itkdouble-conversion-5.2.lib"
+        "/NODEFAULTLIB:itkdouble-conversion.lib"
+    )
+  endif()
+endfunction()
+
 # Output directories
 include(GNUInstallDirs)
 foreach(OUTPUTCONFIG ${CMAKE_CONFIGURATION_TYPES})
@@ -47,7 +66,9 @@ if(MSVC)
     endif()
 endif()
 
-# Dependencies
+# ========================
+# Find VTK FIRST
+# ========================
 find_package(VTK 9.3 REQUIRED COMPONENTS
   ImagingCore
   ImagingGeneral
@@ -58,16 +79,63 @@ find_package(VTK 9.3 REQUIRED COMPONENTS
   RenderingVolume
   RenderingVolumeOpenGL2
   GUISupportQt
+  QUIET
 )
 
+if(NOT VTK_FOUND)
+  message(FATAL_ERROR "Unable to find the VTK build folder.")
+endif()
+
+# ========================
+# Determine Qt version from VTK
+# ========================
 if(NOT DEFINED VTK_QT_VERSION)
   set(VTK_QT_VERSION 5)
 endif()
 
+# ========================
+# Find Qt AFTER VTK
+# ========================
+set(qt_components Core Gui Widgets Charts)
+
+find_package(Qt${VTK_QT_VERSION}
+    CONFIG
+    REQUIRED
+    COMPONENTS ${qt_components}
+    QUIET
+)
+
+message(STATUS "Found Qt${VTK_QT_VERSION} with components: ${qt_components}")
+
+# ========================
+# Find ITK
+# ========================
 find_package(ITK 5.2.0 CONFIG REQUIRED QUIET)
-include(${ITK_USE_FILE})
+
+if(NOT ITK_FOUND)
+  message(FATAL_ERROR "Unable to find the ITK build folder.")
+endif()
+
+# Remove itkdouble-conversion from ITKCommon's exported link interface.
+# It conflicts with Qt5Core's embedded double-conversion on MSVC static builds.
+if(MSVC AND TARGET ITKCommon)
+  get_target_property(_itk_common_libs ITKCommon INTERFACE_LINK_LIBRARIES)
+  if(_itk_common_libs)
+    list(FILTER _itk_common_libs EXCLUDE REGEX "itkdouble-conversion")
+    set_target_properties(ITKCommon PROPERTIES INTERFACE_LINK_LIBRARIES "${_itk_common_libs}")
+  endif()
+endif()
+
+# ========================
+# Find Eigen3 (required by ITK headers when ITK_USE_SYSTEM_EIGEN is ON)
+# ========================
+find_package(Eigen3 3.3 CONFIG REQUIRED)
 
 find_package(DICOM 0.8.15 CONFIG REQUIRED)
+
+if(NOT DICOM_FOUND)
+  message(FATAL_ERROR "Unable to find the vtk-dicom build folder.")
+endif()
 
 # Expose VTK-DICOM version (if the package provides it)
 set(CTANALYZERX_VTKDICOM_VERSION "unknown")
@@ -76,10 +144,6 @@ if(DEFINED DICOM_VERSION)
 elseif(DEFINED DICOM_VERSION_STRING)
   set(CTANALYZERX_VTKDICOM_VERSION "${DICOM_VERSION_STRING}")
 endif()
-
-find_package(Qt${VTK_QT_VERSION}
-    CONFIG
-    REQUIRED COMPONENTS Core Gui Widgets Charts)
 
 # ------------------------
 # Versioning
@@ -127,6 +191,11 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 # ------------------------
+# Project paths
+# ------------------------
+set(CTAX_GUI_RESOURCES_DIR "${PROJECT_SOURCE_DIR}/lib/gui/resources")
+
+# ------------------------
 # Subdirectories
 # ------------------------
 add_subdirectory(lib/core)
@@ -141,12 +210,6 @@ endif()
 option(CTAX_BUILD_TESTS "Build tests" OFF)
 if(CTAX_BUILD_TESTS)
   add_subdirectory(tests)
-endif()
-
-# Globally silence MSVC deprecation warnings for non-standard stdext iterators
-if(MSVC)
-    add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
-    add_compile_definitions(_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING)
 endif()
 
 # Packaging
