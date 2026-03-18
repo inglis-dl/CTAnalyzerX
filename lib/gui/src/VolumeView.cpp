@@ -163,6 +163,7 @@ void VolumeView::createMenuAndActions()
 	setSelectionList({
 		QStringLiteral("Volume"),
 		QStringLiteral("Slice Planes"),
+		QStringLiteral("Show/Hide"),
 		QStringLiteral("--"),
 		QStringLiteral("XY"),
 		QStringLiteral("YZ"),
@@ -189,13 +190,36 @@ void VolumeView::createMenuAndActions()
 				// Toggle to slice planes view
 				setOrthoPlanesVisible(true);
 			}
+			else if (item == QLatin1String("Show/Hide")) {
+				hideAllContent();
+			}
 			else if (item == QLatin1String("Reset Camera")) {
 				resetCamera();
 			}
-			// Always restore the title to the current mode after any command
-			setTitle(m_orthoPlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
+			// Restore the title to reflect current state
+			if (m_contentHidden)
+				setTitle(QStringLiteral("Hidden"));
+			else
+				setTitle(m_orthoPlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
 		});
 	}
+}
+
+void VolumeView::hideAllContent()
+{
+	m_contentHidden = true;
+
+	// Hide the ray-cast volume without removing it from the renderer so that
+	// the VTK pipeline (transfer functions, mapper state) stays intact.
+	if (m_volume)
+		m_volume->SetVisibility(0);
+
+	// Hide all three ortho-plane slice actors.
+	if (m_orthoPlanes)
+		m_orthoPlanes->SetPlaneVisibility(false);
+
+	setTitle(QStringLiteral("Hidden"));
+	render();
 }
 
 vtkPiecewiseFunction* VolumeView::actualScalarOpacity() const
@@ -517,6 +541,13 @@ void VolumeView::setOrthoPlanesVisible(bool visible)
 
 	if (!m_imageInitialized)
 		return;
+
+	if (m_contentHidden)
+	{
+		m_contentHidden = false;
+		if (m_volume)
+			m_volume->SetVisibility(1);
+	}
 
 	// Mutually exclusive: show either volume or planes, not both
 	if (visible) {

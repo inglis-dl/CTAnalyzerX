@@ -48,6 +48,8 @@ public:
 
 	bool orthoPlanesVisible() const { return m_orthoPlanesVisible; }
 
+	bool contentHidden() const { return m_contentHidden; }
+
 	bool outlineVisible() const { return m_outlineVisible; }
 
 	QColor outlineColor() const { return m_outlineColor; }
@@ -96,6 +98,8 @@ public slots:
 
 	void writeSettings() const override;
 
+	void hideAllContent();
+
 private slots:
 	// Full-signature observer to optionally abort the event
 	void onInteractorChar(vtkObject* caller, unsigned long eventId, void* clientData, void* callData, vtkCommand* command);
@@ -108,6 +112,7 @@ private:
 	vtkSmartPointer<vtkEventQtSlotConnect> m_qvtk;
 	bool m_orthoPlanesVisible = false;
 	bool m_shadingEnabled = false;
+	bool m_contentHidden = false;
 
 	vtkSmartPointer<vtkGPUVolumeRayCastMapper> m_mapper;
 	vtkSmartPointer<vtkVolumeProperty>         m_volumeProperty;
@@ -144,5 +149,4 @@ private:
 	bool m_hasSavedState = false;
 
 	double m_minTFNodeX;
-
 };
