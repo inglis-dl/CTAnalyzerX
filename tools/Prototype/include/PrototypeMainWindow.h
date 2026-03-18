@@ -6,7 +6,9 @@
 #include <vtkSmartPointer.h>
 
 #include <limits>
+#include <array>
 
+class vtkActor;
 class vtkImageData;
 class ImageLoader;
 class vtkEventQtSlotConnect;
@@ -50,4 +52,17 @@ private:
 	vtkSmartPointer<ImageLoader>           m_imageLoader;
 	vtkSmartPointer<vtkEventQtSlotConnect> m_vtkConnections;
 	QProgressBar* m_progressBar = nullptr;
+
+	// PCA overlay actors (axis shafts + tip spheres). Cleared and rebuilt each setImage().
+	// 3 axis lines + 6 sphere tip actors (both ends per axis) + 1 circumsphere wireframe.
+	std::array<vtkSmartPointer<vtkActor>, 3>  m_axisActors;
+	std::array<vtkSmartPointer<vtkActor>, 6>  m_tipActors;
+	vtkSmartPointer<vtkActor>                 m_circumsphereActor;
+	// Add this member to the private section of PrototypeMainWindow
+
+// 3 ring actors for PCA overlay (one per principal axis)
+	std::array<vtkSmartPointer<vtkActor>, 3> m_ringActors;
+
+	// Removes all previously added PCA overlay actors from the VolumeView renderer.
+	void clearPcaOverlay();
 };
