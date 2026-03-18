@@ -13,10 +13,12 @@
 
 #include <vtkSmartPointer.h>
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 
 #include <functional>
+#include <vector>
 
 class vtkActor;
 class vtkImageData;
@@ -107,6 +109,44 @@ namespace PrototypeHelpers
 	                                  double outWorld[3]);
 
 	// -----------------------------------------------------------------------
+	// Bone island segmentation
+	// -----------------------------------------------------------------------
+
+	// Result of one seeded region-growing run on a single seed point.
+	struct BoneIsland
+	{
+		int         label;        // unique integer label assigned to this island (1-based)
+		vtkIdType   voxelCount;   // number of voxels in the island
+		double      seedWorld[3]; // the world-space seed point that grew this island
+		int         seedVoxel[3]; // nearest voxel index of seedWorld in the resliced image
+		QJsonObject json;         // serialised summary (label, voxelCount, seedWorld, boundingBox)
+	};
+
+	// Thresholds `reslicedImage` at `threshold`, then runs an independent
+	// 26-connected BFS flood-fill from each world-space seed in `seedsWorld`.
+	//
+	// Each seed that falls on an above-threshold voxel grows its own labelled
+	// island.  Seeds that land on a below-threshold voxel or outside the image
+	// extent are skipped (a qWarning is emitted for each).  If two seeds happen
+	// to flood-fill into the same connected component the second seed will find
+	// all reachable voxels already claimed and produce an island with voxelCount
+	// == 0 (also warned and excluded from the output).
+	//
+	// progressCb(percent) is called at key milestones in [0, 100].
+	//
+	// Returns one BoneIsland per seed that successfully grew a non-empty region.
+	// The label image (unsigned char, one scalar per voxel, 0 = background) is
+	// written into `outLabelImage` so the caller can surface-extract each island.
+	// `outLabelImage` is allocated and sized to match `reslicedImage` by this
+	// function; pass a default-constructed vtkSmartPointer.
+	std::vector<BoneIsland> segmentBoneIslands(
+		vtkImageData*                          reslicedImage,
+		double                                 threshold,
+		const std::vector<std::array<double,3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>&         outLabelImage,
+		const std::function<void(int)>&        progressCb = nullptr);
+
+	// -----------------------------------------------------------------------
 	// VTK actor builders
 	// -----------------------------------------------------------------------
 
@@ -127,5 +167,16 @@ namespace PrototypeHelpers
 	vtkSmartPointer<vtkActor> makeRingActor(
 		const double centre[3], const double normal[3], double radius,
 		double r, double g, double b, double lineWidth = 2.0);
+
+	// Returns a translucent surface actor for one bone island.
+	// `labelImage`  : unsigned-char label volume (produced by segmentBoneIslands)
+	// `islandLabel` : the integer label value to iso-surface
+	// r, g, b       : surface colour
+	// opacity       : surface opacity in [0, 1]
+	vtkSmartPointer<vtkActor> makeIslandSurfaceActor(
+		vtkImageData* labelImage,
+		int           islandLabel,
+		double        r, double g, double b,
+		double        opacity = 0.6);
 
 } // namespace PrototypeHelpers

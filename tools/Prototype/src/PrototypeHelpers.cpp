@@ -3,6 +3,7 @@
 #include <vtkActor.h>
 #include <vtkCellArray.h>
 #include <vtkDataArray.h>
+#include <vtkDiscreteFlyingEdges3D.h>
 #include <vtkImageData.h>
 #include <vtkLine.h>
 #include <vtkMath.h>
@@ -14,18 +15,24 @@
 #include <vtkRegularPolygonSource.h>
 #include <vtkSmartPointer.h>
 #include <vtkSphereSource.h>
+#include <vtkThreshold.h>
+#include <vtkUnsignedCharArray.h>
 
 #include <QDebug>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <queue>
 #include <stdexcept>
+#include <vector>
 
 namespace PrototypeHelpers
 {
@@ -176,7 +183,6 @@ namespace PrototypeHelpers
 		double c11 = 0.0, c12 = 0.0;
 		double c22 = 0.0;
 
-		// Track bounding box of the binary voxels (world space) for circumsphere radius
 		double bbMin[3] = { std::numeric_limits<double>::max(),
 		                    std::numeric_limits<double>::max(),
 		                    std::numeric_limits<double>::max() };
@@ -204,7 +210,6 @@ namespace PrototypeHelpers
 					c11 += wy * wy;  c12 += wy * wz;
 					c22 += wz * wz;
 
-					// bounding box
 					const double awx = wx + result.centroid[0];
 					const double awy = wy + result.centroid[1];
 					const double awz = wz + result.centroid[2];
@@ -222,22 +227,17 @@ namespace PrototypeHelpers
 		c11 /= n; c12 /= n;
 		c22 /= n;
 
-		// --- Eigen-decomposition via vtkMath::Jacobi ---
-		// vtkMath::Jacobi expects a double** (array of row pointers)
 		double row0[3] = { c00, c01, c02 };
 		double row1[3] = { c01, c11, c12 };
 		double row2[3] = { c02, c12, c22 };
 		double* cov[3] = { row0, row1, row2 };
 
-		double evecData[3][3]; // columns = eigenvectors after Jacobi
+		double evecData[3][3];
 		double* evecs[3] = { evecData[0], evecData[1], evecData[2] };
 		double  evals[3];
 
 		vtkMath::Jacobi(cov, evals, evecs);
-		// vtkMath::Jacobi returns eigenvalues in DESCENDING order
 
-		// Transpose: Jacobi stores eigenvectors as columns of evecs[][] matrix
-		// evecs[col][row], so axis i = (evecs[0][i], evecs[1][i], evecs[2][i])
 		for (int i = 0; i < 3; ++i)
 		{
 			result.axes[i][0] = evecs[0][i];
@@ -247,8 +247,6 @@ namespace PrototypeHelpers
 			result.eigenvalues[i] = evals[i];
 		}
 
-		// Circumsphere radius: half-diagonal of the binary bounding box,
-		// centred on the centroid, guaranteed to lie outside the bounding box.
 		const double dx = bbMax[0] - bbMin[0];
 		const double dy = bbMax[1] - bbMin[1];
 		const double dz = bbMax[2] - bbMin[2];
@@ -258,7 +256,6 @@ namespace PrototypeHelpers
 		qDebug("PCA eigenvalues: %.4f  %.4f  %.4f", evals[0], evals[1], evals[2]);
 		qDebug("PCA circumsphere radius: %.2f", result.circumRadius);
 
-		// Eigen-decomposition complete: 100 %
 		if (progressCb) progressCb(100);
 
 		result.valid = true;
@@ -281,7 +278,6 @@ namespace PrototypeHelpers
 			const double d = rayDir[a];
 			if (std::abs(d) < 1e-12)
 			{
-				// Ray is parallel to this slab pair; miss if origin is outside
 				if (rayOrigin[a] < bbMin[a] || rayOrigin[a] > bbMax[a])
 					return false;
 			}
@@ -298,17 +294,15 @@ namespace PrototypeHelpers
 			}
 		}
 
-		tEntry = tMin; // may be <= 0 when origin is inside the box
-		tExit  = tMax; // distance to the far face along rayDir
-		return tExit > 0.0; // ray must actually reach the box
+		tEntry = tMin;
+		tExit  = tMax;
+		return tExit > 0.0;
 	}
 
 	bool rayAabbExit(const double rayOrigin[3], const double rayDir[3],
 	                 const double bbMin[3],    const double bbMax[3],
 	                 double& tExit)
 	{
-		// tFar accumulates the minimum of all far-slab intersections.
-		// Initialise to +inf so the first real slab clamps it down.
 		double tFar = std::numeric_limits<double>::max();
 
 		for (int a = 0; a < 3; ++a)
@@ -317,32 +311,19 @@ namespace PrototypeHelpers
 
 			if (std::abs(d) < 1e-12)
 			{
-				// Ray is parallel to this slab pair.
-				// If the origin is outside the slab the ray never hits the box.
 				if (rayOrigin[a] < bbMin[a] || rayOrigin[a] > bbMax[a])
 					return false;
-				// Otherwise the ray travels within the slab forever — no constraint
-				// on tFar from this axis.
 			}
 			else
 			{
-				// Compute t for each of the two planes bounding this axis
 				const double invD = 1.0 / d;
 				const double tA   = (bbMin[a] - rayOrigin[a]) * invD;
 				const double tB   = (bbMax[a] - rayOrigin[a]) * invD;
-
-				// tFarAxis is the t of the plane the ray exits through.
-				// tNearAxis is the plane it enters through (may be negative when
-				// the origin is already past that plane, i.e. inside the box).
 				const double tFarAxis = std::max(tA, tB);
-
-				// The overall exit t is the minimum across all axes:
-				// the ray exits the box as soon as it leaves any slab.
 				tFar = std::min(tFar, tFarAxis);
 			}
 		}
 
-		// tFar must be positive: the exit point is ahead of the ray origin.
 		if (tFar <= 0.0)
 			return false;
 
@@ -453,6 +434,257 @@ namespace PrototypeHelpers
 	}
 
 	// -----------------------------------------------------------------------
+	// Bone island segmentation — VTK-native seeded BFS region growing
+	// -----------------------------------------------------------------------
+
+	std::vector<BoneIsland> segmentBoneIslands(
+		vtkImageData*                          reslicedImage,
+		double                                 threshold,
+		const std::vector<std::array<double,3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>&         outLabelImage,
+		const std::function<void(int)>&        progressCb)
+	{
+		if (!reslicedImage || seedsWorld.empty())
+			return {};
+
+		const double* origin  = reslicedImage->GetOrigin();
+		const double* spacing = reslicedImage->GetSpacing();
+		const int*    dims    = reslicedImage->GetDimensions();
+		vtkDataArray* scalars = reslicedImage->GetPointData()->GetScalars();
+
+		if (!scalars)
+		{
+			qWarning("segmentBoneIslands: resliced image has no scalar data.");
+			return {};
+		}
+
+		if (progressCb) progressCb(0);
+
+		const vtkIdType nx = dims[0];
+		const vtkIdType ny = dims[1];
+		const vtkIdType nz = dims[2];
+		const vtkIdType totalVoxels = nx * ny * nz;
+
+		// ------------------------------------------------------------------
+		// Build a flat binary mask: 1 = above threshold, 0 = background.
+		// Using a separate array avoids modifying the original scalar data.
+		// ------------------------------------------------------------------
+		std::vector<unsigned char> binary(static_cast<std::size_t>(totalVoxels), 0u);
+
+		for (vtkIdType i = 0; i < totalVoxels; ++i)
+		{
+			if (scalars->GetTuple1(i) >= threshold)
+				binary[static_cast<std::size_t>(i)] = 1u;
+		}
+
+		if (progressCb) progressCb(10);
+
+		// ------------------------------------------------------------------
+		// Label map: 0 = unvisited / background, label > 0 = island id.
+		// Sized identical to the input volume.
+		// ------------------------------------------------------------------
+		std::vector<unsigned char> labelMap(static_cast<std::size_t>(totalVoxels), 0u);
+
+		// Helper: flat voxel index from 3-D coordinates
+		auto flatIdx = [&](vtkIdType x, vtkIdType y, vtkIdType z) -> vtkIdType
+		{
+			return z * ny * nx + y * nx + x;
+		};
+
+		// Helper: world ? nearest voxel index (clamped to valid extent)
+		auto worldToVoxel = [&](const double w[3], int out[3]) -> bool
+		{
+			out[0] = static_cast<int>(std::round((w[0] - origin[0]) / spacing[0]));
+			out[1] = static_cast<int>(std::round((w[1] - origin[1]) / spacing[1]));
+			out[2] = static_cast<int>(std::round((w[2] - origin[2]) / spacing[2]));
+			return (out[0] >= 0 && out[0] < dims[0] &&
+			        out[1] >= 0 && out[1] < dims[1] &&
+			        out[2] >= 0 && out[2] < dims[2]);
+		};
+
+		// 26-connected neighbourhood offsets (all combinations of ±1 per axis)
+		const int offsets[26][3] = {
+			{-1,-1,-1},{-1,-1, 0},{-1,-1, 1},
+			{-1, 0,-1},{-1, 0, 0},{-1, 0, 1},
+			{-1, 1,-1},{-1, 1, 0},{-1, 1, 1},
+			{ 0,-1,-1},{ 0,-1, 0},{ 0,-1, 1},
+			{ 0, 0,-1},           { 0, 0, 1},
+			{ 0, 1,-1},{ 0, 1, 0},{ 0, 1, 1},
+			{ 1,-1,-1},{ 1,-1, 0},{ 1,-1, 1},
+			{ 1, 0,-1},{ 1, 0, 0},{ 1, 0, 1},
+			{ 1, 1,-1},{ 1, 1, 0},{ 1, 1, 1},
+		};
+
+		// ------------------------------------------------------------------
+		// BFS flood-fill from each seed, one island per seed
+		// ------------------------------------------------------------------
+		std::vector<BoneIsland> islands;
+		islands.reserve(seedsWorld.size());
+
+		const int nSeeds = static_cast<int>(seedsWorld.size());
+
+		for (int s = 0; s < nSeeds; ++s)
+		{
+			const auto& sw = seedsWorld[static_cast<std::size_t>(s)];
+			const double seedW[3] = { sw[0], sw[1], sw[2] };
+
+			int seedVox[3];
+			if (!worldToVoxel(seedW, seedVox))
+			{
+				qWarning("segmentBoneIslands: seed %d (%.2f, %.2f, %.2f) is outside the image extent; skipped.",
+				         s, seedW[0], seedW[1], seedW[2]);
+				continue;
+			}
+
+			const vtkIdType seedFlat = flatIdx(seedVox[0], seedVox[1], seedVox[2]);
+
+			// Skip if the seed voxel is below threshold
+			if (binary[static_cast<std::size_t>(seedFlat)] == 0u)
+			{
+				qWarning("segmentBoneIslands: seed %d (%.2f, %.2f, %.2f) ? voxel (%d,%d,%d) "
+				         "is below threshold; skipped.",
+				         s, seedW[0], seedW[1], seedW[2],
+				         seedVox[0], seedVox[1], seedVox[2]);
+				continue;
+			}
+
+			// Skip if already claimed by a previous seed
+			if (labelMap[static_cast<std::size_t>(seedFlat)] != 0u)
+			{
+				qWarning("segmentBoneIslands: seed %d voxel (%d,%d,%d) was already labelled %u; "
+				         "island would be empty — skipped.",
+				         s, seedVox[0], seedVox[1], seedVox[2],
+				         static_cast<unsigned>(labelMap[static_cast<std::size_t>(seedFlat)]));
+				continue;
+			}
+
+			const unsigned char islandLabel = static_cast<unsigned char>(islands.size() + 1u);
+
+			// BFS
+			std::queue<std::array<vtkIdType, 3>> bfsQueue;
+			bfsQueue.push({ seedVox[0], seedVox[1], seedVox[2] });
+			labelMap[static_cast<std::size_t>(seedFlat)] = islandLabel;
+			vtkIdType voxelCount = 0;
+
+			// Track the axis-aligned bounding box of this island (voxel indices)
+			int bbVoxMin[3] = { seedVox[0], seedVox[1], seedVox[2] };
+			int bbVoxMax[3] = { seedVox[0], seedVox[1], seedVox[2] };
+
+			while (!bfsQueue.empty())
+			{
+				const auto cur = bfsQueue.front();
+				bfsQueue.pop();
+
+				const vtkIdType cx = cur[0];
+				const vtkIdType cy = cur[1];
+				const vtkIdType cz = cur[2];
+				++voxelCount;
+
+				bbVoxMin[0] = std::min(bbVoxMin[0], static_cast<int>(cx));
+				bbVoxMin[1] = std::min(bbVoxMin[1], static_cast<int>(cy));
+				bbVoxMin[2] = std::min(bbVoxMin[2], static_cast<int>(cz));
+				bbVoxMax[0] = std::max(bbVoxMax[0], static_cast<int>(cx));
+				bbVoxMax[1] = std::max(bbVoxMax[1], static_cast<int>(cy));
+				bbVoxMax[2] = std::max(bbVoxMax[2], static_cast<int>(cz));
+
+				for (const auto& off : offsets)
+				{
+					const vtkIdType nx_ = cx + off[0];
+					const vtkIdType ny_ = cy + off[1];
+					const vtkIdType nz_ = cz + off[2];
+
+					if (nx_ < 0 || nx_ >= nx ||
+					    ny_ < 0 || ny_ >= ny ||
+					    nz_ < 0 || nz_ >= nz)
+						continue;
+
+					const vtkIdType nFlat = flatIdx(nx_, ny_, nz_);
+					const auto nFlatSz    = static_cast<std::size_t>(nFlat);
+
+					if (binary[nFlatSz] == 0u || labelMap[nFlatSz] != 0u)
+						continue;
+
+					labelMap[nFlatSz] = islandLabel;
+					bfsQueue.push({ nx_, ny_, nz_ });
+				}
+			}
+
+			qDebug("segmentBoneIslands: seed %d ? island label %u, %lld voxels, "
+			       "BB voxel [%d,%d,%d]–[%d,%d,%d]",
+			       s, static_cast<unsigned>(islandLabel),
+			       static_cast<long long>(voxelCount),
+			       bbVoxMin[0], bbVoxMin[1], bbVoxMin[2],
+			       bbVoxMax[0], bbVoxMax[1], bbVoxMax[2]);
+
+			// Build bounding box in world space for the JSON summary
+			const double bbWorldMin[3] = {
+				origin[0] + bbVoxMin[0] * spacing[0],
+				origin[1] + bbVoxMin[1] * spacing[1],
+				origin[2] + bbVoxMin[2] * spacing[2]
+			};
+			const double bbWorldMax[3] = {
+				origin[0] + bbVoxMax[0] * spacing[0],
+				origin[1] + bbVoxMax[1] * spacing[1],
+				origin[2] + bbVoxMax[2] * spacing[2]
+			};
+
+			// Serialise island summary to JSON
+			auto packVec3 = [](const double v[3]) -> QJsonArray
+			{
+				return QJsonArray{ v[0], v[1], v[2] };
+			};
+
+			QJsonObject islandJson;
+			islandJson[QStringLiteral("label")]      = static_cast<int>(islandLabel);
+			islandJson[QStringLiteral("voxelCount")] = static_cast<qint64>(voxelCount);
+			islandJson[QStringLiteral("seedWorld")]  = packVec3(seedW);
+			islandJson[QStringLiteral("bbMin")]      = packVec3(bbWorldMin);
+			islandJson[QStringLiteral("bbMax")]      = packVec3(bbWorldMax);
+
+			BoneIsland island;
+			island.label      = static_cast<int>(islandLabel);
+			island.voxelCount = voxelCount;
+			island.seedWorld[0] = seedW[0];
+			island.seedWorld[1] = seedW[1];
+			island.seedWorld[2] = seedW[2];
+			island.seedVoxel[0] = seedVox[0];
+			island.seedVoxel[1] = seedVox[1];
+			island.seedVoxel[2] = seedVox[2];
+			island.json         = islandJson;
+
+			islands.push_back(island);
+
+			// Update progress: spread seeds across [10, 90]
+			if (progressCb)
+			{
+				const int pct = 10 + static_cast<int>(
+					80.0 * (s + 1) / static_cast<double>(nSeeds));
+				progressCb(pct);
+			}
+		}
+
+		// ------------------------------------------------------------------
+		// Pack the label map into a new vtkImageData (unsigned char scalars)
+		// with the same geometry as the resliced input.
+		// ------------------------------------------------------------------
+		outLabelImage = vtkSmartPointer<vtkImageData>::New();
+		outLabelImage->SetDimensions(dims);
+		outLabelImage->SetSpacing(spacing);
+		outLabelImage->SetOrigin(origin);
+		outLabelImage->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+
+		unsigned char* outPtr = static_cast<unsigned char*>(
+			outLabelImage->GetScalarPointer());
+
+		for (std::size_t i = 0; i < static_cast<std::size_t>(totalVoxels); ++i)
+			outPtr[i] = labelMap[i];
+
+		if (progressCb) progressCb(100);
+
+		return islands;
+	}
+
+	// -----------------------------------------------------------------------
 	// VTK actor builders
 	// -----------------------------------------------------------------------
 
@@ -515,7 +747,7 @@ namespace PrototypeHelpers
 		ring->SetRadius(radius);
 		ring->SetCenter(centre);
 		ring->SetNormal(normal);
-		ring->GeneratePolygonOff(); // outline (closed polyline) only, no filled face
+		ring->GeneratePolygonOff();
 
 		auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
 		mapper->SetInputConnection(ring->GetOutputPort());
@@ -525,6 +757,34 @@ namespace PrototypeHelpers
 		actor->GetProperty()->SetColor(r, g, b);
 		actor->GetProperty()->SetLineWidth(static_cast<float>(lineWidth));
 		actor->GetProperty()->SetLighting(false);
+
+		return actor;
+	}
+
+	vtkSmartPointer<vtkActor> makeIslandSurfaceActor(
+		vtkImageData* labelImage,
+		int           islandLabel,
+		double        r, double g, double b,
+		double        opacity)
+	{
+		// vtkDiscreteFlyingEdges3D iso-surfaces exactly on an integer label value.
+		// It is available in VTK 8+ and is faster than vtkMarchingCubes for
+		// discrete label volumes.
+		auto flyingEdges = vtkSmartPointer<vtkDiscreteFlyingEdges3D>::New();
+		flyingEdges->SetInputData(labelImage);
+		flyingEdges->SetValue(0, static_cast<double>(islandLabel));
+		flyingEdges->Update();
+
+		auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+		mapper->SetInputConnection(flyingEdges->GetOutputPort());
+		mapper->ScalarVisibilityOff(); // use actor colour, not scalar colour map
+
+		auto actor = vtkSmartPointer<vtkActor>::New();
+		actor->SetMapper(mapper);
+		actor->GetProperty()->SetColor(r, g, b);
+		actor->GetProperty()->SetOpacity(opacity);
+		// Back-face culling keeps the inside of partially-visible islands clean
+		actor->GetProperty()->BackfaceCullingOn();
 
 		return actor;
 	}

@@ -30,6 +30,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // PrototypeMainWindow
@@ -59,6 +60,22 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	actReslice->setToolTip(tr("Reslice the volume aligned to the PCA principal axes"));
 	ui->toolBar->addAction(actReslice);
 	connect(actReslice, &QAction::triggered, this, &PrototypeMainWindow::onReslice);
+
+	// "Regions" toolbar button: threshold + seeded BFS island segmentation
+	QAction* actRegions = new QAction(tr("Regions"), this);
+	actRegions->setToolTip(tr("Segment bone islands from the resliced volume using landmark seeds"));
+	ui->toolBar->addAction(actRegions);
+	connect(actRegions, &QAction::triggered, this, &PrototypeMainWindow::onRegions);
+
+	// "Outline" toggle toolbar button: shows/hides the VolumeView bounding-box outline actor.
+	// The action is checkable so it renders in a depressed state while the outline is visible
+	// and returns to the normal raised state when unchecked.
+	m_actOutline = new QAction(tr("Outline"), this);
+	m_actOutline->setToolTip(tr("Toggle the volume bounding-box outline"));
+	m_actOutline->setCheckable(true);
+	m_actOutline->setChecked(false); // outline is hidden by default (matches VolumeView default)
+	ui->toolBar->addAction(m_actOutline);
+	connect(m_actOutline, &QAction::toggled, this, &PrototypeMainWindow::onOutlineToggled);
 
 	// ImageLoader + VTK event wiring
 	m_imageLoader    = vtkSmartPointer<ImageLoader>::New();
@@ -188,6 +205,26 @@ void PrototypeMainWindow::clearPcaOverlay()
 	{
 		if (a) { ren->RemoveActor(a); a = nullptr; }
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Island actor management
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::clearIslandActors()
+{
+	if (!ui || !ui->volumeView)
+		return;
+
+	vtkRenderer* ren = ui->volumeView->renderer();
+	if (!ren)
+		return;
+
+	for (auto& a : m_islandActors)
+	{
+		if (a) ren->RemoveActor(a);
+	}
+	m_islandActors.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +376,16 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 
 	ui->volumeView->setImageData(image);
 	ui->volumeView->updateData();
+
+	// The outline actor is hidden by VolumeView on every updateData() call;
+	// keep the toolbar toggle button in sync with that reset.
+	if (m_actOutline)
+	{
+		// Block the toggled() signal while we programmatically reset the checked
+		// state so onOutlineToggled() is not re-entered for this housekeeping change.
+		const QSignalBlocker blocker(m_actOutline);
+		m_actOutline->setChecked(false);
+	}
 
 	// Determine window/level from the image and the cached sidecar threshold.
 	// level  = threshold (falls back to scalar range midpoint if not present)
@@ -571,16 +618,6 @@ void PrototypeMainWindow::onLandmark()
 
 	// ------------------------------------------------------------------
 	// Build the consolidated landmark JSON cache (written to disk on close).
-	//
-	// Structure:
-	// {
-	//   "sourceSidecar"  : "<path>",
-	//   "cropImage"      : "<path>",
-	//   "threshold"      : <value>,
-	//   "originalPca"    : { ... },          // always present after first load
-	//   "reslicedPca"    : { ... },          // present only after onReslice()
-	//   "landmarks"      : { ... }           // same as m_landmarkResult
-	// }
 	// ------------------------------------------------------------------
 	m_landmarkJson = QJsonObject{};
 	m_landmarkJson[QStringLiteral("sourceSidecar")] = m_sidecarPath;
@@ -620,26 +657,15 @@ void PrototypeMainWindow::onReslice()
 		return;
 	}
 
-	// ------------------------------------------------------------------
-	// Build the 4×4 reslice-axes matrix from the PCA result.
-	//
-	// vtkImageReslice::SetResliceAxes() expects a matrix whose columns
-	// describe the output coordinate frame expressed in input (world) space:
-	//   col 0 (rows 0-2) = output X axis  ? PCA axis 0 (largest variance)
-	//   col 1 (rows 0-2) = output Y axis  ? PCA axis 1
-	//   col 2 (rows 0-2) = output Z axis  ? PCA axis 2
-	//   col 3 (rows 0-2) = origin         ? PCA centroid
-	//   row 3            = (0, 0, 0, 1)   (homogeneous)
-	// ------------------------------------------------------------------
 	auto resliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
 	resliceAxes->Identity();
 
 	for (int row = 0; row < 3; ++row)
 	{
-		resliceAxes->SetElement(row, 0, m_pca.axes[0][row]); // output X = PCA axis 0
-		resliceAxes->SetElement(row, 1, m_pca.axes[1][row]); // output Y = PCA axis 1
-		resliceAxes->SetElement(row, 2, m_pca.axes[2][row]); // output Z = PCA axis 2
-		resliceAxes->SetElement(row, 3, m_pca.centroid[row]); // origin  = centroid
+		resliceAxes->SetElement(row, 0, m_pca.axes[0][row]);
+		resliceAxes->SetElement(row, 1, m_pca.axes[1][row]);
+		resliceAxes->SetElement(row, 2, m_pca.axes[2][row]);
+		resliceAxes->SetElement(row, 3, m_pca.centroid[row]);
 	}
 
 	qDebug("onReslice: reslice axes matrix:");
@@ -652,11 +678,6 @@ void PrototypeMainWindow::onReslice()
 		       resliceAxes->GetElement(r, 3));
 	}
 
-	// ------------------------------------------------------------------
-	// Configure and execute vtkImageReslice.
-	// AutoCropOutputOn() ensures the output extent covers the whole
-	// rotated volume; no voxels are clipped.
-	// ------------------------------------------------------------------
 	showProgressStart();
 	showProgressValue(10);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
@@ -683,24 +704,13 @@ void PrototypeMainWindow::onReslice()
 	const int* outDims = resliced->GetDimensions();
 	qDebug("onReslice: output dimensions: %d x %d x %d", outDims[0], outDims[1], outDims[2]);
 
-	// Keep the resliced volume alive (VolumeView does not take ownership).
 	m_reslicedImage = vtkSmartPointer<vtkImageData>::New();
 	m_reslicedImage->DeepCopy(resliced);
 
 	showProgressEnd();
 
-	// ------------------------------------------------------------------
-	// Visualise the resliced volume.  setImage() recomputes PCA on the
-	// new volume and stores the result in m_pca.  Because m_reslicedImage
-	// is non-null at this point, setImage() will NOT overwrite
-	// m_originalPcaJson — the original PCA remains intact.
-	// ------------------------------------------------------------------
 	setImage(m_reslicedImage);
 
-	// ------------------------------------------------------------------
-	// Cache the resliced-volume PCA to JSON now that setImage() has
-	// populated m_pca with the post-reslice result.
-	// ------------------------------------------------------------------
 	if (m_pca.valid)
 	{
 		m_reslicedPcaJson = pcaResultToJson(m_pca);
@@ -709,12 +719,164 @@ void PrototypeMainWindow::onReslice()
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Regions slot — threshold ? seeded BFS flood-fill ? island surface actors
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::onRegions()
+{
+	// ------------------------------------------------------------------
+	// Pre-conditions
+	// ------------------------------------------------------------------
+	if (!m_reslicedImage)
+	{
+		qWarning("onRegions: no resliced image available; run Reslice first.");
+		return;
+	}
+
+	if (m_landmarkResult.isEmpty())
+	{
+		qWarning("onRegions: no landmark points available; run Landmark first.");
+		return;
+	}
+
+	if (!std::isfinite(m_threshold))
+	{
+		qWarning("onRegions: threshold is not finite; cannot segment.");
+		return;
+	}
+
+	// ------------------------------------------------------------------
+	// Collect the 6 landmark world-space seed points from m_landmarkPoints.
+	// Each of the 3 axes contributes one positive and one negative seed.
+	// ------------------------------------------------------------------
+	std::vector<std::array<double, 3>> seeds;
+	seeds.reserve(6);
+
+	for (int i = 0; i < 3; ++i)
+	{
+		for (int d = 0; d < 2; ++d)
+		{
+			const double* pt = m_landmarkPoints[static_cast<std::size_t>(i)]
+			                                    [static_cast<std::size_t>(d)].data();
+			seeds.push_back({ pt[0], pt[1], pt[2] });
+		}
+	}
+
+	qDebug("onRegions: running seeded BFS with %zu seeds, threshold=%.4f",
+	       seeds.size(), m_threshold);
+
+	// ------------------------------------------------------------------
+	// Progress callback (occupies [0, 100] of the progress bar)
+	// ------------------------------------------------------------------
+	showProgressStart();
+	const auto regionProgress = [this](int percent)
+	{
+		showProgressValue(percent);
+		m_progressBar->update();
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	};
+
+	// ------------------------------------------------------------------
+	// Run segmentation
+	// ------------------------------------------------------------------
+	vtkSmartPointer<vtkImageData> labelImage;
+
+	const std::vector<PrototypeHelpers::BoneIsland> islands =
+		PrototypeHelpers::segmentBoneIslands(
+			m_reslicedImage,
+			m_threshold,
+			seeds,
+			labelImage,
+			regionProgress);
+
+	showProgressEnd();
+
+	if (islands.empty())
+	{
+		qWarning("onRegions: no bone islands were found.");
+		return;
+	}
+
+	// Cache the label image so it stays alive for the actors' pipeline
+	m_labelImage = labelImage;
+
+	// ------------------------------------------------------------------
+	// Remove any actors left from a previous onRegions() run
+	// ------------------------------------------------------------------
+	clearIslandActors();
+
+	vtkRenderer* ren = (ui && ui->volumeView) ? ui->volumeView->renderer() : nullptr;
+
+	// ------------------------------------------------------------------
+	// Assign visually distinct colours using a simple HSV rotation.
+	// Six evenly-spaced hues cover all axis-endpoint seeds well.
+	// ------------------------------------------------------------------
+	const int nIslands = static_cast<int>(islands.size());
+
+	// JSON array to accumulate island summaries
+	QJsonArray regionsArray;
+
+	for (int idx = 0; idx < nIslands; ++idx)
+	{
+		const auto& island = islands[static_cast<std::size_t>(idx)];
+
+		// HSV ? RGB: hue cycles 0–360° across all islands
+		const double hue = (360.0 * idx) / static_cast<double>(std::max(nIslands, 1));
+		double r = 1.0, g = 1.0, b = 1.0;
+		vtkMath::HSVToRGB(hue / 360.0, 0.85, 0.95, &r, &g, &b);
+
+		auto actor = PrototypeHelpers::makeIslandSurfaceActor(
+			m_labelImage,
+			island.label,
+			r, g, b,
+			0.55);
+
+		m_islandActors.push_back(actor);
+
+		if (ren)
+			ren->AddActor(actor);
+
+		qDebug("onRegions: island %d  label=%d  voxels=%lld",
+		       idx, island.label,
+		       static_cast<long long>(island.voxelCount));
+
+		regionsArray.append(island.json);
+	}
+
+	// ------------------------------------------------------------------
+	// Merge regions summary into the landmark JSON cache so it is written
+	// to the prototype sidecar on close alongside the landmark data.
+	// ------------------------------------------------------------------
+	m_landmarkJson[QStringLiteral("regions")] = regionsArray;
+
+	qDebug("onRegions: %d islands segmented and cached in landmarkJson[\"regions\"].",
+	       nIslands);
+
+	if (ren)
+		ui->volumeView->render();
+}
+
+// ---------------------------------------------------------------------------
+// Async load
+// ---------------------------------------------------------------------------
+
 void PrototypeMainWindow::loadFromSidecarAsync(const QString& sidecarPath)
 {
-	// Post the load to the event loop so the window can show and paint
-	// itself before the blocking VTK pipeline executes.
 	QTimer::singleShot(0, this, [this, sidecarPath]()
 	{
 		loadFromSidecar(sidecarPath);
 	});
+}
+
+// ---------------------------------------------------------------------------
+// onOutlineToggled — forward the checked state to VolumeView::setOutlineVisible
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::onOutlineToggled(bool checked)
+{
+	if (!ui || !ui->volumeView)
+		return;
+
+	ui->volumeView->setOutlineVisible(checked);
 }

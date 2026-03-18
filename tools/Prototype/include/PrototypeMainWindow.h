@@ -8,12 +8,14 @@
 
 #include <array>
 #include <limits>
+#include <vector>
 
 class vtkActor;
 class vtkImageData;
 class vtkMatrix4x4;
 class ImageLoader;
 class vtkEventQtSlotConnect;
+class QAction;
 
 namespace Ui { class MainWindow; }
 
@@ -92,6 +94,19 @@ private slots:
 	// the PCA eigenvectors and centroid origin, then visualises the result.
 	void onReslice();
 
+	// Triggered by the "Regions" toolbar button.
+	// Requires a resliced image (onReslice()) and landmark points (onLandmark()).
+	// Thresholds the resliced volume, then runs a seeded 26-connected BFS
+	// flood-fill from each landmark point to isolate individual bone islands.
+	// One translucent surface actor is added to the renderer per island.
+	// Results are merged into m_landmarkJson under the "regions" key.
+	void onRegions();
+
+	// Triggered by the "Outline" toggle toolbar button.
+	// Forwards the checked state directly to VolumeView::setOutlineVisible()
+	// so the bounding-box outline actor is shown (checked) or hidden (unchecked).
+	void onOutlineToggled(bool checked);
+
 private:
 	Ui::MainWindow* ui = nullptr;
 
@@ -109,6 +124,11 @@ private:
 	vtkSmartPointer<ImageLoader>           m_imageLoader;
 	vtkSmartPointer<vtkEventQtSlotConnect> m_vtkConnections;
 	QProgressBar* m_progressBar = nullptr;
+
+	// Checkable toolbar action that mirrors VolumeView::m_outlineVisible.
+	// Kept as a member so setImage() can reset its checked state when a new
+	// image is loaded (the outline is always hidden on a fresh load).
+	QAction* m_actOutline = nullptr;
 
 	// PCA overlay actors (axis shafts + tip spheres). Cleared and rebuilt each setImage().
 	// 3 axis lines + 6 sphere tip actors (both ends per axis) + 3 circumsphere ring actors.
@@ -129,10 +149,19 @@ private:
 	// Consolidated JSON cache written after each successful onLandmark() call.
 	// Combines the original PCA, the resliced PCA (if present), and the landmark
 	// points into a single object that is flushed to disk on application close.
+	// Augmented with a "regions" array by onRegions() when that step completes.
 	QJsonObject m_landmarkJson;
 
 	// Resliced volume produced by onReslice() (smart-pointer keeps it alive while displayed).
 	vtkSmartPointer<vtkImageData> m_reslicedImage;
+
+	// Label image produced by onRegions(): unsigned-char scalars, one label per voxel.
+	// 0 = background / unvisited.  Kept alive for repeated surface extraction.
+	vtkSmartPointer<vtkImageData> m_labelImage;
+
+	// Island surface actors produced by the most recent onRegions() call.
+	// Cleared at the start of each new onRegions() run.
+	std::vector<vtkSmartPointer<vtkActor>> m_islandActors;
 
 	// JSON cache of the PCA result computed on the original (pre-reslice) image.
 	// Written once by setImage() when m_reslicedImage is null (i.e. original load).
@@ -153,11 +182,14 @@ private:
 	// Returns an empty string when m_sidecarPath or m_cropPath are not set.
 	QString prototypeOutputPath() const;
 
-	// Writes the accumulated JSON cache (originalPca, reslicedPca, landmarks)
+	// Writes the accumulated JSON cache (originalPca, reslicedPca, landmarks, regions)
 	// to the prototype sidecar file.  Logs a warning and returns false on failure.
 	// Does nothing and returns true when there is nothing worth writing yet.
 	bool writePrototypeSidecar() const;
 
 	// Removes all previously added PCA overlay actors from the VolumeView renderer.
 	void clearPcaOverlay();
+
+	// Removes all bone island surface actors added by onRegions() from the renderer.
+	void clearIslandActors();
 };
