@@ -7,6 +7,7 @@
 #include "JsonUtils.h"
 
 #include <vtkBoundingBox.h>
+#include <vtkCamera.h>
 #include <vtkColorTransferFunction.h>
 #include <vtkDataArray.h>
 #include <vtkEventQtSlotConnect.h>
@@ -17,6 +18,7 @@
 #include <vtkMatrix4x4.h>
 #include <vtkPointData.h>
 #include <vtkRenderer.h>
+#include <vtkRenderWindow.h>
 #include <vtkScalarBarActor.h>
 #include <vtkSmartPointer.h>
 
@@ -82,7 +84,7 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	// "Regions Alt" toolbar button: morphological pipeline (smooth ? erode ? dilate ? connectivity)
 	m_actRegionsAlt = new QAction(tr("Regions Alt"), this);
 	m_actRegionsAlt->setToolTip(tr("Segment bone islands using the morphological pipeline "
-	                               "(Gaussian smooth ? erode ? dilate ? seeded connectivity)"));
+		"(Gaussian smooth ? erode ? dilate ? seeded connectivity)"));
 	ui->toolBar->addAction(m_actRegionsAlt);
 	connect(m_actRegionsAlt, &QAction::triggered, this, &PrototypeMainWindow::onRegionsAlt);
 
@@ -91,7 +93,7 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	// have been performed in the current session (m_resliceCount >= 8).
 	m_actClean = new QAction(tr("Clean"), this);
 	m_actClean->setToolTip(tr("Run the post-segmentation clean step "
-	                          "(available after 8 or more Reslice operations)"));
+		"(available after 8 or more Reslice operations)"));
 	ui->toolBar->addAction(m_actClean);
 	connect(m_actClean, &QAction::triggered, this, &PrototypeMainWindow::onClean);
 
@@ -118,7 +120,7 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	setWorkflowStep(WorkflowStep::Idle);
 
 	// ImageLoader + VTK event wiring
-	m_imageLoader    = vtkSmartPointer<ImageLoader>::New();
+	m_imageLoader = vtkSmartPointer<ImageLoader>::New();
 	m_vtkConnections = vtkSmartPointer<vtkEventQtSlotConnect>::New();
 
 	m_vtkConnections->Connect(
@@ -170,8 +172,8 @@ void PrototypeMainWindow::setWorkflowStep(WorkflowStep step)
 	//   Landmarked : Reslice=off, Landmark=off, Regions=on,  RegionsAlt=on
 	//   Segmented  : Reslice=off, Landmark=off, Regions=off, RegionsAlt=off
 
-	const bool atIdle       = (step == WorkflowStep::Idle);
-	const bool atResliced   = (step == WorkflowStep::Resliced);
+	const bool atIdle = (step == WorkflowStep::Idle);
+	const bool atResliced = (step == WorkflowStep::Resliced);
 	const bool atLandmarked = (step == WorkflowStep::Landmarked);
 
 	m_actReslice->setEnabled(atIdle);
@@ -317,25 +319,25 @@ void PrototypeMainWindow::clearIslandActors()
 QJsonObject PrototypeMainWindow::pcaResultToJson(const PrototypeHelpers::PcaResult& pca)
 {
 	auto packVec3 = [](const double v[3]) -> QJsonArray
-	{
-		return QJsonArray{ v[0], v[1], v[2] };
-	};
+		{
+			return QJsonArray{ v[0], v[1], v[2] };
+		};
 
 	// Axes: array of 3 objects, one per principal axis
 	QJsonArray axesArray;
 	for (int i = 0; i < 3; ++i)
 	{
 		QJsonObject axisObj;
-		axisObj[QStringLiteral("index")]      = i;
+		axisObj[QStringLiteral("index")] = i;
 		axisObj[QStringLiteral("eigenvalue")] = pca.eigenvalues[i];
-		axisObj[QStringLiteral("direction")]  = packVec3(pca.axes[i]);
+		axisObj[QStringLiteral("direction")] = packVec3(pca.axes[i]);
 		axesArray.append(axisObj);
 	}
 
 	QJsonObject obj;
-	obj[QStringLiteral("centroid")]     = packVec3(pca.centroid);
+	obj[QStringLiteral("centroid")] = packVec3(pca.centroid);
 	obj[QStringLiteral("circumRadius")] = pca.circumRadius;
-	obj[QStringLiteral("axes")]         = axesArray;
+	obj[QStringLiteral("axes")] = axesArray;
 	return obj;
 }
 
@@ -351,7 +353,7 @@ QString PrototypeMainWindow::prototypeOutputPath() const
 	// Derive the output filename from the crop image basename:
 	//   <crop_basename>_prototype.json
 	const QString cropBaseName = QFileInfo(m_cropPath).completeBaseName();
-	const QString outputName   = cropBaseName + QStringLiteral("_prototype.json");
+	const QString outputName = cropBaseName + QStringLiteral("_prototype.json");
 
 	// Place the file in the same directory as the source sidecar.
 	const QString sidecarDir = QFileInfo(m_sidecarPath).absolutePath();
@@ -371,7 +373,7 @@ bool PrototypeMainWindow::writePrototypeSidecar() const
 	if (outputPath.isEmpty())
 	{
 		qWarning("writePrototypeSidecar: cannot determine output path "
-		         "(sidecar or crop path not set); skipping.");
+				 "(sidecar or crop path not set); skipping.");
 		return false;
 	}
 
@@ -379,8 +381,8 @@ bool PrototypeMainWindow::writePrototypeSidecar() const
 	if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
 	{
 		qWarning("writePrototypeSidecar: failed to open '%s' for writing: %s",
-		         qUtf8Printable(outputPath),
-		         qUtf8Printable(f.errorString()));
+				 qUtf8Printable(outputPath),
+				 qUtf8Printable(f.errorString()));
 		return false;
 	}
 
@@ -389,8 +391,8 @@ bool PrototypeMainWindow::writePrototypeSidecar() const
 	f.close();
 
 	qDebug("writePrototypeSidecar: wrote %lld bytes to '%s'",
-	       static_cast<long long>(json.size()),
-	       qUtf8Printable(outputPath));
+		   static_cast<long long>(json.size()),
+		   qUtf8Printable(outputPath));
 	return true;
 }
 
@@ -424,7 +426,7 @@ void PrototypeMainWindow::loadFromSidecar(const QString& sidecarPath)
 
 	// Cache the paths so closeEvent() can derive the prototype output filename.
 	m_sidecarPath = QFileInfo(sidecarPath).absoluteFilePath();
-	m_cropPath    = cropPath;
+	m_cropPath = cropPath;
 
 	m_imageLoader->SetInputPath(cropPath);
 	m_imageLoader->SetImageType(ImageLoader::ImageType::NIFTI);
@@ -445,6 +447,10 @@ void PrototypeMainWindow::loadFromSidecar(const QString& sidecarPath)
 
 	setImage(out);
 
+	ui->volumeView->renderer()->ResetCamera();
+	ui->volumeView->renderer()->ResetCameraClippingRange();
+	ui->volumeView->renderWindow()->Render();
+
 	// A freshly loaded image starts the workflow at Idle (only Reslice enabled).
 	setWorkflowStep(WorkflowStep::Idle);
 }
@@ -461,7 +467,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	m_image = image;
 
 	// Invalidate any previously cached PCA result and landmark data.
-	m_pca.valid      = false;
+	m_pca.valid = false;
 	m_landmarkResult = QJsonObject{};
 
 	ui->volumeView->setImageData(image);
@@ -501,16 +507,16 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	m_imageStats = PrototypeHelpers::computeScalarThresholdStats(image, effectiveThreshold);
 
 	qDebug("setImage: imageStats — mean=%.4f  stdDev=%.4f  "
-	       "meanFg=%.4f  stdDevFg=%.4f  meanBg=%.4f  stdDevBg=%.4f",
-	       m_imageStats.value(QStringLiteral("mean")).toDouble(),
-	       m_imageStats.value(QStringLiteral("stdDev")).toDouble(),
-	       m_imageStats.value(QStringLiteral("meanFg")).toDouble(),
-	       m_imageStats.value(QStringLiteral("stdDevFg")).toDouble(),
-	       m_imageStats.value(QStringLiteral("meanBg")).toDouble(),
-	       m_imageStats.value(QStringLiteral("stdDevBg")).toDouble());
+		   "meanFg=%.4f  stdDevFg=%.4f  meanBg=%.4f  stdDevBg=%.4f",
+		   m_imageStats.value(QStringLiteral("mean")).toDouble(),
+		   m_imageStats.value(QStringLiteral("stdDev")).toDouble(),
+		   m_imageStats.value(QStringLiteral("meanFg")).toDouble(),
+		   m_imageStats.value(QStringLiteral("stdDevFg")).toDouble(),
+		   m_imageStats.value(QStringLiteral("meanBg")).toDouble(),
+		   m_imageStats.value(QStringLiteral("stdDevBg")).toDouble());
 
-	const double scalarRange[2] = { 
-		m_imageStats.value(QStringLiteral("min")).toDouble(0.0), 
+	const double scalarRange[2] = {
+		m_imageStats.value(QStringLiteral("min")).toDouble(0.0),
 		m_imageStats.value(QStringLiteral("max")).toDouble(255.0) };
 
 	// level: threshold when finite, otherwise midpoint of the scalar range.
@@ -538,11 +544,11 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	// The PCA occupies the [0..100] range independently of the VTK load.
 	showProgressStart();
 	const auto pcaProgress = [this](int percent)
-	{
-		showProgressValue(percent);
-		m_progressBar->update();
-		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-	};
+		{
+			showProgressValue(percent);
+			m_progressBar->update();
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+		};
 
 	const bool ok = PrototypeHelpers::computePca(image, m_threshold, m_pca, pcaProgress);
 	showProgressEnd();
@@ -565,7 +571,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	{
 		m_originalPcaJson = pcaResultToJson(m_pca);
 		qDebug("setImage: original PCA JSON cached:\n%s",
-		       qUtf8Printable(QJsonDocument(m_originalPcaJson).toJson(QJsonDocument::Indented)));
+			   qUtf8Printable(QJsonDocument(m_originalPcaJson).toJson(QJsonDocument::Indented)));
 	}
 
 	vtkRenderer* ren = ui->volumeView->renderer();
@@ -585,7 +591,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	for (int i = 0; i < 3; ++i)
 	{
 		const double* col = axisColors[i];
-		const double  R   = m_pca.circumRadius;
+		const double  R = m_pca.circumRadius;
 
 		// Tip points along +axis and -axis
 		double tipPos[3], tipNeg[3];
@@ -600,7 +606,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 		ren->AddActor(m_axisActors[i]);
 
 		// Sphere glyphs at both ends (4× the original 2 % size)
-		m_tipActors[static_cast<std::size_t>(i * 2)]     = PrototypeHelpers::makeSphereActor(tipPos, glyphR, col[0], col[1], col[2]);
+		m_tipActors[static_cast<std::size_t>(i * 2)] = PrototypeHelpers::makeSphereActor(tipPos, glyphR, col[0], col[1], col[2]);
 		m_tipActors[static_cast<std::size_t>(i * 2 + 1)] = PrototypeHelpers::makeSphereActor(tipNeg, glyphR, col[0], col[1], col[2]);
 		ren->AddActor(m_tipActors[static_cast<std::size_t>(i * 2)]);
 		ren->AddActor(m_tipActors[static_cast<std::size_t>(i * 2 + 1)]);
@@ -612,7 +618,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 		// The ring lies in the plane perpendicular to axes[i] passing through
 		// the centroid, so each ring slices through the centre of the point cloud.
 		m_ringActors[i] = PrototypeHelpers::makeRingActor(m_pca.centroid, m_pca.axes[i], R,
-		                                                   col[0], col[1], col[2], 2.0);
+														   col[0], col[1], col[2], 2.0);
 		ren->AddActor(m_ringActors[i]);
 	}
 
@@ -671,7 +677,7 @@ void PrototypeMainWindow::onLandmark()
 		//
 		// axisDir (+): centroid ? +axis  (outward direction for the + half)
 		// axisDir (-): centroid ? -axis  (outward direction for the - half)
-		const double axisDirPos[3] = {  m_pca.axes[i][0],  m_pca.axes[i][1],  m_pca.axes[i][2] };
+		const double axisDirPos[3] = { m_pca.axes[i][0],  m_pca.axes[i][1],  m_pca.axes[i][2] };
 		const double axisDirNeg[3] = { -m_pca.axes[i][0], -m_pca.axes[i][1], -m_pca.axes[i][2] };
 
 		PrototypeHelpers::findSurfacePointFromBoundary(
@@ -685,9 +691,9 @@ void PrototypeMainWindow::onLandmark()
 		const double* lNeg = m_landmarkPoints[static_cast<std::size_t>(i)][1].data();
 
 		qDebug("Landmark axis %d  +: (%.2f, %.2f, %.2f)  -: (%.2f, %.2f, %.2f)",
-		       i,
-		       lPos[0], lPos[1], lPos[2],
-		       lNeg[0], lNeg[1], lNeg[2]);
+			   i,
+			   lPos[0], lPos[1], lPos[2],
+			   lNeg[0], lNeg[1], lNeg[2]);
 
 		// Relocate the existing tip sphere actors to the new surface positions.
 		// The actors are already in the renderer from setImage(); we replace them
@@ -709,13 +715,13 @@ void PrototypeMainWindow::onLandmark()
 
 		// Accumulate JSON for this axis
 		auto packVec3 = [](const double v[3]) -> QJsonArray
-		{
-			return QJsonArray{ v[0], v[1], v[2] };
-		};
+			{
+				return QJsonArray{ v[0], v[1], v[2] };
+			};
 
 		QJsonObject axisObj;
-		axisObj[QStringLiteral("index")]       = i;
-		axisObj[QStringLiteral("eigenvalue")]  = m_pca.eigenvalues[i];
+		axisObj[QStringLiteral("index")] = i;
+		axisObj[QStringLiteral("eigenvalue")] = m_pca.eigenvalues[i];
 		axisObj[QStringLiteral("eigenvector")] = packVec3(m_pca.axes[i]);
 		axisObj[QStringLiteral("landmarkPos")] = packVec3(lPos);
 		axisObj[QStringLiteral("landmarkNeg")] = packVec3(lNeg);
@@ -726,23 +732,23 @@ void PrototypeMainWindow::onLandmark()
 	// Build and cache the per-axis raw landmark result (existing behaviour)
 	// ------------------------------------------------------------------
 	auto packVec3 = [](const double v[3]) -> QJsonArray
-	{
-		return QJsonArray{ v[0], v[1], v[2] };
-	};
+		{
+			return QJsonArray{ v[0], v[1], v[2] };
+		};
 
 	m_landmarkResult = QJsonObject{};
-	m_landmarkResult[QStringLiteral("centroid")]     = packVec3(m_pca.centroid);
+	m_landmarkResult[QStringLiteral("centroid")] = packVec3(m_pca.centroid);
 	m_landmarkResult[QStringLiteral("circumRadius")] = m_pca.circumRadius;
-	m_landmarkResult[QStringLiteral("threshold")]    = m_threshold;
-	m_landmarkResult[QStringLiteral("axes")]         = jsonLandmarks;
+	m_landmarkResult[QStringLiteral("threshold")] = m_threshold;
+	m_landmarkResult[QStringLiteral("axes")] = jsonLandmarks;
 
 	// ------------------------------------------------------------------
 	// Build the consolidated landmark JSON cache (written to disk on close).
 	// ------------------------------------------------------------------
 	m_landmarkJson = QJsonObject{};
 	m_landmarkJson[QStringLiteral("sourceSidecar")] = m_sidecarPath;
-	m_landmarkJson[QStringLiteral("cropImage")]     = m_cropPath;
-	m_landmarkJson[QStringLiteral("threshold")]     = m_threshold;
+	m_landmarkJson[QStringLiteral("cropImage")] = m_cropPath;
+	m_landmarkJson[QStringLiteral("threshold")] = m_threshold;
 
 	if (!m_originalPcaJson.isEmpty())
 		m_landmarkJson[QStringLiteral("originalPca")] = m_originalPcaJson;
@@ -753,7 +759,7 @@ void PrototypeMainWindow::onLandmark()
 	m_landmarkJson[QStringLiteral("landmarks")] = m_landmarkResult;
 
 	qDebug("onLandmark: landmark JSON cached:\n%s",
-	       qUtf8Printable(QJsonDocument(m_landmarkJson).toJson(QJsonDocument::Indented)));
+		   qUtf8Printable(QJsonDocument(m_landmarkJson).toJson(QJsonDocument::Indented)));
 
 	if (ren)
 		ui->volumeView->render();
@@ -795,22 +801,25 @@ void PrototypeMainWindow::onReslice()
 	for (int r = 0; r < 4; ++r)
 	{
 		qDebug("  [ %8.4f  %8.4f  %8.4f  %8.4f ]",
-		       resliceAxes->GetElement(r, 0),
-		       resliceAxes->GetElement(r, 1),
-		       resliceAxes->GetElement(r, 2),
-		       resliceAxes->GetElement(r, 3));
+			   resliceAxes->GetElement(r, 0),
+			   resliceAxes->GetElement(r, 1),
+			   resliceAxes->GetElement(r, 2),
+			   resliceAxes->GetElement(r, 3));
 	}
 
 	showProgressStart();
 	showProgressValue(10);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
+	const double bgMean = m_imageStats.value(QStringLiteral("meanBg")).toDouble(0.0);
+
 	auto reslice = vtkSmartPointer<vtkImageReslice>::New();
 	reslice->SetInputData(m_image);
 	reslice->SetResliceAxes(resliceAxes);
-	reslice->SetInterpolationModeToLinear();
+	reslice->SetInterpolationModeToCubic();
 	reslice->AutoCropOutputOn();
 	reslice->SetOutputDimensionality(3);
+	reslice->SetBackgroundLevel(bgMean);
 	reslice->Update();
 
 	showProgressValue(90);
@@ -838,7 +847,7 @@ void PrototypeMainWindow::onReslice()
 	{
 		m_reslicedPcaJson = pcaResultToJson(m_pca);
 		qDebug("onReslice: resliced PCA JSON cached:\n%s",
-		       qUtf8Printable(QJsonDocument(m_reslicedPcaJson).toJson(QJsonDocument::Indented)));
+			   qUtf8Printable(QJsonDocument(m_reslicedPcaJson).toJson(QJsonDocument::Indented)));
 	}
 
 	// Increment the cumulative reslice counter for this session.
@@ -884,8 +893,8 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 	}
 
 	qDebug("applyIslandSegmentationResult: voxel-count range  min=%lld  max=%lld",
-	       static_cast<long long>(minVoxels),
-	       static_cast<long long>(maxVoxels));
+		   static_cast<long long>(minVoxels),
+		   static_cast<long long>(maxVoxels));
 
 	// ------------------------------------------------------------------
 	// Build the colour transfer function over [minVoxels, maxVoxels]
@@ -919,9 +928,9 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 			ren->AddActor(actor);
 
 		qDebug("applyIslandSegmentationResult: island %d  label=%d  voxels=%lld  rgb=(%.3f,%.3f,%.3f)",
-		       idx, island.label,
-		       static_cast<long long>(island.voxelCount),
-		       rgb[0], rgb[1], rgb[2]);
+			   idx, island.label,
+			   static_cast<long long>(island.voxelCount),
+			   rgb[0], rgb[1], rgb[2]);
 
 		// Augment the existing island JSON with the mapped colour for reference
 		QJsonObject islandJson = island.json;
@@ -945,9 +954,9 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 		ren->AddActor(m_islandScalarBar);
 
 		qDebug("applyIslandSegmentationResult: scalar bar added (%d islands, range %lld–%lld voxels).",
-		       nIslands,
-		       static_cast<long long>(minVoxels),
-		       static_cast<long long>(maxVoxels));
+			   nIslands,
+			   static_cast<long long>(minVoxels),
+			   static_cast<long long>(maxVoxels));
 	}
 
 	// ------------------------------------------------------------------
@@ -956,7 +965,7 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 	m_landmarkJson[QStringLiteral("regions")] = regionsArray;
 
 	qDebug("applyIslandSegmentationResult: %d islands cached in landmarkJson[\"regions\"].",
-	       nIslands);
+		   nIslands);
 
 	if (ren)
 		ui->volumeView->render();
@@ -1001,24 +1010,24 @@ void PrototypeMainWindow::onRegions()
 		for (int d = 0; d < 2; ++d)
 		{
 			const double* pt = m_landmarkPoints[static_cast<std::size_t>(i)]
-			                                    [static_cast<std::size_t>(d)].data();
+				[static_cast<std::size_t>(d)].data();
 			seeds.push_back({ pt[0], pt[1], pt[2] });
 		}
 	}
 
 	qDebug("onRegions: running seeded BFS with %zu seeds, threshold=%.4f",
-	       seeds.size(), m_threshold);
+		   seeds.size(), m_threshold);
 
 	// ------------------------------------------------------------------
 	// Progress callback
 	// ------------------------------------------------------------------
 	showProgressStart();
 	const auto regionProgress = [this](int percent)
-	{
-		showProgressValue(percent);
-		m_progressBar->update();
-		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-	};
+		{
+			showProgressValue(percent);
+			m_progressBar->update();
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+		};
 
 	// ------------------------------------------------------------------
 	// Run segmentation
@@ -1086,24 +1095,24 @@ void PrototypeMainWindow::onRegionsAlt()
 		for (int d = 0; d < 2; ++d)
 		{
 			const double* pt = m_landmarkPoints[static_cast<std::size_t>(i)]
-			                                    [static_cast<std::size_t>(d)].data();
+				[static_cast<std::size_t>(d)].data();
 			seeds.push_back({ pt[0], pt[1], pt[2] });
 		}
 	}
 
 	qDebug("onRegionsAlt: running morphological pipeline with %zu seeds, threshold=%.4f",
-	       seeds.size(), m_threshold);
+		   seeds.size(), m_threshold);
 
 	// ------------------------------------------------------------------
 	// Progress callback
 	// ------------------------------------------------------------------
-showProgressStart();
+	showProgressStart();
 	const auto regionProgress = [this](int percent)
-	{
-		showProgressValue(percent);
-		m_progressBar->update();
-		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-	};
+		{
+			showProgressValue(percent);
+			m_progressBar->update();
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+		};
 
 	// ------------------------------------------------------------------
 	// Run alternate segmentation (default smoothStdDev=1.0, morphKernelSize=1)
@@ -1450,20 +1459,20 @@ void PrototypeMainWindow::onClean()
 	m_reslicedImage = cleanedImage;
 	m_image = m_reslicedImage.Get();
 
-	if (ui && ui->volumeView)
-	{
-		ui->volumeView->setImageData(m_reslicedImage);
-		ui->volumeView->updateData();
-		
-		const double level = std::isfinite(m_threshold)
-			? m_threshold
-			: 0.5 * (scalarRange[0] + scalarRange[1]);
+	ui->volumeView->setImageData(m_reslicedImage);
+	ui->volumeView->updateData();
 
-		const double window = 2.0 * m_imageStats.value(QStringLiteral("stdDev")).toDouble(1.0);
+	const double level = std::isfinite(m_threshold)
+		? m_threshold
+		: 0.5 * (scalarRange[0] + scalarRange[1]);
 
-		ui->volumeView->setColorWindowLevel(window, level);
-		ui->volumeView->render();
-	}
+	const double window = 2.0 * m_imageStats.value(QStringLiteral("stdDev")).toDouble(1.0);
+
+	ui->volumeView->setColorWindowLevel(window, level);
+
+	ui->volumeView->renderer()->ResetCamera();
+	ui->volumeView->renderer()->ResetCameraClippingRange();
+	ui->volumeView->renderWindow()->Render();
 
 	// Clean completed — advance to Cleaned: all step buttons disabled.
 	setWorkflowStep(WorkflowStep::Cleaned);
