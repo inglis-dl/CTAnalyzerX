@@ -306,6 +306,10 @@ namespace PrototypeHelpers
 
 		vtkMath::Jacobi(cov, evals, evecs);
 
+		// Copy eigenvectors from Jacobi output columns into result.axes rows,
+		// then normalise and store eigenvalues.
+		// vtkMath::Jacobi stores eigenvectors as columns of the evecs matrix,
+		// so evecs[row][col] ? result.axes[col][row].
 		for (int i = 0; i < 3; ++i)
 		{
 			result.axes[i][0] = evecs[0][i];
@@ -313,6 +317,31 @@ namespace PrototypeHelpers
 			result.axes[i][2] = evecs[2][i];
 			vtkMath::Normalize(result.axes[i]);
 			result.eigenvalues[i] = evals[i];
+		}
+
+		// Fix eigenvector sign convention so orientation is stable across runs.
+		// vtkMath::Jacobi returns eigenvectors with arbitrary sign (both +v and
+		// -v are valid eigenvectors).  Flip each axis so its largest-magnitude
+		// component is positive, giving a consistent "positive dominant" direction
+		// that prevents the resliced volume from flipping between calls.
+		for (int i = 0; i < 3; ++i)
+		{
+			// Find the component with the largest absolute value
+			int dominantComponent = 0;
+			double maxAbs = 0.0;
+			for (int d = 0; d < 3; ++d)
+			{
+				const double a = std::abs(result.axes[i][d]);
+				if (a > maxAbs) { maxAbs = a; dominantComponent = d; }
+			}
+
+			// Flip the entire axis if its dominant component points negative
+			if (result.axes[i][dominantComponent] < 0.0)
+			{
+				result.axes[i][0] = -result.axes[i][0];
+				result.axes[i][1] = -result.axes[i][1];
+				result.axes[i][2] = -result.axes[i][2];
+			}
 		}
 
 		const double dx = bbMax[0] - bbMin[0];
