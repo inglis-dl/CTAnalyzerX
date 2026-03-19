@@ -10,9 +10,12 @@
 #include <limits>
 #include <vector>
 
+#include "PrototypeHelpers.h"
+
 class vtkActor;
 class vtkImageData;
 class vtkMatrix4x4;
+class vtkScalarBarActor;
 class ImageLoader;
 class vtkEventQtSlotConnect;
 class QAction;
@@ -27,51 +30,16 @@ public:
 	explicit PrototypeMainWindow(QWidget* parent = nullptr);
 	~PrototypeMainWindow() override;
 
-	// Reads the sidecar JSON at `sidecarPath`, caches the threshold value,
-	// loads the referenced crop image, and calls setImage().
 	void loadFromSidecar(const QString& sidecarPath);
-
-	// Schedules loadFromSidecar() to run after the event loop starts,
-	// so the window is visible and can show progress during the load.
 	void loadFromSidecarAsync(const QString& sidecarPath);
-
-	// Sets the image on the volume view and applies window/level derived from
-	// the image data: level = cached threshold, window = scalar standard deviation.
 	void setImage(vtkImageData* image);
 
-	// Returns the most recently computed landmark result (may be empty if
-	// onLandmark() has not yet been called successfully).
-	const QJsonObject& landmarkResult() const { return m_landmarkResult; }
-
-	// Returns the landmark JSON cache built after the most recent onLandmark() call.
-	// Contains the original PCA, resliced PCA (if performed), and landmark points.
-	// Empty until onLandmark() has completed successfully at least once.
-	const QJsonObject& landmarkJson() const { return m_landmarkJson; }
-
-	// Returns the PCA result JSON for the original (pre-reslice) volume.
-	// Populated by the first setImage() call (i.e. on load from sidecar).
-	// Empty until a successful PCA has been computed on the original image.
+	const QJsonObject& landmarkResult()  const { return m_landmarkResult; }
+	const QJsonObject& landmarkJson()    const { return m_landmarkJson; }
 	const QJsonObject& originalPcaJson() const { return m_originalPcaJson; }
-
-	// Returns the PCA result JSON for the resliced volume.
-	// Populated by onReslice() after the resliced image has been visualised.
-	// Empty until onReslice() has completed successfully.
 	const QJsonObject& reslicedPcaJson() const { return m_reslicedPcaJson; }
 
-	// PCA result cached from the last successful setImage() call.
-	// Used by onLandmark() without re-running PCA.
-	struct PcaResult
-	{
-		double centroid[3];    // binary-volume centroid in world coordinates
-		double axes[3][3];     // eigenvectors as rows: axes[i] = i-th principal axis (unit vector)
-		double eigenvalues[3]; // eigenvalues in descending order
-		double circumRadius;   // radius of the circumsphere (fits outside the bounding box)
-		bool   valid = false;  // set to true once a successful computePca() result is stored
-	};
-
 protected:
-	// Intercept the window-close event to flush the prototype sidecar to disk
-	// before the application exits.
 	void closeEvent(QCloseEvent* event) override;
 
 private slots:
@@ -81,115 +49,133 @@ private slots:
 	void showProgressStart();
 	void showProgressValue(int percent);
 	void showProgressEnd();
-
-	// Triggered by the "Landmark" toolbar button.
-	// Searches along each PCA axis from the centroid outward (+/-) to find the
-	// first below-threshold transition, relocates the axis-tip sphere actors to
-	// those surface points, and caches all results in m_landmarkResult and
-	// m_landmarkJson.
 	void onLandmark();
-
-	// Triggered by the "Reslice" toolbar button.
-	// Passes the original volume through vtkImageReslice with axes aligned to
-	// the PCA eigenvectors and centroid origin, then visualises the result.
 	void onReslice();
 
 	// Triggered by the "Regions" toolbar button.
-	// Requires a resliced image (onReslice()) and landmark points (onLandmark()).
-	// Thresholds the resliced volume, then runs a seeded 26-connected BFS
-	// flood-fill from each landmark point to isolate individual bone islands.
-	// One translucent surface actor is added to the renderer per island.
-	// Results are merged into m_landmarkJson under the "regions" key.
+	// Thresholds the resliced volume, runs a seeded 26-connected BFS flood-fill
+	// from each landmark point, colours each island surface by voxel count using
+	// a cool-to-warm transfer function, and shows a scalar bar when nIslands > 1.
 	void onRegions();
 
-	// Triggered by the "Outline" toggle toolbar button.
-	// Forwards the checked state directly to VolumeView::setOutlineVisible()
-	// so the bounding-box outline actor is shown (checked) or hidden (unchecked).
+	// Triggered by the "Regions Alt" toolbar button.
+	// Runs the morphological pipeline (Gaussian smooth ? erode ? dilate ?
+	// seeded vtkImageThresholdConnectivity) and displays the island surfaces
+	// using the same colour/scalar-bar logic as onRegions().
+	void onRegionsAlt();
+
 	void onOutlineToggled(bool checked);
 
+	// Triggered by the "Restart" toolbar button.
+	// Reverts the view to the original loaded image and its default PCA-positioned
+	// axes, clears all reslice/landmark/region state, and resets the workflow
+	// step buttons so only "Reslice" is enabled.
+	void onRestart();
+
 private:
+	// -----------------------------------------------------------------------
+	// Workflow step state machine
+	// -----------------------------------------------------------------------
+
+	// Linear workflow: Idle ? Resliced ? Landmarked ? Segmented
+	// Restart transitions back to Idle from any state.
+	// Route A: Resliced ? Landmarked ? Segmented (via onRegions)
+	// Route B: Resliced ? Landmarked ? Segmented (via onRegionsAlt)
+	enum class WorkflowStep
+	{
+		Idle,        // image loaded; only Reslice enabled
+		Resliced,    // reslice done; only Landmark enabled
+		Landmarked,  // landmark done; Regions and RegionsAlt enabled
+		Segmented    // segmentation done; no step buttons enabled
+	};
+
+	// Transition to a new workflow step and update all step button states.
+	// Called at the end of each successful operation and by onRestart().
+	void setWorkflowStep(WorkflowStep step);
+
+	// -----------------------------------------------------------------------
+	// Private members
+	// -----------------------------------------------------------------------
+
 	Ui::MainWindow* ui = nullptr;
 
-	// Paths cached from the most recent loadFromSidecar() call.
-	// Used to derive the prototype output sidecar path on close.
-	QString m_sidecarPath; // absolute path of the source project sidecar (.json)
-	QString m_cropPath;    // absolute path of the crop image referenced by the sidecar
+	QString m_sidecarPath;
+	QString m_cropPath;
 
-	// Threshold cached from the sidecar JSON; used as the WL level in setImage().
 	double m_threshold = std::numeric_limits<double>::quiet_NaN();
 
-	// Cached raw image pointer (non-owning; owned by m_imageLoader pipeline).
 	vtkImageData* m_image = nullptr;
+
+	// Original image retained so Restart can restore it without re-loading from disk.
+	vtkSmartPointer<vtkImageData> m_originalImage;
 
 	vtkSmartPointer<ImageLoader>           m_imageLoader;
 	vtkSmartPointer<vtkEventQtSlotConnect> m_vtkConnections;
 	QProgressBar* m_progressBar = nullptr;
 
-	// Checkable toolbar action that mirrors VolumeView::m_outlineVisible.
-	// Kept as a member so setImage() can reset its checked state when a new
-	// image is loaded (the outline is always hidden on a fresh load).
+	// Checkable toolbar action for the bounding-box outline toggle.
 	QAction* m_actOutline = nullptr;
 
-	// PCA overlay actors (axis shafts + tip spheres). Cleared and rebuilt each setImage().
-	// 3 axis lines + 6 sphere tip actors (both ends per axis) + 3 circumsphere ring actors.
+	// Workflow step toolbar actions (owned by the toolbar / QObject parent chain).
+	QAction* m_actReslice    = nullptr;
+	QAction* m_actLandmark   = nullptr;
+	QAction* m_actRegions    = nullptr;
+	QAction* m_actRegionsAlt = nullptr;
+	QAction* m_actRestart    = nullptr;
+
+	// Current workflow position — drives enabled/disabled state of step buttons.
+	WorkflowStep m_workflowStep = WorkflowStep::Idle;
+
 	std::array<vtkSmartPointer<vtkActor>, 3> m_axisActors;
 	std::array<vtkSmartPointer<vtkActor>, 6> m_tipActors;
 	std::array<vtkSmartPointer<vtkActor>, 3> m_ringActors;
 	vtkSmartPointer<vtkActor>                m_circumsphereActor;
 
-	PcaResult m_pca;
+	PrototypeHelpers::PcaResult m_pca;
 
-	// Surface landmark points found by onLandmark() (world space).
-	// Indexed as [axis 0..2][direction 0=positive, 1=negative][xyz].
 	std::array<std::array<std::array<double, 3>, 2>, 3> m_landmarkPoints{};
 
-	// JSON cache of the last landmark computation result (per-axis raw data).
 	QJsonObject m_landmarkResult;
-
-	// Consolidated JSON cache written after each successful onLandmark() call.
-	// Combines the original PCA, the resliced PCA (if present), and the landmark
-	// points into a single object that is flushed to disk on application close.
-	// Augmented with a "regions" array by onRegions() when that step completes.
 	QJsonObject m_landmarkJson;
 
-	// Resliced volume produced by onReslice() (smart-pointer keeps it alive while displayed).
 	vtkSmartPointer<vtkImageData> m_reslicedImage;
-
-	// Label image produced by onRegions(): unsigned-char scalars, one label per voxel.
-	// 0 = background / unvisited.  Kept alive for repeated surface extraction.
 	vtkSmartPointer<vtkImageData> m_labelImage;
 
 	// Island surface actors produced by the most recent onRegions() call.
 	// Cleared at the start of each new onRegions() run.
 	std::vector<vtkSmartPointer<vtkActor>> m_islandActors;
 
-	// JSON cache of the PCA result computed on the original (pre-reslice) image.
-	// Written once by setImage() when m_reslicedImage is null (i.e. original load).
-	// Never overwritten by subsequent reslice calls, so callers can always
-	// retrieve the starting-point PCA regardless of how many reslices have run.
-	QJsonObject m_originalPcaJson;
+	// Scalar bar actor showing the voxel-count colour scale.
+	// Non-null only when onRegions() produced more than one island.
+	// Removed from the renderer and reset by clearIslandActors().
+	vtkSmartPointer<vtkScalarBarActor> m_islandScalarBar;
 
-	// JSON cache of the PCA result computed on the resliced image.
-	// Written by onReslice() after setImage() returns for the resliced volume.
+	QJsonObject m_originalPcaJson;
 	QJsonObject m_reslicedPcaJson;
 
-	// Serialises a PcaResult to a QJsonObject using the same field names
-	// used in the landmark result JSON for consistency.
-	static QJsonObject pcaResultToJson(const PcaResult& pca);
+	// Scalar statistics for the current image, computed once per setImage() call
+	// via PrototypeHelpers::computeScalarThresholdStats().  Empty when no image
+	// has been loaded or when m_threshold is not finite.
+	// Keys provided by computeScalarThresholdStats():
+	//   "mean"     / "stdDev"     — whole-volume statistics
+	//   "meanFg"   / "stdDevFg"   — above-threshold (foreground) statistics
+	//   "meanBg"   / "stdDevBg"   — below-threshold (background) statistics
+	// Consumers read individual values via m_imageStats.value("key").toDouble().
+	QJsonObject m_imageStats;
 
-	// Builds the prototype output sidecar path from the crop image basename:
-	//   <sidecar_directory>/<crop_basename>_prototype.json
-	// Returns an empty string when m_sidecarPath or m_cropPath are not set.
+	static QJsonObject pcaResultToJson(const PrototypeHelpers::PcaResult& pca);
 	QString prototypeOutputPath() const;
+	bool    writePrototypeSidecar() const;
+	void    clearPcaOverlay();
 
-	// Writes the accumulated JSON cache (originalPca, reslicedPca, landmarks, regions)
-	// to the prototype sidecar file.  Logs a warning and returns false on failure.
-	// Does nothing and returns true when there is nothing worth writing yet.
-	bool writePrototypeSidecar() const;
-
-	// Removes all previously added PCA overlay actors from the VolumeView renderer.
-	void clearPcaOverlay();
-
-	// Removes all bone island surface actors added by onRegions() from the renderer.
+	// Removes all island surface actors and the scalar bar (if present)
+	// from the VolumeView renderer and clears the internal vectors/pointers.
 	void clearIslandActors();
+
+	// Shared post-segmentation helper: builds actors, scalar bar, and updates
+	// the landmark JSON cache from a completed island segmentation result.
+	// Called by both onRegions() and onRegionsAlt() to avoid duplication.
+	void applyIslandSegmentationResult(
+		const std::vector<PrototypeHelpers::BoneIsland>& islands,
+		vtkSmartPointer<vtkImageData>                    labelImage);
 };

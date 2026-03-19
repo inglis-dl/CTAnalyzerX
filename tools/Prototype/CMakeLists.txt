@@ -18,10 +18,28 @@ target_include_directories(CTAXPrototype
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# VTK modules used directly by PrototypeHelpers (morphological pipeline).
+# ImagingGeneral     : vtkImageGaussianSmooth
+# ImagingMorphological: vtkImageContinuousErode3D / vtkImageContinuousDilate3D
+# ImagingStatistics  : vtkImageThresholdConnectivity
+set(CTAXPROTOTYPE_VTK_LIBS
+  VTK::ImagingGeneral
+  VTK::ImagingMorphological
+  VTK::ImagingStatistics
+)
+
 # Link against the GUI lib that provides VolumeView/ImageFrameWidget/JsonUtils and against core.
 target_link_libraries(CTAXPrototype
   PRIVATE
     CTAXGui
+    ${CTAXPROTOTYPE_VTK_LIBS}
+)
+
+# Register the new VTK modules with the autoinit system so VTK's
+# object-factory overrides are correctly wired at runtime.
+vtk_module_autoinit(
+  TARGETS CTAXPrototype
+  MODULES ${CTAXPROTOTYPE_VTK_LIBS}
 )
 
 # Ensure uic sees Prototype's .ui files AND any ui_*.h included from linked libs (e.g., CTAXGui)

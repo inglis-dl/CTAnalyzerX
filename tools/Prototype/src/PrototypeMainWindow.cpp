@@ -6,12 +6,14 @@
 #include "ImageLoader.h"
 #include "JsonUtils.h"
 
+#include <vtkColorTransferFunction.h>
 #include <vtkEventQtSlotConnect.h>
 #include <vtkImageData.h>
 #include <vtkImageReslice.h>
 #include <vtkMath.h>
 #include <vtkMatrix4x4.h>
 #include <vtkRenderer.h>
+#include <vtkScalarBarActor.h>
 #include <vtkSmartPointer.h>
 
 #include <QAction>
@@ -26,6 +28,7 @@
 #include <QTimer>
 #include <QThread>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <stdexcept>
@@ -49,23 +52,34 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	m_progressBar->setVisible(false);
 	statusBar()->addPermanentWidget(m_progressBar);
 
-	// "Landmark" toolbar button: searches along each PCA axis for surface transitions
-	QAction* actLandmark = new QAction(tr("Landmark"), this);
-	actLandmark->setToolTip(tr("Find surface landmark points along the PCA axes"));
-	ui->toolBar->addAction(actLandmark);
-	connect(actLandmark, &QAction::triggered, this, &PrototypeMainWindow::onLandmark);
+	// ------------------------------------------------------------------
+	// Toolbar button order: Reslice | Landmark | Regions | Regions Alt | Outline | Restart
+	// ------------------------------------------------------------------
 
 	// "Reslice" toolbar button: reslice the volume aligned to the PCA axes
-	QAction* actReslice = new QAction(tr("Reslice"), this);
-	actReslice->setToolTip(tr("Reslice the volume aligned to the PCA principal axes"));
-	ui->toolBar->addAction(actReslice);
-	connect(actReslice, &QAction::triggered, this, &PrototypeMainWindow::onReslice);
+	m_actReslice = new QAction(tr("Reslice"), this);
+	m_actReslice->setToolTip(tr("Reslice the volume aligned to the PCA principal axes"));
+	ui->toolBar->addAction(m_actReslice);
+	connect(m_actReslice, &QAction::triggered, this, &PrototypeMainWindow::onReslice);
+
+	// "Landmark" toolbar button: searches along each PCA axis for surface transitions
+	m_actLandmark = new QAction(tr("Landmark"), this);
+	m_actLandmark->setToolTip(tr("Find surface landmark points along the PCA axes"));
+	ui->toolBar->addAction(m_actLandmark);
+	connect(m_actLandmark, &QAction::triggered, this, &PrototypeMainWindow::onLandmark);
 
 	// "Regions" toolbar button: threshold + seeded BFS island segmentation
-	QAction* actRegions = new QAction(tr("Regions"), this);
-	actRegions->setToolTip(tr("Segment bone islands from the resliced volume using landmark seeds"));
-	ui->toolBar->addAction(actRegions);
-	connect(actRegions, &QAction::triggered, this, &PrototypeMainWindow::onRegions);
+	m_actRegions = new QAction(tr("Regions"), this);
+	m_actRegions->setToolTip(tr("Segment bone islands from the resliced volume using landmark seeds"));
+	ui->toolBar->addAction(m_actRegions);
+	connect(m_actRegions, &QAction::triggered, this, &PrototypeMainWindow::onRegions);
+
+	// "Regions Alt" toolbar button: morphological pipeline (smooth ? erode ? dilate ? connectivity)
+	m_actRegionsAlt = new QAction(tr("Regions Alt"), this);
+	m_actRegionsAlt->setToolTip(tr("Segment bone islands using the morphological pipeline "
+	                               "(Gaussian smooth ? erode ? dilate ? seeded connectivity)"));
+	ui->toolBar->addAction(m_actRegionsAlt);
+	connect(m_actRegionsAlt, &QAction::triggered, this, &PrototypeMainWindow::onRegionsAlt);
 
 	// "Outline" toggle toolbar button: shows/hides the VolumeView bounding-box outline actor.
 	// The action is checkable so it renders in a depressed state while the outline is visible
@@ -76,6 +90,18 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	m_actOutline->setChecked(false); // outline is hidden by default (matches VolumeView default)
 	ui->toolBar->addAction(m_actOutline);
 	connect(m_actOutline, &QAction::toggled, this, &PrototypeMainWindow::onOutlineToggled);
+
+	// "Restart" toolbar button: revert to the original image and reset the workflow.
+	// Always enabled — Restart can be applied at any workflow step.
+	m_actRestart = new QAction(tr("Restart"), this);
+	m_actRestart->setToolTip(tr("Revert to the original image and reset the workflow to the start"));
+	ui->toolBar->addAction(m_actRestart);
+	connect(m_actRestart, &QAction::triggered, this, &PrototypeMainWindow::onRestart);
+
+	// Apply the initial workflow step state: only Reslice enabled at startup.
+	// Restart is always enabled regardless of step; set it explicitly here.
+	m_actRestart->setEnabled(true);
+	setWorkflowStep(WorkflowStep::Idle);
 
 	// ImageLoader + VTK event wiring
 	m_imageLoader    = vtkSmartPointer<ImageLoader>::New();
@@ -107,6 +133,40 @@ void PrototypeMainWindow::closeEvent(QCloseEvent* event)
 {
 	writePrototypeSidecar();
 	QMainWindow::closeEvent(event);
+}
+
+// ---------------------------------------------------------------------------
+// Workflow step state machine
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::setWorkflowStep(WorkflowStep step)
+{
+	m_workflowStep = step;
+
+	// Determine enabled state for each step button based on the current step.
+	// Restart is always enabled and managed independently.
+	//
+	// Workflow routes:
+	//   A) Idle ? Resliced ? Landmarked ? Segmented  (via Regions)
+	//   B) Idle ? Resliced ? Landmarked ? Segmented  (via Regions Alt)
+	//
+	// At each step exactly one (or two, at Landmarked) button is enabled:
+	//   Idle       : Reslice=on,  Landmark=off, Regions=off, RegionsAlt=off
+	//   Resliced   : Reslice=off, Landmark=on,  Regions=off, RegionsAlt=off
+	//   Landmarked : Reslice=off, Landmark=off, Regions=on,  RegionsAlt=on
+	//   Segmented  : Reslice=off, Landmark=off, Regions=off, RegionsAlt=off
+
+	const bool atIdle       = (step == WorkflowStep::Idle);
+	const bool atResliced   = (step == WorkflowStep::Resliced);
+	const bool atLandmarked = (step == WorkflowStep::Landmarked);
+
+	m_actReslice->setEnabled(atIdle);
+	m_actLandmark->setEnabled(atResliced);
+	m_actRegions->setEnabled(atLandmarked);
+	m_actRegionsAlt->setEnabled(atLandmarked);
+
+	// Restart is always enabled — it can be applied at any time.
+	m_actRestart->setEnabled(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,11 +280,19 @@ void PrototypeMainWindow::clearIslandActors()
 	if (!ren)
 		return;
 
+	// Remove surface actors
 	for (auto& a : m_islandActors)
 	{
 		if (a) ren->RemoveActor(a);
 	}
 	m_islandActors.clear();
+
+	// Remove the scalar bar when it exists
+	if (m_islandScalarBar)
+	{
+		ren->RemoveActor(m_islandScalarBar);
+		m_islandScalarBar = nullptr;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +300,7 @@ void PrototypeMainWindow::clearIslandActors()
 // ---------------------------------------------------------------------------
 
 // static
-QJsonObject PrototypeMainWindow::pcaResultToJson(const PcaResult& pca)
+QJsonObject PrototypeMainWindow::pcaResultToJson(const PrototypeHelpers::PcaResult& pca)
 {
 	auto packVec3 = [](const double v[3]) -> QJsonArray
 	{
@@ -356,7 +424,15 @@ void PrototypeMainWindow::loadFromSidecar(const QString& sidecarPath)
 	if (dims[0] <= 1 || dims[1] <= 1 || dims[2] <= 1)
 		throw std::runtime_error(("ImageLoader produced invalid volume dimensions for: " + cropPath).toStdString());
 
+	// Keep a deep copy of the original image so Restart can restore it without
+	// re-reading from disk.
+	m_originalImage = vtkSmartPointer<vtkImageData>::New();
+	m_originalImage->DeepCopy(out);
+
 	setImage(out);
+
+	// A freshly loaded image starts the workflow at Idle (only Reslice enabled).
+	setWorkflowStep(WorkflowStep::Idle);
 }
 
 void PrototypeMainWindow::setImage(vtkImageData* image)
@@ -389,20 +465,48 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 
 	// Determine window/level from the image and the cached sidecar threshold.
 	// level  = threshold (falls back to scalar range midpoint if not present)
-	// window = standard deviation of scalar values
+	// window = 2 × overall standard deviation (from computeScalarThresholdStats)
+	//
+	// computeScalarThresholdStats() is called unconditionally here so that
+	// m_imageStats is always populated for downstream steps (e.g. Clean),
+	// regardless of whether a finite threshold is available.  When no threshold
+	// is present the foreground/background partition keys will reflect a
+	// degenerate split (all voxels treated as background), which is acceptable
+	// because the Clean step is gated on a finite threshold being available.
 	if (!image)
 		return;
 
 	double scalarRange[2] = { 0.0, 255.0 };
 	image->GetScalarRange(scalarRange);
 
+	// Compute threshold-partitioned statistics once and cache for all consumers.
+	// Pass the threshold only when it is finite; computeScalarThresholdStats
+	// handles a NaN threshold gracefully (all voxels fall into background).
+	const double effectiveThreshold = std::isfinite(m_threshold)
+		? m_threshold
+		: std::numeric_limits<double>::quiet_NaN();
+
+	m_imageStats = PrototypeHelpers::computeScalarThresholdStats(image, effectiveThreshold);
+
+	qDebug("setImage: imageStats — mean=%.4f  stdDev=%.4f  "
+	       "meanFg=%.4f  stdDevFg=%.4f  meanBg=%.4f  stdDevBg=%.4f",
+	       m_imageStats.value(QStringLiteral("mean")).toDouble(),
+	       m_imageStats.value(QStringLiteral("stdDev")).toDouble(),
+	       m_imageStats.value(QStringLiteral("meanFg")).toDouble(),
+	       m_imageStats.value(QStringLiteral("stdDevFg")).toDouble(),
+	       m_imageStats.value(QStringLiteral("meanBg")).toDouble(),
+	       m_imageStats.value(QStringLiteral("stdDevBg")).toDouble());
+
+	// level: threshold when finite, otherwise midpoint of the scalar range.
+	// window: 2 × whole-volume standard deviation sourced from m_imageStats.
 	const double level = std::isfinite(m_threshold)
 		? m_threshold
 		: 0.5 * (scalarRange[0] + scalarRange[1]);
 
-	const double window = 2.0 * PrototypeHelpers::computeScalarStdDev(image);
+	const double window = 2.0 * m_imageStats.value(QStringLiteral("stdDev")).toDouble(1.0);
 
 	ui->volumeView->setColorWindowLevel(window, level);
+
 
 	// ------------------------------------------------------------------
 	// PCA overlay: only when a finite threshold is available
@@ -452,7 +556,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	if (!ren)
 		return;
 
-	// Sphere glyph radius = 8 % of the circumsphere radius (4× the previous 2 % size)
+	// Sphere glyph radius = 8 % of the circumsphere radius (4× the original 2 % size)
 	const double glyphR = 0.08 * m_pca.circumRadius;
 
 	// Axis colours: R=axis0 (largest variance), G=axis1, B=axis2
@@ -637,6 +741,9 @@ void PrototypeMainWindow::onLandmark()
 
 	if (ren)
 		ui->volumeView->render();
+
+	// Landmark completed — advance to Landmarked: Regions and Regions Alt enabled.
+	setWorkflowStep(WorkflowStep::Landmarked);
 }
 
 // ---------------------------------------------------------------------------
@@ -717,10 +824,124 @@ void PrototypeMainWindow::onReslice()
 		qDebug("onReslice: resliced PCA JSON cached:\n%s",
 		       qUtf8Printable(QJsonDocument(m_reslicedPcaJson).toJson(QJsonDocument::Indented)));
 	}
+
+	// Reslice completed — advance to Resliced: only Landmark enabled.
+	setWorkflowStep(WorkflowStep::Resliced);
 }
 
 // ---------------------------------------------------------------------------
-// Regions slot — threshold ? seeded BFS flood-fill ? island surface actors
+// Shared helper — build island actors from a completed segmentation result
+// and merge the regions summary into the landmark JSON cache.
+// Called by both onRegions() and onRegionsAlt() after segmentation completes.
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::applyIslandSegmentationResult(
+	const std::vector<PrototypeHelpers::BoneIsland>& islands,
+	vtkSmartPointer<vtkImageData>                    labelImage)
+{
+	// Cache the label image so it stays alive for the actors' pipeline
+	m_labelImage = labelImage;
+
+	// Remove actors from any previous regions run (including scalar bar)
+	clearIslandActors();
+
+	vtkRenderer* ren = (ui && ui->volumeView) ? ui->volumeView->renderer() : nullptr;
+
+	const int nIslands = static_cast<int>(islands.size());
+
+	// ------------------------------------------------------------------
+	// Determine the voxel-count range across all islands for colour mapping
+	// ------------------------------------------------------------------
+	vtkIdType minVoxels = islands[0].voxelCount;
+	vtkIdType maxVoxels = islands[0].voxelCount;
+
+	for (const auto& isl : islands)
+	{
+		minVoxels = std::min(minVoxels, isl.voxelCount);
+		maxVoxels = std::max(maxVoxels, isl.voxelCount);
+	}
+
+	qDebug("applyIslandSegmentationResult: voxel-count range  min=%lld  max=%lld",
+	       static_cast<long long>(minVoxels),
+	       static_cast<long long>(maxVoxels));
+
+	// ------------------------------------------------------------------
+	// Build the colour transfer function over [minVoxels, maxVoxels]
+	// ------------------------------------------------------------------
+	auto colorTF = PrototypeHelpers::makeIslandColorTF(
+		static_cast<double>(minVoxels),
+		static_cast<double>(maxVoxels));
+
+	// ------------------------------------------------------------------
+	// Create one surface actor per island, coloured by its voxel count
+	// ------------------------------------------------------------------
+	QJsonArray regionsArray;
+
+	for (int idx = 0; idx < nIslands; ++idx)
+	{
+		const auto& island = islands[static_cast<std::size_t>(idx)];
+
+		// Sample the transfer function at this island's voxel count
+		double rgb[3] = { 1.0, 1.0, 1.0 };
+		colorTF->GetColor(static_cast<double>(island.voxelCount), rgb);
+
+		auto actor = PrototypeHelpers::makeIslandSurfaceActor(
+			m_labelImage,
+			island.label,
+			rgb[0], rgb[1], rgb[2],
+			0.55);
+
+		m_islandActors.push_back(actor);
+
+		if (ren)
+			ren->AddActor(actor);
+
+		qDebug("applyIslandSegmentationResult: island %d  label=%d  voxels=%lld  rgb=(%.3f,%.3f,%.3f)",
+		       idx, island.label,
+		       static_cast<long long>(island.voxelCount),
+		       rgb[0], rgb[1], rgb[2]);
+
+		// Augment the existing island JSON with the mapped colour for reference
+		QJsonObject islandJson = island.json;
+		islandJson[QStringLiteral("colorR")] = rgb[0];
+		islandJson[QStringLiteral("colorG")] = rgb[1];
+		islandJson[QStringLiteral("colorB")] = rgb[2];
+		regionsArray.append(islandJson);
+	}
+
+	// ------------------------------------------------------------------
+	// Scalar bar — only when there are at least 2 distinct islands so the
+	// colour scale has meaningful variation to display
+	// ------------------------------------------------------------------
+	if (nIslands > 1 && ren)
+	{
+		m_islandScalarBar = PrototypeHelpers::makeIslandScalarBar(
+			colorTF,
+			minVoxels,
+			maxVoxels);
+
+		ren->AddActor(m_islandScalarBar);
+
+		qDebug("applyIslandSegmentationResult: scalar bar added (%d islands, range %lld–%lld voxels).",
+		       nIslands,
+		       static_cast<long long>(minVoxels),
+		       static_cast<long long>(maxVoxels));
+	}
+
+	// ------------------------------------------------------------------
+	// Merge regions summary into the landmark JSON cache
+	// ------------------------------------------------------------------
+	m_landmarkJson[QStringLiteral("regions")] = regionsArray;
+
+	qDebug("applyIslandSegmentationResult: %d islands cached in landmarkJson[\"regions\"].",
+	       nIslands);
+
+	if (ren)
+		ui->volumeView->render();
+}
+
+// ---------------------------------------------------------------------------
+// Regions slot — threshold + seeded BFS flood-fill ? island surface actors
 // ---------------------------------------------------------------------------
 
 void PrototypeMainWindow::onRegions()
@@ -767,7 +988,7 @@ void PrototypeMainWindow::onRegions()
 	       seeds.size(), m_threshold);
 
 	// ------------------------------------------------------------------
-	// Progress callback (occupies [0, 100] of the progress bar)
+	// Progress callback
 	// ------------------------------------------------------------------
 	showProgressStart();
 	const auto regionProgress = [this](int percent)
@@ -798,63 +1019,139 @@ void PrototypeMainWindow::onRegions()
 		return;
 	}
 
-	// Cache the label image so it stays alive for the actors' pipeline
-	m_labelImage = labelImage;
+	applyIslandSegmentationResult(islands, labelImage);
 
+	// Segmentation completed — advance to Segmented: no step buttons enabled.
+	setWorkflowStep(WorkflowStep::Segmented);
+}
+
+// ---------------------------------------------------------------------------
+// Regions Alt slot — morphological pipeline (smooth ? erode ? dilate ? connectivity)
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::onRegionsAlt()
+{
 	// ------------------------------------------------------------------
-	// Remove any actors left from a previous onRegions() run
+	// Pre-conditions (identical to onRegions)
 	// ------------------------------------------------------------------
-	clearIslandActors();
-
-	vtkRenderer* ren = (ui && ui->volumeView) ? ui->volumeView->renderer() : nullptr;
-
-	// ------------------------------------------------------------------
-	// Assign visually distinct colours using a simple HSV rotation.
-	// Six evenly-spaced hues cover all axis-endpoint seeds well.
-	// ------------------------------------------------------------------
-	const int nIslands = static_cast<int>(islands.size());
-
-	// JSON array to accumulate island summaries
-	QJsonArray regionsArray;
-
-	for (int idx = 0; idx < nIslands; ++idx)
+	if (!m_reslicedImage)
 	{
-		const auto& island = islands[static_cast<std::size_t>(idx)];
+		qWarning("onRegionsAlt: no resliced image available; run Reslice first.");
+		return;
+	}
 
-		// HSV ? RGB: hue cycles 0–360° across all islands
-		const double hue = (360.0 * idx) / static_cast<double>(std::max(nIslands, 1));
-		double r = 1.0, g = 1.0, b = 1.0;
-		vtkMath::HSVToRGB(hue / 360.0, 0.85, 0.95, &r, &g, &b);
+	if (m_landmarkResult.isEmpty())
+	{
+		qWarning("onRegionsAlt: no landmark points available; run Landmark first.");
+		return;
+	}
 
-		auto actor = PrototypeHelpers::makeIslandSurfaceActor(
-			m_labelImage,
-			island.label,
-			r, g, b,
-			0.55);
-
-		m_islandActors.push_back(actor);
-
-		if (ren)
-			ren->AddActor(actor);
-
-		qDebug("onRegions: island %d  label=%d  voxels=%lld",
-		       idx, island.label,
-		       static_cast<long long>(island.voxelCount));
-
-		regionsArray.append(island.json);
+	if (!std::isfinite(m_threshold))
+	{
+		qWarning("onRegionsAlt: threshold is not finite; cannot segment.");
+		return;
 	}
 
 	// ------------------------------------------------------------------
-	// Merge regions summary into the landmark JSON cache so it is written
-	// to the prototype sidecar on close alongside the landmark data.
+	// Collect the 6 landmark world-space seed points from m_landmarkPoints.
+	// Each of the 3 axes contributes one positive and one negative seed.
 	// ------------------------------------------------------------------
-	m_landmarkJson[QStringLiteral("regions")] = regionsArray;
+	std::vector<std::array<double, 3>> seeds;
+	seeds.reserve(6);
 
-	qDebug("onRegions: %d islands segmented and cached in landmarkJson[\"regions\"].",
-	       nIslands);
+	for (int i = 0; i < 3; ++i)
+	{
+		for (int d = 0; d < 2; ++d)
+		{
+			const double* pt = m_landmarkPoints[static_cast<std::size_t>(i)]
+			                                    [static_cast<std::size_t>(d)].data();
+			seeds.push_back({ pt[0], pt[1], pt[2] });
+		}
+	}
 
-	if (ren)
-		ui->volumeView->render();
+	qDebug("onRegionsAlt: running morphological pipeline with %zu seeds, threshold=%.4f",
+	       seeds.size(), m_threshold);
+
+	// ------------------------------------------------------------------
+	// Progress callback
+	// ------------------------------------------------------------------
+	showProgressStart();
+	const auto regionProgress = [this](int percent)
+	{
+		showProgressValue(percent);
+		m_progressBar->update();
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	};
+
+	// ------------------------------------------------------------------
+	// Run alternate segmentation (default smoothStdDev=1.0, morphKernelSize=1)
+	// ------------------------------------------------------------------
+	vtkSmartPointer<vtkImageData> labelImage;
+
+	const std::vector<PrototypeHelpers::BoneIsland> islands =
+		PrototypeHelpers::segmentBoneIslandsAlternate(
+			m_reslicedImage,
+			m_threshold,
+			seeds,
+			labelImage,
+			1.0,  // smoothStdDev: Gaussian standard deviation in voxel units
+			1,    // morphKernelSize: half-width ? 3×3×3 structuring element
+			regionProgress);
+
+	showProgressEnd();
+
+	if (islands.empty())
+	{
+		qWarning("onRegionsAlt: no bone islands were found.");
+		return;
+	}
+
+	applyIslandSegmentationResult(islands, labelImage);
+
+	// Segmentation completed — advance to Segmented: no step buttons enabled.
+	setWorkflowStep(WorkflowStep::Segmented);
+}
+
+// ---------------------------------------------------------------------------
+// Restart slot — revert to the original image and reset the full workflow
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::onRestart()
+{
+	if (!m_originalImage)
+	{
+		qDebug("onRestart: no original image cached; nothing to restore.");
+		return;
+	}
+
+	qDebug("onRestart: reverting to original image and resetting workflow.");
+
+	// Discard all derived state so setImage() treats this as a clean first load.
+	// Clear island actors and scalar bar before releasing the label image.
+	clearIslandActors();
+	m_labelImage      = nullptr;
+	m_reslicedImage   = nullptr;
+	m_reslicedPcaJson = QJsonObject{};
+	m_landmarkResult  = QJsonObject{};
+	m_landmarkJson    = QJsonObject{};
+	m_landmarkPoints  = {};
+	m_imageStats      = QJsonObject{};
+
+	// Restore the view to the original image with its original PCA axes.
+	// setImage() will recompute the PCA from the original image data and
+	// rebuild all PCA overlay actors, which gives back the default axes.
+	setImage(m_originalImage);
+
+	// Ensure m_originalPcaJson is refreshed from the just-computed PCA
+	// (setImage only writes it when m_reslicedImage is null, which it now is).
+	if (m_pca.valid)
+	{
+		m_originalPcaJson = pcaResultToJson(m_pca);
+		qDebug("onRestart: original PCA JSON refreshed.");
+	}
+
+	// Reset the workflow to the start: only Reslice enabled.
+	setWorkflowStep(WorkflowStep::Idle);
 }
 
 // ---------------------------------------------------------------------------
