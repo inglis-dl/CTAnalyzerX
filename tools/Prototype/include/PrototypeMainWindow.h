@@ -64,6 +64,12 @@ private slots:
 	// using the same colour/scalar-bar logic as onRegions().
 	void onRegionsAlt();
 
+	// Triggered by the "Clean" toolbar button.
+	// Enabled only after segmentation (Regions or Regions Alt) has completed
+	// and at least 8 Reslice steps have been performed.
+	// Stub: disables all preceding workflow step buttons and advances to Cleaned.
+	void onClean();
+
 	void onOutlineToggled(bool checked);
 
 	// Triggered by the "Restart" toolbar button.
@@ -77,16 +83,18 @@ private:
 	// Workflow step state machine
 	// -----------------------------------------------------------------------
 
-	// Linear workflow: Idle ? Resliced ? Landmarked ? Segmented
+	// Linear workflow: Idle ? Resliced ? Landmarked ? Segmented ? Cleaned
 	// Restart transitions back to Idle from any state.
 	// Route A: Resliced ? Landmarked ? Segmented (via onRegions)
 	// Route B: Resliced ? Landmarked ? Segmented (via onRegionsAlt)
+	// Clean is available after Segmented when m_resliceCount >= 8.
 	enum class WorkflowStep
 	{
 		Idle,        // image loaded; only Reslice enabled
 		Resliced,    // reslice done; only Landmark enabled
 		Landmarked,  // landmark done; Regions and RegionsAlt enabled
-		Segmented    // segmentation done; no step buttons enabled
+		Segmented,   // segmentation done; Clean enabled (when reslice count >= 8)
+		Cleaned      // clean done; no step buttons enabled
 	};
 
 	// Transition to a new workflow step and update all step button states.
@@ -121,10 +129,17 @@ private:
 	QAction* m_actLandmark   = nullptr;
 	QAction* m_actRegions    = nullptr;
 	QAction* m_actRegionsAlt = nullptr;
+	// "Clean" toolbar button: enabled after segmentation completes and
+	// at least 8 Reslice steps have been performed in this session.
+	QAction* m_actClean      = nullptr;
 	QAction* m_actRestart    = nullptr;
 
 	// Current workflow position — drives enabled/disabled state of step buttons.
 	WorkflowStep m_workflowStep = WorkflowStep::Idle;
+
+	// Cumulative count of successful Reslice operations in the current session.
+	// Clean is only enabled when this reaches the required minimum (8).
+	int m_resliceCount = 0;
 
 	std::array<vtkSmartPointer<vtkActor>, 3> m_axisActors;
 	std::array<vtkSmartPointer<vtkActor>, 6> m_tipActors;

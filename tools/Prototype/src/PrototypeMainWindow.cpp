@@ -7,11 +7,13 @@
 #include "JsonUtils.h"
 
 #include <vtkColorTransferFunction.h>
+#include <vtkDataArray.h>
 #include <vtkEventQtSlotConnect.h>
 #include <vtkImageData.h>
 #include <vtkImageReslice.h>
 #include <vtkMath.h>
 #include <vtkMatrix4x4.h>
+#include <vtkPointData.h>
 #include <vtkRenderer.h>
 #include <vtkScalarBarActor.h>
 #include <vtkSmartPointer.h>
@@ -31,6 +33,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -53,7 +56,7 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	statusBar()->addPermanentWidget(m_progressBar);
 
 	// ------------------------------------------------------------------
-	// Toolbar button order: Reslice | Landmark | Regions | Regions Alt | Outline | Restart
+	// Toolbar button order: Reslice | Landmark | Regions | Regions Alt | Clean | Outline | Restart
 	// ------------------------------------------------------------------
 
 	// "Reslice" toolbar button: reslice the volume aligned to the PCA axes
@@ -80,6 +83,15 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	                               "(Gaussian smooth ? erode ? dilate ? seeded connectivity)"));
 	ui->toolBar->addAction(m_actRegionsAlt);
 	connect(m_actRegionsAlt, &QAction::triggered, this, &PrototypeMainWindow::onRegionsAlt);
+
+	// "Clean" toolbar button: post-segmentation clean step.
+	// Enabled only after segmentation completes AND at least 8 Reslice operations
+	// have been performed in the current session (m_resliceCount >= 8).
+	m_actClean = new QAction(tr("Clean"), this);
+	m_actClean->setToolTip(tr("Run the post-segmentation clean step "
+	                          "(available after 8 or more Reslice operations)"));
+	ui->toolBar->addAction(m_actClean);
+	connect(m_actClean, &QAction::triggered, this, &PrototypeMainWindow::onClean);
 
 	// "Outline" toggle toolbar button: shows/hides the VolumeView bounding-box outline actor.
 	// The action is checkable so it renders in a depressed state while the outline is visible
@@ -476,8 +488,6 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	if (!image)
 		return;
 
-	double scalarRange[2] = { 0.0, 255.0 };
-	image->GetScalarRange(scalarRange);
 
 	// Compute threshold-partitioned statistics once and cache for all consumers.
 	// Pass the threshold only when it is finite; computeScalarThresholdStats
@@ -496,6 +506,10 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	       m_imageStats.value(QStringLiteral("stdDevFg")).toDouble(),
 	       m_imageStats.value(QStringLiteral("meanBg")).toDouble(),
 	       m_imageStats.value(QStringLiteral("stdDevBg")).toDouble());
+
+	const double scalarRange[2] = { 
+		m_imageStats.value(QStringLiteral("min")).toDouble(0.0), 
+		m_imageStats.value(QStringLiteral("max")).toDouble(255.0) };
 
 	// level: threshold when finite, otherwise midpoint of the scalar range.
 	// window: 2 × whole-volume standard deviation sourced from m_imageStats.
@@ -825,6 +839,12 @@ void PrototypeMainWindow::onReslice()
 		       qUtf8Printable(QJsonDocument(m_reslicedPcaJson).toJson(QJsonDocument::Indented)));
 	}
 
+	// Increment the cumulative reslice counter for this session.
+	// The Clean button gate (m_resliceCount >= 8) is re-evaluated by
+	// setWorkflowStep() every time a new step is entered.
+	++m_resliceCount;
+	qDebug("onReslice: m_resliceCount=%d", m_resliceCount);
+
 	// Reslice completed — advance to Resliced: only Landmark enabled.
 	setWorkflowStep(WorkflowStep::Resliced);
 }
@@ -1075,7 +1095,7 @@ void PrototypeMainWindow::onRegionsAlt()
 	// ------------------------------------------------------------------
 	// Progress callback
 	// ------------------------------------------------------------------
-	showProgressStart();
+showProgressStart();
 	const auto regionProgress = [this](int percent)
 	{
 		showProgressValue(percent);
@@ -1113,6 +1133,197 @@ void PrototypeMainWindow::onRegionsAlt()
 }
 
 // ---------------------------------------------------------------------------
+// Clean slot — post-segmentation clean step (stub)
+// Enabled only after segmentation completes and at least 8 Reslice operations
+// have been performed in the current session.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Clean slot — post-segmentation clean step
+//
+// Algorithm:
+//   1. Derive the noise distribution from the cached background statistics:
+//      draw = clamp(backgroundMean + U(-2?, +2?),  volMin, volMax)
+//      where U(-2?, +2?) is a uniform random value in [-2·bgStdDev, +2·bgStdDev].
+//   2. Deep-copy the resliced volume into C.
+//   3. For every voxel v in the resliced volume:
+//        if v > threshold  AND  v is NOT inside any segmented island label:
+//            replace the corresponding voxel in C with a drawn noise value.
+//   4. Display C via setImage().
+//
+// Pre-conditions (all checked below):
+//   - m_reslicedImage    : resliced volume exists
+//   - m_labelImage       : segmentation label map exists (0 = background, ?1 = island)
+//   - m_threshold        : finite threshold
+//   - m_backgroundMean / m_backgroundStdDev : cached from setImage()
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::onClean()
+{
+	qDebug("onClean: clean step triggered (resliceCount=%d).", m_resliceCount);
+
+	// ------------------------------------------------------------------
+	// Pre-conditions
+	// ------------------------------------------------------------------
+	if (!m_reslicedImage)
+	{
+		qWarning("onClean: no resliced image available; run Reslice first.");
+		return;
+	}
+
+	if (!m_labelImage)
+	{
+		qWarning("onClean: no label image available; run Regions or Regions Alt first.");
+		return;
+	}
+
+	if (!std::isfinite(m_threshold))
+	{
+		qWarning("onClean: threshold is not finite; cannot clean.");
+		return;
+	}
+
+	// ------------------------------------------------------------------
+	// Scalar range of the resliced volume — used to clamp random draws
+	// ------------------------------------------------------------------
+	double scalarRange[2] = { 0.0, 1.0 };
+	m_reslicedImage->GetScalarRange(scalarRange);
+	const double volMin = scalarRange[0];
+	const double volMax = scalarRange[1];
+
+	// ------------------------------------------------------------------
+	// Background noise distribution parameters sourced from m_imageStats,
+	// which is populated by setImage() via computeScalarThresholdStats().
+	// "meanBg"   — mean scalar value of all below-threshold voxels.
+	// "stdDevBg" — standard deviation of below-threshold voxels.
+	// ------------------------------------------------------------------
+	const double bgMean = m_imageStats.value(QStringLiteral("meanBg")).toDouble(0.0);
+	const double bgStdDev = m_imageStats.value(QStringLiteral("stdDevBg")).toDouble(0.0);
+	const double noiseHalfWidth = 2.0 * bgStdDev;   // ± 2? uniform range
+
+	qDebug("onClean: bgMean=%.4f  bgStdDev=%.4f  noiseHalfWidth=%.4f  "
+		   "volMin=%.4f  volMax=%.4f  threshold=%.4f",
+		   bgMean, bgStdDev, noiseHalfWidth, volMin, volMax, m_threshold);
+
+	// ------------------------------------------------------------------
+	// Initialize C++17 random number generator
+	// uniform_real_distribution over [-noiseHalfWidth, +noiseHalfWidth]
+	// ------------------------------------------------------------------
+	std::mt19937_64                          rng{ std::random_device{}() };
+	std::uniform_real_distribution<double>   noiseDist(-noiseHalfWidth, noiseHalfWidth);
+
+	// ------------------------------------------------------------------
+	// Deep-copy the resliced volume into C (the output cleaned volume)
+	// ------------------------------------------------------------------
+	auto cleanedImage = vtkSmartPointer<vtkImageData>::New();
+	cleanedImage->DeepCopy(m_reslicedImage);
+
+	vtkDataArray* reslicedScalars = m_reslicedImage->GetPointData()->GetScalars();
+	vtkDataArray* labelScalars = m_labelImage->GetPointData()->GetScalars();
+	vtkDataArray* cleanedScalars = cleanedImage->GetPointData()->GetScalars();
+
+	if (!reslicedScalars || !labelScalars || !cleanedScalars)
+	{
+		qWarning("onClean: scalar arrays missing on resliced, label, or cleaned image.");
+		return;
+	}
+
+	const vtkIdType nReslicedPoints = m_reslicedImage->GetNumberOfPoints();
+	const vtkIdType nLabelPoints = m_labelImage->GetNumberOfPoints();
+
+	// The label image is produced from the resliced image so their point
+	// counts must match.  Guard against an unexpected mismatch.
+	if (nReslicedPoints != nLabelPoints)
+	{
+		qWarning("onClean: resliced image point count (%lld) does not match "
+				 "label image point count (%lld); aborting.",
+				 static_cast<long long>(nReslicedPoints),
+				 static_cast<long long>(nLabelPoints));
+		return;
+	}
+
+	showProgressStart();
+
+	// ------------------------------------------------------------------
+	// Voxel loop
+	//
+	// For each voxel i:
+	//   - scalar v  = resliced intensity
+	//   - label  l  = segmentation label (0 = unlabelled / outside all islands)
+	//
+	// Replace in C when:
+	//   v > threshold   (foreground intensity)
+	//   AND l == 0      (not inside any segmented island)
+	// ------------------------------------------------------------------
+	vtkIdType replacedCount = 0;
+
+	for (vtkIdType i = 0; i < nReslicedPoints; ++i)
+	{
+		// Progress: report every 1 % of voxels
+		if ((i & 0xFFFF) == 0)
+		{
+			const int pct = static_cast<int>(
+				std::clamp(static_cast<double>(i) / static_cast<double>(nReslicedPoints), 0.0, 1.0) * 100.0);
+			showProgressValue(pct);
+			m_progressBar->update();
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+		}
+
+		const double v = reslicedScalars->GetTuple1(i);
+		const double l = labelScalars->GetTuple1(i);
+
+		// Keep voxels that are below the threshold (background) or inside an island.
+		if (v <= m_threshold || l != 0.0)
+			continue;
+
+		// Voxel is above-threshold AND outside every segmented island —
+		// replace it with a background-noise draw clamped to [volMin, volMax].
+		const double noise = noiseDist(rng);
+		const double noiseVal = std::clamp(bgMean + noise, volMin, volMax);
+		cleanedScalars->SetTuple1(i, noiseVal);
+		++replacedCount;
+	}
+
+	cleanedScalars->Modified();
+	cleanedImage->Modified();
+
+	showProgressEnd();
+
+	qDebug("onClean: replaced %lld above-threshold outside-island voxels with background noise.",
+		   static_cast<long long>(replacedCount));
+
+	// ------------------------------------------------------------------
+	// Cache the cleaned volume and update the display.
+	// setImage() is NOT called here to avoid resetting the workflow state
+	// and recomputing PCA.  Instead we update only the VolumeView directly,
+	// mirroring the minimal path used elsewhere when the image content
+	// changes without replacing the pipeline source.
+	// ------------------------------------------------------------------
+	m_reslicedImage = cleanedImage;
+	m_image = m_reslicedImage.Get();
+
+	if (ui && ui->volumeView)
+	{
+		ui->volumeView->setImageData(m_reslicedImage);
+		ui->volumeView->updateData();
+		
+		const double scalarRange[2] = {
+		m_imageStats.value(QStringLiteral("min")).toDouble(0.0),
+		m_imageStats.value(QStringLiteral("max")).toDouble(255.0) };
+		const double level = std::isfinite(m_threshold)
+			? m_threshold
+			: 0.5 * (scalarRange[0] + scalarRange[1]);
+
+		const double window = 2.0 * m_imageStats.value(QStringLiteral("stdDev")).toDouble(1.0);
+
+		ui->volumeView->setColorWindowLevel(window, level);
+		ui->volumeView->render();
+	}
+
+	// Clean completed — advance to Cleaned: all step buttons disabled.
+	setWorkflowStep(WorkflowStep::Cleaned);
+}
+// ---------------------------------------------------------------------------
 // Restart slot — revert to the original image and reset the full workflow
 // ---------------------------------------------------------------------------
 
@@ -1129,13 +1340,16 @@ void PrototypeMainWindow::onRestart()
 	// Discard all derived state so setImage() treats this as a clean first load.
 	// Clear island actors and scalar bar before releasing the label image.
 	clearIslandActors();
-	m_labelImage      = nullptr;
-	m_reslicedImage   = nullptr;
+	m_labelImage = nullptr;
+	m_reslicedImage = nullptr;
 	m_reslicedPcaJson = QJsonObject{};
-	m_landmarkResult  = QJsonObject{};
-	m_landmarkJson    = QJsonObject{};
-	m_landmarkPoints  = {};
-	m_imageStats      = QJsonObject{};
+	m_landmarkResult = QJsonObject{};
+	m_landmarkJson = QJsonObject{};
+	m_landmarkPoints = {};
+	m_imageStats = QJsonObject{};
+
+	// Reset the reslice counter so the Clean gate starts from zero on restart.
+	m_resliceCount = 0;
 
 	// Restore the view to the original image with its original PCA axes.
 	// setImage() will recompute the PCA from the original image data and

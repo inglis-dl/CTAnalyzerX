@@ -131,6 +131,11 @@ namespace PrototypeHelpers
 		if (nPoints <= 0)
 			return result;
 
+		double range[2];
+		image->GetScalarRange(range);
+		result.insert("min", range[0]);
+		result.insert("max", range[1]);
+
 		double sum = 0.0;
 		double sumSq = 0.0;
 		double sumFg = 0.0;
