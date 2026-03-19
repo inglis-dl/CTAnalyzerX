@@ -6,9 +6,11 @@
 #include "ImageLoader.h"
 #include "JsonUtils.h"
 
+#include <vtkBoundingBox.h>
 #include <vtkColorTransferFunction.h>
 #include <vtkDataArray.h>
 #include <vtkEventQtSlotConnect.h>
+#include <vtkExtractVOI.h>
 #include <vtkImageData.h>
 #include <vtkImageReslice.h>
 #include <vtkMath.h>
@@ -1186,8 +1188,10 @@ void PrototypeMainWindow::onClean()
 	// ------------------------------------------------------------------
 	// Scalar range of the resliced volume — used to clamp random draws
 	// ------------------------------------------------------------------
-	double scalarRange[2] = { 0.0, 1.0 };
-	m_reslicedImage->GetScalarRange(scalarRange);
+
+	const double scalarRange[2] = {
+	m_imageStats.value(QStringLiteral("min")).toDouble(0.0),
+	m_imageStats.value(QStringLiteral("max")).toDouble(255.0) };
 	const double volMin = scalarRange[0];
 	const double volMax = scalarRange[1];
 
@@ -1245,7 +1249,7 @@ void PrototypeMainWindow::onClean()
 	showProgressStart();
 
 	// ------------------------------------------------------------------
-	// Voxel loop
+	// Voxel loop  [progress 0 ? 80]
 	//
 	// For each voxel i:
 	//   - scalar v  = resliced intensity
@@ -1259,11 +1263,11 @@ void PrototypeMainWindow::onClean()
 
 	for (vtkIdType i = 0; i < nReslicedPoints; ++i)
 	{
-		// Progress: report every 1 % of voxels
+		// Progress: report every 64 K voxels, mapped to the [0, 80] sub-range.
 		if ((i & 0xFFFF) == 0)
 		{
 			const int pct = static_cast<int>(
-				std::clamp(static_cast<double>(i) / static_cast<double>(nReslicedPoints), 0.0, 1.0) * 100.0);
+				std::clamp(static_cast<double>(i) / static_cast<double>(nReslicedPoints), 0.0, 1.0) * 80.0);
 			showProgressValue(pct);
 			m_progressBar->update();
 			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
@@ -1287,10 +1291,154 @@ void PrototypeMainWindow::onClean()
 	cleanedScalars->Modified();
 	cleanedImage->Modified();
 
-	showProgressEnd();
-
 	qDebug("onClean: replaced %lld above-threshold outside-island voxels with background noise.",
 		   static_cast<long long>(replacedCount));
+
+	// ------------------------------------------------------------------
+	// VOI crop: tighten the cleaned volume to the region of interest.
+	//
+	// Steps:
+	//   1. Compute Dmin = half the shortest inter-landmark paired distance
+	//      (pos–neg pair along the same axis) in world coordinates.
+	//   2. Build a vtkBoundingBox B over all segmented island voxels in
+	//      world coordinates (label > 0 in m_labelImage).
+	//   3. Inflate B by Dmin uniformly from its centroid.
+	//   4. Map B to voxel extent in cleanedImage and apply vtkExtractVOI.
+	// ------------------------------------------------------------------
+
+	// Step 1 — Dmin: half the shortest paired landmark distance.
+	// m_landmarkPoints[axis][0] = positive direction surface point
+	// m_landmarkPoints[axis][1] = negative direction surface point
+	double minPairedDist = std::numeric_limits<double>::max();
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		const double* lPos = m_landmarkPoints[static_cast<std::size_t>(axis)][0].data();
+		const double* lNeg = m_landmarkPoints[static_cast<std::size_t>(axis)][1].data();
+		const double dx = lPos[0] - lNeg[0];
+		const double dy = lPos[1] - lNeg[1];
+		const double dz = lPos[2] - lNeg[2];
+		const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+		minPairedDist = std::min(minPairedDist, dist);
+	}
+
+	const double dMin = 0.5 * minPairedDist;
+
+	qDebug("onClean: minPairedLandmarkDist=%.4f  dMin=%.4f", minPairedDist, dMin);
+
+	// Step 2 — island bounding box in world coordinates  [progress 80 ? 95]
+	// Iterate the label image; accumulate world positions of all labelled voxels.
+	showProgressValue(80);
+	m_progressBar->update();
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	vtkBoundingBox islandBB;
+
+	{
+		const double* lbOrigin = m_labelImage->GetOrigin();
+		const double* lbSpacing = m_labelImage->GetSpacing();
+		const int* lbDims = m_labelImage->GetDimensions();
+		vtkDataArray* lbScalars = m_labelImage->GetPointData()->GetScalars();
+
+		const vtkIdType nLabelTotal = static_cast<vtkIdType>(lbDims[0])
+			* static_cast<vtkIdType>(lbDims[1])
+			* static_cast<vtkIdType>(lbDims[2]);
+
+		for (int k = 0; k < lbDims[2]; ++k)
+		{
+			// Progress: report per slice, mapped to the [80, 95] sub-range.
+			if ((k & 0xF) == 0)
+			{
+				const int pct = 80 + static_cast<int>(
+					std::clamp(static_cast<double>(k) / static_cast<double>(lbDims[2]), 0.0, 1.0) * 15.0);
+				showProgressValue(pct);
+				m_progressBar->update();
+				QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+			}
+
+			for (int j = 0; j < lbDims[1]; ++j)
+			{
+				for (int i = 0; i < lbDims[0]; ++i)
+				{
+					const vtkIdType idx = static_cast<vtkIdType>(k) * lbDims[1] * lbDims[0]
+						+ static_cast<vtkIdType>(j) * lbDims[0]
+						+ i;
+
+					if (lbScalars->GetTuple1(idx) == 0.0)
+						continue;
+
+					const double wx = lbOrigin[0] + i * lbSpacing[0];
+					const double wy = lbOrigin[1] + j * lbSpacing[1];
+					const double wz = lbOrigin[2] + k * lbSpacing[2];
+					islandBB.AddPoint(wx, wy, wz);
+				}
+			}
+		}
+	}
+
+	// Step 3 — inflate B by dMin uniformly from its centroid.
+	// vtkBoundingBox::Inflate(delta) expands each face outward by delta.
+	islandBB.Inflate(dMin);
+
+	double bbBounds[6];
+	islandBB.GetBounds(bbBounds);  // [xMin, xMax, yMin, yMax, zMin, zMax]
+
+	qDebug("onClean: inflated island BB world  x=[%.3f,%.3f]  y=[%.3f,%.3f]  z=[%.3f,%.3f]",
+		   bbBounds[0], bbBounds[1], bbBounds[2],
+		   bbBounds[3], bbBounds[4], bbBounds[5]);
+
+	// Step 4 — map world BB to voxel extent in cleanedImage and run vtkExtractVOI
+	// [progress 95 ? 100]
+	showProgressValue(95);
+	m_progressBar->update();
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	{
+		const double* cOrigin = cleanedImage->GetOrigin();
+		const double* cSpacing = cleanedImage->GetSpacing();
+		const int* cDims = cleanedImage->GetDimensions();
+
+		// Convert world bounds to nearest voxel indices, clamped to the image extent.
+		auto worldToVoxelClamped = [&](double worldCoord, double origin, double spacing,
+									   int dimSize) -> int
+			{
+				const int idx = static_cast<int>((worldCoord - origin) / spacing + 0.5);
+				return std::clamp(idx, 0, dimSize - 1);
+			};
+
+		const int voiXMin = worldToVoxelClamped(bbBounds[0], cOrigin[0], cSpacing[0], cDims[0]);
+		const int voiXMax = worldToVoxelClamped(bbBounds[1], cOrigin[0], cSpacing[0], cDims[0]);
+		const int voiYMin = worldToVoxelClamped(bbBounds[2], cOrigin[1], cSpacing[1], cDims[1]);
+		const int voiYMax = worldToVoxelClamped(bbBounds[3], cOrigin[1], cSpacing[1], cDims[1]);
+		const int voiZMin = worldToVoxelClamped(bbBounds[4], cOrigin[2], cSpacing[2], cDims[2]);
+		const int voiZMax = worldToVoxelClamped(bbBounds[5], cOrigin[2], cSpacing[2], cDims[2]);
+
+		qDebug("onClean: VOI voxel extent  x=[%d,%d]  y=[%d,%d]  z=[%d,%d]",
+			   voiXMin, voiXMax, voiYMin, voiYMax, voiZMin, voiZMax);
+
+		auto extractVOI = vtkSmartPointer<vtkExtractVOI>::New();
+		extractVOI->SetInputData(cleanedImage);
+		extractVOI->SetVOI(voiXMin, voiXMax, voiYMin, voiYMax, voiZMin, voiZMax);
+		extractVOI->SetSampleRate(1, 1, 1);
+		extractVOI->Update();
+
+		vtkImageData* cropped = extractVOI->GetOutput();
+		if (cropped && cropped->GetNumberOfPoints() > 0)
+		{
+			auto croppedCopy = vtkSmartPointer<vtkImageData>::New();
+			croppedCopy->DeepCopy(cropped);
+			cleanedImage = croppedCopy;
+
+			const int* croppedDims = cleanedImage->GetDimensions();
+			qDebug("onClean: VOI crop applied — new dims: %d x %d x %d",
+				   croppedDims[0], croppedDims[1], croppedDims[2]);
+		}
+		else
+		{
+			qWarning("onClean: vtkExtractVOI produced empty output; skipping crop.");
+		}
+	}
+
+	showProgressEnd();
 
 	// ------------------------------------------------------------------
 	// Cache the cleaned volume and update the display.
@@ -1307,9 +1455,6 @@ void PrototypeMainWindow::onClean()
 		ui->volumeView->setImageData(m_reslicedImage);
 		ui->volumeView->updateData();
 		
-		const double scalarRange[2] = {
-		m_imageStats.value(QStringLiteral("min")).toDouble(0.0),
-		m_imageStats.value(QStringLiteral("max")).toDouble(255.0) };
 		const double level = std::isfinite(m_threshold)
 			? m_threshold
 			: 0.5 * (scalarRange[0] + scalarRange[1]);
@@ -1323,6 +1468,7 @@ void PrototypeMainWindow::onClean()
 	// Clean completed — advance to Cleaned: all step buttons disabled.
 	setWorkflowStep(WorkflowStep::Cleaned);
 }
+
 // ---------------------------------------------------------------------------
 // Restart slot — revert to the original image and reset the full workflow
 // ---------------------------------------------------------------------------
