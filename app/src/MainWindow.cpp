@@ -205,6 +205,11 @@ MainWindow::MainWindow(QWidget* parent)
 			}
 		}, Qt::QueuedConnection);
 
+	// Cancel-and-restart: fired by onActionOpen when the machine is active.
+	// UniqueConnection prevents duplicates; the slot reads m_pendingOpenFile directly.
+	connect(m_workflowStateMachine, &WorkflowStateMachine::canceled,
+		this, &MainWindow::onCancelAndStartPendingFile);
+
 	// ========================================================================
 	// Phase 3: Declarative UI property bindings
 	// State machine capabilities directly drive workflow panel controls
@@ -223,9 +228,9 @@ MainWindow::MainWindow(QWidget* parent)
 
 		auto* landmarkWidget = m_workflowPanelWidget->landmarkWidget();
 		if (landmarkWidget) {
-			// Widget requests save ? State machine emits requestSaveLandmarks
+			// Route save request directly to the MainWindow executor slot
 			connect(landmarkWidget, &LandmarkWidget::saveLandmarksRequested,
-				m_workflowStateMachine, &WorkflowStateMachine::requestSaveLandmarks);
+				this, &MainWindow::onProcessingRequestSaveLandmarks, Qt::QueuedConnection);
 
 			qDebug() << "Connected LandmarkWidget save request to state machine";
 		}
@@ -278,16 +283,13 @@ MainWindow::MainWindow(QWidget* parent)
 					writeSettings();
 					statusBar()->showMessage(tr("Saved cropped volume: %1").arg(path), 8000);
 
-					// Automatically load the produced cropped volume
-					openFile(path);
-
-					// NOTE: Individual panel control states are now managed by Phase 3 property bindings.
-					// The state machine transitions (cropApplied/croppedLoaded) will trigger
-					// canPlaceLandmarksChanged signal which enables landmarks UI automatically.
+					// Use the proper helper so the state machine is notified correctly.
+					// croppedLoaded() will be triggered inside openAndNotifyImageLoaded
+					// when it detects the derived path.
 					if (m_workflowStateMachine) {
 						m_workflowStateMachine->cropApplied();
-						m_workflowStateMachine->croppedLoaded();
 					}
+					openAndNotifyImageLoaded(path, /*showProgress=*/false);
 				}
 				else {
 					statusBar()->showMessage(tr("Crop write failed: %1").arg(msg), 6000);
@@ -352,10 +354,33 @@ MainWindow::~MainWindow()
 
 void MainWindow::onActionOpen()
 {
-	QString fileName = QFileDialog::getOpenFileName(this, tr("Open File"), "", tr("DICOM Folder (*.dcm);;ISQ Files (*.isq);;All Files (*)"));
-	if (fileName.isEmpty()) return;
+	const QString fileName = QFileDialog::getOpenFileName(
+		this, tr("Open File"), {},
+		tr("DICOM Folder (*.dcm);;ISQ Files (*.isq);;NIfTI Files (*.nii *.nii.gz);;All Files (*)"));
 
-	openFile(fileName);
+	if (fileName.isEmpty())
+		return;
+
+	if (!m_workflowStateMachine)
+	{
+		openFile(fileName);   // no state machine: bare load
+		return;
+	}
+
+	if (!m_workflowStateMachine->isWorkflowActive())
+	{
+		m_workflowStateMachine->setInputFilePath(fileName);
+		m_workflowStateMachine->start();
+		statusBar()->showMessage(tr("Opening: %1").arg(fileName), 2000);
+		return;
+	}
+
+	// Machine is active: stage the file and request a cancel.
+	// onCancelAndStartPendingFile (connected in ctor) will pick up m_pendingOpenFile
+	// when canceled() fires and start the new workflow.
+	m_pendingOpenFile = fileName;
+	m_workflowStateMachine->cancel();
+	statusBar()->showMessage(tr("Canceling current job…"), 2000);
 }
 
 void MainWindow::onActionResume()
@@ -606,13 +631,12 @@ void MainWindow::updateRecentFilesMenu()
 
 			if (resp == QMessageBox::Yes) {
 				// Wait for canceled() then start the new job. Use a self-disconnecting connection.
-				QMetaObject::Connection* conn = new QMetaObject::Connection;
+				auto conn = QSharedPointer<QMetaObject::Connection>::create();
 				*conn = connect(m_workflowStateMachine, &WorkflowStateMachine::canceled, this,
 					[this, filePath, conn]() {
 						m_workflowStateMachine->setInputFilePath(filePath);
 						m_workflowStateMachine->start();
 						disconnect(*conn);
-						delete conn;
 					}, Qt::QueuedConnection);
 
 				// Ask the machine to cancel current job; when it emits canceled() our lambda will start new job.
@@ -911,6 +935,25 @@ void MainWindow::openFile(const QString& filePath)
 	}
 }
 
+void MainWindow::onCancelAndStartPendingFile()
+{
+	// Guard: only act when a file was deliberately staged by onActionOpen.
+	// canceled() can also fire from dropEvent / resumeProjectWorkflow paths;
+	// those paths do not set m_pendingOpenFile, so we silently return.
+	if (m_pendingOpenFile.isEmpty())
+		return;
+
+	const QString filePath = m_pendingOpenFile;
+	m_pendingOpenFile.clear();
+
+	if (!m_workflowStateMachine)
+		return;
+
+	m_workflowStateMachine->setInputFilePath(filePath);
+	m_workflowStateMachine->start();
+	statusBar()->showMessage(tr("Opening: %1").arg(filePath), 2000);
+}
+
 void MainWindow::saveScreenshot()
 {
 	QImage screenshot = this->grab().toImage();
@@ -1028,15 +1071,14 @@ void MainWindow::dropEvent(QDropEvent* event)
 		QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
 
 	if (resp == QMessageBox::Yes) {
-		// Wait for canceled signal, then start with droppedPath.
-		QMetaObject::Connection* conn = new QMetaObject::Connection;
+		// Wait for canceled() then start the new job. Use a self-disconnecting connection.
+		auto conn = QSharedPointer<QMetaObject::Connection>::create();
 		*conn = connect(m_workflowStateMachine, &WorkflowStateMachine::canceled, this, [this, droppedPath, conn]() {
 			// now safe to start new job
 			m_workflowStateMachine->setInputFilePath(droppedPath);
 			m_workflowStateMachine->start();
 			disconnect(*conn);
-			delete conn;
-			}, Qt::QueuedConnection);
+		}, Qt::QueuedConnection);
 
 		// Request cancellation; machine will emit canceled() and our lambda will start new job.
 		m_workflowStateMachine->cancel();
@@ -1118,7 +1160,7 @@ void MainWindow::onProcessingRequestComputeThreshold()
 	vtkImageData* vtkImg = m_imageLoader->GetOutput();
 
 	// Create worker + thread
-	OtsuThresholdWorker* worker = new OtsuThresholdWorker();
+	OtsuThresholdWorker* worker = new OtsuThresholdWorker(this); // temporary parent
 	QThread* workerThread = new QThread(this);
 	worker->moveToThread(workerThread);
 
@@ -1367,11 +1409,6 @@ void MainWindow::updateRecentProjectsMenu()
 		connect(clear, &QAction::triggered, this, &MainWindow::clearRecentProjects);
 		m_projectsMenu->addAction(clear);
 	}
-	else {
-		QAction* none = new QAction(tr("No recent projects"), this);
-		none->setEnabled(false);
-		m_projectsMenu->addAction(none);
-	}
 }
 
 void MainWindow::clearRecentProjects()
@@ -1434,7 +1471,7 @@ void MainWindow::resumeProjectWorkflow(const QString& projectPath)
 	if (m_workflowStateMachine->isWorkflowActive()) {
 		auto reply = QMessageBox::question(this,
 			tr("Workflow Active"),
-			tr("A workflow is currently running.\n\nCancel it and resume the selected project?\n\n%1")
+			tr("A workflow is currently running.\n\nClose it and resume the selected project?\n\n%1")
 			.arg(QFileInfo(projectPath).fileName()),
 			QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
 
@@ -1442,14 +1479,18 @@ void MainWindow::resumeProjectWorkflow(const QString& projectPath)
 			return;
 		}
 
+		// Save the current workflow state before closing it,
+		// so the user can resume it again later from the recent projects menu.
+		m_workflowStateMachine->saveWorkflowState();
+
 		// Cancel current workflow and wait for cleanup
-		QMetaObject::Connection* conn = new QMetaObject::Connection;
+		auto conn = QSharedPointer<QMetaObject::Connection>::create();
 		*conn = connect(m_workflowStateMachine, &WorkflowStateMachine::canceled,
 			this, [this, projectPath, conn]() {
 				// Recursively call after cancel completes
 				resumeProjectWorkflow(projectPath);
 				disconnect(*conn);
-				delete conn;
+				// QSharedPointer will automatically delete the connection
 			}, Qt::QueuedConnection);
 
 		m_workflowStateMachine->cancel();
@@ -1597,11 +1638,7 @@ void MainWindow::onProcessingRequestLoadCropped()
 
 	// Reuse the existing helper to load the image and notify the state machine.
 	// We can show progress here as it's an explicit loading step.
-	if (openAndNotifyImageLoaded(path, /*showProgress=*/true)) {
-		// After the image is loaded and the state machine is notified via imageLoaded(),
-		// we can now signal that the "cropped" image specifically is ready.
-		m_workflowStateMachine->croppedLoaded();
-	}
+	openAndNotifyImageLoaded(path, /*showProgress=*/true);
 }
 
 void MainWindow::onProcessingRequestLoadLandmarks(const QJsonObject& landmarksData)

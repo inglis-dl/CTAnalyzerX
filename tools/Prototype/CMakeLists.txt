@@ -19,20 +19,33 @@ target_include_directories(CTAXPrototype
 )
 
 # VTK modules used directly by PrototypeHelpers (morphological pipeline).
-# ImagingGeneral     : vtkImageGaussianSmooth
-# ImagingMorphological: vtkImageContinuousErode3D / vtkImageContinuousDilate3D
-# ImagingStatistics  : vtkImageThresholdConnectivity
+# ImagingGeneral       : vtkImageGaussianSmooth
+# ImagingMorphological : vtkImageContinuousErode3D / vtkImageContinuousDilate3D
+# ImagingStatistics    : vtkImageThresholdConnectivity
 set(CTAXPROTOTYPE_VTK_LIBS
   VTK::ImagingGeneral
   VTK::ImagingMorphological
   VTK::ImagingStatistics
 )
 
+# ITK is already found unconditionally in the root CMakeLists.txt (all components).
+# include(ITK_USE_FILE) activates the compiler flags and include-path variables
+# that ITK headers require (e.g. itkConfigure.h include directory).
+include(${ITK_USE_FILE})
+
+# ITK bundles itkdouble-conversion-5.2.lib which duplicates the double-conversion
+# symbols already present in Qt5Core[d].lib, causing LNK2005/LNK1169 on MSVC.
+# Mirror the same filter applied in CTAXCore: strip the ITK copy from the link
+# line so only Qt's copy is linked into the final binary.
+set(CTAXPROTOTYPE_ITK_LIBS ${ITK_LIBRARIES})
+list(FILTER CTAXPROTOTYPE_ITK_LIBS EXCLUDE REGEX "itkdouble-conversion")
+
 # Link against the GUI lib that provides VolumeView/ImageFrameWidget/JsonUtils and against core.
 target_link_libraries(CTAXPrototype
   PRIVATE
     CTAXGui
     ${CTAXPROTOTYPE_VTK_LIBS}
+    ${CTAXPROTOTYPE_ITK_LIBS}
 )
 
 # Register the new VTK modules with the autoinit system so VTK's

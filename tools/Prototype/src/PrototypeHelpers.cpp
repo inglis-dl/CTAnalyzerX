@@ -6,6 +6,7 @@
 #include <vtkDataArray.h>
 #include <vtkDiscreteFlyingEdges3D.h>
 #include <vtkImageData.h>
+#include <vtkImageShiftScale.h>
 #include <vtkLine.h>
 #include <vtkMath.h>
 #include <vtkPoints.h>
@@ -24,6 +25,17 @@
 #include <vtkImageContinuousErode3D.h>
 #include <vtkImageGaussianSmooth.h>
 #include <vtkImageThresholdConnectivity.h>
+
+// ITK headers required by segmentBoneIslandsWatershed
+#include <itkImage.h>
+#include <itkVTKImageToImageFilter.h>
+#include <itkImageToVTKImageFilter.h>
+#include <itkCurvatureFlowImageFilter.h>
+#include <itkBinaryThresholdImageFilter.h>
+#include <itkSignedMaurerDistanceMapImageFilter.h>
+#include <itkInvertIntensityImageFilter.h>
+#include <itkWatershedImageFilter.h>
+#include <itkCastImageFilter.h>
 
 #include <QDebug>
 #include <QFile>
@@ -1272,6 +1284,387 @@ namespace PrototypeHelpers
 
 		for (std::size_t i = 0; i < static_cast<std::size_t>(totalVoxels); ++i)
 			outPtr[i] = labelMap[i];
+
+		if (progressCb) progressCb(100);
+
+		return islands;
+	}
+
+	// -----------------------------------------------------------------------
+// Bone island segmentation — ITK watershed pipeline
+// -----------------------------------------------------------------------
+
+	std::vector<BoneIsland> segmentBoneIslandsWatershed(
+		vtkImageData* reslicedImage,
+		double                                   threshold,
+		const std::vector<std::array<double, 3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>& outLabelImage,
+		double                                   watershedLevel,
+		double                                   watershedThreshold,
+		int                                      smoothIterations,
+		double                                   smoothTimeStep,
+		const std::function<void(int)>& progressCb)
+	{
+		if (!reslicedImage || seedsWorld.empty())
+			return {};
+
+		// Hoist scalar pointer — used in seed loop, must not be re-fetched per iteration.
+		vtkDataArray* srcScalars = reslicedImage->GetPointData()->GetScalars();
+		if (!srcScalars)
+		{
+			qWarning("segmentBoneIslandsWatershed: resliced image has no scalar data.");
+			return {};
+		}
+
+		if (progressCb) progressCb(0);
+
+		constexpr unsigned int Dim = 3;
+		using FloatPixel = float;
+		using FloatImage = itk::Image<FloatPixel, Dim>;
+		using LabelPixel = itk::IdentifierType;
+		using LabelImage = itk::Image<LabelPixel, Dim>;
+
+		// ------------------------------------------------------------------
+		// Step 1: VTK ? ITK bridge (cast to float in VTK to avoid a second
+		// full-volume copy inside the ITK bridge).
+		// ------------------------------------------------------------------
+		vtkSmartPointer<vtkImageData> floatInput = reslicedImage;
+		if (reslicedImage->GetScalarType() != VTK_FLOAT)
+		{
+			auto castVTK = vtkSmartPointer<vtkImageShiftScale>::New();
+			castVTK->SetInputData(reslicedImage);
+			castVTK->SetOutputScalarTypeToFloat();
+			castVTK->SetShift(0.0);
+			castVTK->SetScale(1.0);
+			castVTK->Update();
+			floatInput = castVTK->GetOutput();
+		}
+
+		using VtkToItk = itk::VTKImageToImageFilter<FloatImage>;
+		auto vtkToItk = VtkToItk::New();
+		vtkToItk->SetInput(floatInput);
+		vtkToItk->Update();
+
+		if (progressCb) progressCb(5);
+
+		// ------------------------------------------------------------------
+		// Step 2: Binary threshold on the RAW CT data FIRST.
+		//
+		// CurvatureFlow on raw CT values (range ~0–7000 HU) with the default
+		// timeStep=0.125 is numerically stable.  But running CurvatureFlow
+		// AFTER thresholding on a 0/1 binary image causes the filter to spread
+		// the 0?1 transition across many voxels, effectively destroying the
+		// binary mask and producing distMax=0 from the distance map — which
+		// was the crash observed in the debug output.
+		// ------------------------------------------------------------------
+		using ThreshType = itk::BinaryThresholdImageFilter<FloatImage, FloatImage>;
+		auto thresh = ThreshType::New();
+		thresh->SetInput(vtkToItk->GetOutput());
+		thresh->SetLowerThreshold(static_cast<FloatPixel>(threshold));
+		thresh->SetUpperThreshold(std::numeric_limits<FloatPixel>::max());
+		thresh->SetInsideValue(1.0f);
+		thresh->SetOutsideValue(0.0f);
+		thresh->Update();
+
+		qDebug("segmentBoneIslandsWatershed: BinaryThreshold done (threshold=%.4f).",
+			   threshold);
+		if (progressCb) progressCb(15);
+
+		// ------------------------------------------------------------------
+		// Step 3: CurvatureFlow smoothing on the BINARY mask.
+		// This gently smooths the 0/1 boundary to reduce jagged basin edges
+		// in the distance map without destroying the foreground mask.
+		// Only run when smoothIterations > 0.
+		// ------------------------------------------------------------------
+		FloatImage::ConstPointer smoothedInput;
+		if (smoothIterations > 0)
+		{
+			using SmootherType = itk::CurvatureFlowImageFilter<FloatImage, FloatImage>;
+			auto smoother = SmootherType::New();
+			smoother->SetInput(thresh->GetOutput());
+			smoother->SetTimeStep(smoothTimeStep);
+			smoother->SetNumberOfIterations(smoothIterations);
+			smoother->Update();
+			smoothedInput = smoother->GetOutput();
+
+			qDebug("segmentBoneIslandsWatershed: CurvatureFlow done "
+				   "(iterations=%d, timeStep=%.4f).", smoothIterations, smoothTimeStep);
+		}
+		else
+		{
+			smoothedInput = thresh->GetOutput();
+		}
+		if (progressCb) progressCb(30);
+
+		// ------------------------------------------------------------------
+		// Step 4: Signed Maurer distance map (inside = positive).
+		// Input is the (optionally smoothed) binary mask — guaranteed non-empty
+		// because we threshold before smoothing.
+		// ------------------------------------------------------------------
+		using DistType = itk::SignedMaurerDistanceMapImageFilter<FloatImage, FloatImage>;
+		auto dist = DistType::New();
+		dist->SetInput(smoothedInput);
+		dist->SetInsideIsPositive(true);
+		dist->SetUseImageSpacing(true);
+		dist->SetSquaredDistance(false);
+		dist->Update();
+
+		qDebug("segmentBoneIslandsWatershed: distance map done.");
+		if (progressCb) progressCb(50);
+
+		// ------------------------------------------------------------------
+		// Step 5: Invert so ridges become basins.
+		// Guard: distMax <= 0 means no foreground voxels above threshold.
+		// ------------------------------------------------------------------
+		const FloatPixel* distBuf = dist->GetOutput()->GetBufferPointer();
+		const std::size_t nDistPx =
+			dist->GetOutput()->GetLargestPossibleRegion().GetNumberOfPixels();
+		const FloatPixel distMax =
+			*std::max_element(distBuf, distBuf + nDistPx);
+
+		if (distMax <= 0.0f)
+		{
+			qWarning("segmentBoneIslandsWatershed: distance map maximum is %.4f — "
+					 "no foreground voxels above threshold %.4f; aborting.",
+					 static_cast<double>(distMax), threshold);
+			return {};
+		}
+
+		using InvertType = itk::InvertIntensityImageFilter<FloatImage, FloatImage>;
+		auto invert = InvertType::New();
+		invert->SetInput(dist->GetOutput());
+		invert->SetMaximum(distMax);
+		invert->Update();
+
+		qDebug("segmentBoneIslandsWatershed: invert done (distMax=%.4f).",
+			   static_cast<double>(distMax));
+		if (progressCb) progressCb(60);
+
+		// ------------------------------------------------------------------
+		// Step 6: Watershed segmentation.
+		// ------------------------------------------------------------------
+		using WatershedType = itk::WatershedImageFilter<FloatImage>;
+		auto watershed = WatershedType::New();
+		watershed->SetInput(invert->GetOutput());
+		watershed->SetLevel(watershedLevel);
+		watershed->SetThreshold(watershedThreshold);
+		watershed->Update();
+
+		qDebug("segmentBoneIslandsWatershed: watershed done "
+			   "(level=%.3f, threshold=%.3f).", watershedLevel, watershedThreshold);
+		if (progressCb) progressCb(75);
+
+		// ------------------------------------------------------------------
+		// Step 7: Remap ITK watershed labels to compact 1-based island labels.
+		//
+		// Pass A — O(nSeeds): resolve accepted seeds ? basinLabel mapping.
+		// Pass B — O(N) single sweep: flood label map and accumulate BBs.
+		// Total: O(N + nSeeds) vs the previous O(N × nSeeds).
+		// ------------------------------------------------------------------
+		LabelImage::ConstPointer itkLabels = watershed->GetOutput();
+		const LabelPixel* labelBuf = itkLabels->GetBufferPointer();
+
+		const double* origin = reslicedImage->GetOrigin();
+		const double* spacing = reslicedImage->GetSpacing();
+		const int* dims = reslicedImage->GetDimensions();
+
+		const vtkIdType nx = dims[0];
+		const vtkIdType ny = dims[1];
+		const vtkIdType nz = dims[2];
+		const vtkIdType totalVoxels = nx * ny * nz;
+
+		// x-fastest flat index — matches both VTK and ITK memory layout.
+		auto flatIdx = [&](vtkIdType x, vtkIdType y, vtkIdType z) -> vtkIdType
+			{
+				return z * ny * nx + y * nx + x;
+			};
+
+		auto worldToVoxel = [&](const double w[3], int out[3]) -> bool
+			{
+				double cont[3] = { 0.0, 0.0, 0.0 };
+				reslicedImage->TransformPhysicalPointToContinuousIndex(w, cont);
+				out[0] = static_cast<int>(std::lround(cont[0]));
+				out[1] = static_cast<int>(std::lround(cont[1]));
+				out[2] = static_cast<int>(std::lround(cont[2]));
+				return (out[0] >= 0 && out[0] < dims[0] &&
+						out[1] >= 0 && out[1] < dims[1] &&
+						out[2] >= 0 && out[2] < dims[2]);
+			};
+
+		// --- Pass A: seed ? basin resolution ---
+		std::vector<BoneIsland> islands;
+		std::unordered_map<LabelPixel, unsigned char> basinToIsland;
+		islands.reserve(seedsWorld.size());
+		basinToIsland.reserve(seedsWorld.size() * 2);
+
+		const int nSeeds = static_cast<int>(seedsWorld.size());
+
+		for (int s = 0; s < nSeeds; ++s)
+		{
+			const auto& sw = seedsWorld[static_cast<std::size_t>(s)];
+			const double seedW[3] = { sw[0], sw[1], sw[2] };
+
+			int seedVox[3];
+			if (!worldToVoxel(seedW, seedVox))
+			{
+				qWarning("segmentBoneIslandsWatershed: seed %d (%.2f, %.2f, %.2f) "
+						 "is outside the image extent; skipped.",
+						 s, seedW[0], seedW[1], seedW[2]);
+				continue;
+			}
+
+			const vtkIdType  seedFlat = flatIdx(seedVox[0], seedVox[1], seedVox[2]);
+			const LabelPixel basinLabel = labelBuf[static_cast<std::size_t>(seedFlat)];
+
+			if (basinLabel == 0)
+			{
+				qWarning("segmentBoneIslandsWatershed: seed %d (%.2f, %.2f, %.2f) "
+						 "maps to background basin 0; skipped.",
+						 s, seedW[0], seedW[1], seedW[2]);
+				continue;
+			}
+
+			// srcScalars hoisted above — no per-iteration re-fetch.
+			if (srcScalars->GetTuple1(seedFlat) < threshold)
+			{
+				qWarning("segmentBoneIslandsWatershed: seed %d voxel (%d,%d,%d) "
+						 "is below threshold in source image; skipped.",
+						 s, seedVox[0], seedVox[1], seedVox[2]);
+				continue;
+			}
+
+			if (basinToIsland.count(basinLabel))
+			{
+				qWarning("segmentBoneIslandsWatershed: seed %d voxel (%d,%d,%d) "
+						 "basin %llu already claimed by island %u; skipped.",
+						 s, seedVox[0], seedVox[1], seedVox[2],
+						 static_cast<unsigned long long>(basinLabel),
+						 static_cast<unsigned>(basinToIsland[basinLabel]));
+				continue;
+			}
+
+			const unsigned char islandLabel =
+				static_cast<unsigned char>(islands.size() + 1u);
+			basinToIsland[basinLabel] = islandLabel;
+
+			BoneIsland island;
+			island.label = static_cast<int>(islandLabel);
+			island.voxelCount = 0;
+			island.seedWorld[0] = seedW[0];
+			island.seedWorld[1] = seedW[1];
+			island.seedWorld[2] = seedW[2];
+			island.seedVoxel[0] = seedVox[0];
+			island.seedVoxel[1] = seedVox[1];
+			island.seedVoxel[2] = seedVox[2];
+			islands.push_back(island);
+		}
+
+		if (islands.empty())
+		{
+			qWarning("segmentBoneIslandsWatershed: no seeds resolved to valid basins.");
+			return {};
+		}
+
+		// --- Pass B: single O(N) sweep ---
+		const int nIslands = static_cast<int>(islands.size());
+		std::vector<int> bbVoxMin(static_cast<std::size_t>(nIslands * 3), INT_MAX);
+		std::vector<int> bbVoxMax(static_cast<std::size_t>(nIslands * 3), INT_MIN);
+		std::vector<unsigned char> labelMap(static_cast<std::size_t>(totalVoxels), 0u);
+
+		for (vtkIdType k = 0; k < nz; ++k)
+		{
+			for (vtkIdType j = 0; j < ny; ++j)
+			{
+				for (vtkIdType i = 0; i < nx; ++i)
+				{
+					const vtkIdType idx = flatIdx(i, j, k);
+					const auto      idxSz = static_cast<std::size_t>(idx);
+
+					const auto it = basinToIsland.find(labelBuf[idxSz]);
+					if (it == basinToIsland.end())
+						continue;
+
+					const unsigned char iLabel = it->second;
+					labelMap[idxSz] = iLabel;
+
+					const std::size_t ii = static_cast<std::size_t>(iLabel - 1);
+					++islands[ii].voxelCount;
+
+					const int ix = static_cast<int>(i);
+					const int iy = static_cast<int>(j);
+					const int iz = static_cast<int>(k);
+					bbVoxMin[ii * 3 + 0] = std::min(bbVoxMin[ii * 3 + 0], ix);
+					bbVoxMin[ii * 3 + 1] = std::min(bbVoxMin[ii * 3 + 1], iy);
+					bbVoxMin[ii * 3 + 2] = std::min(bbVoxMin[ii * 3 + 2], iz);
+					bbVoxMax[ii * 3 + 0] = std::max(bbVoxMax[ii * 3 + 0], ix);
+					bbVoxMax[ii * 3 + 1] = std::max(bbVoxMax[ii * 3 + 1], iy);
+					bbVoxMax[ii * 3 + 2] = std::max(bbVoxMax[ii * 3 + 2], iz);
+				}
+			}
+		}
+
+		if (progressCb) progressCb(90);
+
+		// --- Build JSON and bounding boxes ---
+		for (int ii = 0; ii < nIslands; ++ii)
+		{
+			const auto iiSz = static_cast<std::size_t>(ii);
+
+			double bbIdxMin[3] = {
+				static_cast<double>(bbVoxMin[iiSz * 3 + 0]),
+				static_cast<double>(bbVoxMin[iiSz * 3 + 1]),
+				static_cast<double>(bbVoxMin[iiSz * 3 + 2])
+			};
+			double bbIdxMax[3] = {
+				static_cast<double>(bbVoxMax[iiSz * 3 + 0]),
+				static_cast<double>(bbVoxMax[iiSz * 3 + 1]),
+				static_cast<double>(bbVoxMax[iiSz * 3 + 2])
+			};
+			double bbWorldMin[3] = { 0.0, 0.0, 0.0 };
+			double bbWorldMax[3] = { 0.0, 0.0, 0.0 };
+			reslicedImage->TransformContinuousIndexToPhysicalPoint(bbIdxMin, bbWorldMin);
+			reslicedImage->TransformContinuousIndexToPhysicalPoint(bbIdxMax, bbWorldMax);
+
+			auto packVec3 = [](const double v[3]) -> QJsonArray
+				{
+					return QJsonArray{ v[0], v[1], v[2] };
+				};
+
+			const double seedW[3] = {
+				islands[iiSz].seedWorld[0],
+				islands[iiSz].seedWorld[1],
+				islands[iiSz].seedWorld[2]
+			};
+
+			QJsonObject islandJson;
+			islandJson[QStringLiteral("label")] = islands[iiSz].label;
+			islandJson[QStringLiteral("voxelCount")] = static_cast<qint64>(islands[iiSz].voxelCount);
+			islandJson[QStringLiteral("seedWorld")] = packVec3(seedW);
+			islandJson[QStringLiteral("bbMin")] = packVec3(bbWorldMin);
+			islandJson[QStringLiteral("bbMax")] = packVec3(bbWorldMax);
+			islands[iiSz].json = islandJson;
+
+			qDebug("segmentBoneIslandsWatershed: island %d  %lld voxels  "
+				   "BB voxel [%d,%d,%d]–[%d,%d,%d]",
+				   islands[iiSz].label,
+				   static_cast<long long>(islands[iiSz].voxelCount),
+				   bbVoxMin[iiSz * 3 + 0], bbVoxMin[iiSz * 3 + 1], bbVoxMin[iiSz * 3 + 2],
+				   bbVoxMax[iiSz * 3 + 0], bbVoxMax[iiSz * 3 + 1], bbVoxMax[iiSz * 3 + 2]);
+		}
+
+		// ------------------------------------------------------------------
+		// Step 8: Pack compact label map into a vtkImageData.
+		// ------------------------------------------------------------------
+		outLabelImage = vtkSmartPointer<vtkImageData>::New();
+		outLabelImage->SetDimensions(dims);
+		outLabelImage->SetSpacing(spacing);
+		outLabelImage->SetOrigin(origin);
+		outLabelImage->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+
+		unsigned char* outPtr = static_cast<unsigned char*>(
+			outLabelImage->GetScalarPointer());
+
+		std::copy(labelMap.begin(), labelMap.end(), outPtr);
 
 		if (progressCb) progressCb(100);
 

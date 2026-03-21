@@ -123,6 +123,36 @@ namespace PrototypeHelpers
 		const std::function<void(int)>&          progressCb      = nullptr);
 
 	// -----------------------------------------------------------------------
+	// Bone island segmentation — ITK watershed pipeline
+	// -----------------------------------------------------------------------
+
+	// Watershed pipeline:
+	//   1. itk::CurvatureFlowImageFilter     – edge-preserving smoothing.
+	//   2. itk::BinaryThresholdImageFilter   – mask voxels >= threshold.
+	//   3. itk::SignedMaurerDistanceMapImageFilter – inside-positive distance.
+	//   4. itk::InvertIntensityImageFilter   – invert so ridges become basins.
+	//   5. itk::WatershedImageFilter         – over-segment into labelled basins.
+	//   6. Seed-to-label matching            – retain only basins that contain
+	//      a landmark seed; one BoneIsland per accepted seed.
+	//
+	// Parameters:
+	//   `watershedLevel`    : merging aggressiveness 0–1 (default 0.1).
+	//                         Higher values merge more basins.
+	//   `watershedThreshold`: minimum gradient magnitude to consider (default 0.0).
+	//   `smoothIterations`  : CurvatureFlow iteration count (default 5).
+	//   `smoothTimeStep`    : CurvatureFlow time step (default 0.125).
+	std::vector<BoneIsland> segmentBoneIslandsWatershed(
+		vtkImageData*                            reslicedImage,
+		double                                   threshold,
+		const std::vector<std::array<double,3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>&           outLabelImage,
+		double                                   watershedLevel      = 0.1,
+		double                                   watershedThreshold  = 0.0,
+		int                                      smoothIterations    = 5,
+		double                                   smoothTimeStep      = 0.125,
+		const std::function<void(int)>&          progressCb          = nullptr);
+
+	// -----------------------------------------------------------------------
 	// VTK actor / prop builders
 	// -----------------------------------------------------------------------
 

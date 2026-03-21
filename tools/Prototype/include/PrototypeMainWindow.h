@@ -78,6 +78,12 @@ private slots:
 	// step buttons so only "Reslice" is enabled.
 	void onRestart();
 
+	// Triggered by the "Watershed" toolbar button.
+	// Runs the ITK watershed pipeline (CurvatureFlow smooth ? binary threshold ?
+	// signed distance map ? invert ? watershed) and displays the island surfaces
+	// using the same colour/scalar-bar logic as onRegions() and onRegionsAlt().
+	void onRegionsWatershed();
+
 private:
 	// -----------------------------------------------------------------------
 	// Workflow step state machine
@@ -125,14 +131,15 @@ private:
 	QAction* m_actOutline = nullptr;
 
 	// Workflow step toolbar actions (owned by the toolbar / QObject parent chain).
-	QAction* m_actReslice    = nullptr;
-	QAction* m_actLandmark   = nullptr;
-	QAction* m_actRegions    = nullptr;
+	QAction* m_actReslice = nullptr;
+	QAction* m_actLandmark = nullptr;
+	QAction* m_actRegions = nullptr;
 	QAction* m_actRegionsAlt = nullptr;
 	// "Clean" toolbar button: enabled after segmentation completes and
 	// at least 8 Reslice steps have been performed in this session.
-	QAction* m_actClean      = nullptr;
-	QAction* m_actRestart    = nullptr;
+	QAction* m_actClean = nullptr;
+	QAction* m_actRestart = nullptr;
+	QAction* m_actRegionsWatershed = nullptr;
 
 	// Current workflow position — drives enabled/disabled state of step buttons.
 	WorkflowStep m_workflowStep = WorkflowStep::Idle;
@@ -155,6 +162,12 @@ private:
 
 	vtkSmartPointer<vtkImageData> m_reslicedImage;
 	vtkSmartPointer<vtkImageData> m_labelImage;
+
+	// BoneIsland vector from the most recent segmentation run.
+	// Populated by applyIslandSegmentationResult(); cleared by clearIslandActors()
+	// and onRestart().  Consumers (e.g. future export, stats, Clean) read this
+	// rather than re-running segmentation.
+	std::vector<PrototypeHelpers::BoneIsland> m_islands;
 
 	// Island surface actors produced by the most recent onRegions() call.
 	// Cleared at the start of each new onRegions() run.

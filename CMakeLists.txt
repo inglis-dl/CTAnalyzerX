@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16...3.21 FATAL_ERROR)
+﻿cmake_minimum_required(VERSION 3.16...3.21 FATAL_ERROR)
 
 project(CTAnalyzerX
     VERSION 0.1.0
@@ -116,14 +116,45 @@ if(NOT ITK_FOUND)
   message(FATAL_ERROR "Unable to find the ITK build folder.")
 endif()
 
-# Remove itkdouble-conversion from ITKCommon's exported link interface.
-# It conflicts with Qt5Core's embedded double-conversion on MSVC static builds.
-if(MSVC AND TARGET ITKCommon)
-  get_target_property(_itk_common_libs ITKCommon INTERFACE_LINK_LIBRARIES)
-  if(_itk_common_libs)
-    list(FILTER _itk_common_libs EXCLUDE REGEX "itkdouble-conversion")
-    set_target_properties(ITKCommon PROPERTIES INTERFACE_LINK_LIBRARIES "${_itk_common_libs}")
-  endif()
+# Suppress the ITK/Qt double-conversion symbol collision (LNK2005/LNK1169) on MSVC.
+#
+# Qt5Core[d].lib embeds double-conversion; ITK also bundles itkdouble-conversion-5.2.lib.
+# When both reach the same final executable the linker refuses with duplicate symbols.
+#
+# The itkdouble-conversion IMPORTED target carries its library path in
+# INTERFACE_LINK_LIBRARIES on every ITK target that depends on it, as well as
+# directly in ITK_LIBRARIES.  The approach that works for ALL propagation paths
+# is to strip "itkdouble-conversion" from INTERFACE_LINK_LIBRARIES on every ITK
+# target that lists it, AND filter it from ITK_LIBRARIES.
+# Setting IMPORTED_LOCATION to "" does NOT work because CMake stores the sentinel
+# "itkdouble-conversion-NOTFOUND" and then emits that string literally to the linker.
+if(MSVC)
+  # Collect every IMPORTED target defined so far and strip itkdouble-conversion
+  # from its INTERFACE_LINK_LIBRARIES.  This covers ITKCommon, ITKVtkGlue, ITKVTK,
+  # and any other ITK target regardless of name without maintaining a hard-coded list.
+  get_property(_all_targets DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY BUILDSYSTEM_TARGETS)
+
+  # BUILDSYSTEM_TARGETS only lists targets in the current directory at this point
+  # (subdirectories not yet processed).  Use the ITK_LIBRARIES list instead to
+  # enumerate every ITK target name reliably — it contains them all as CMake targets.
+  foreach(_itk_lib IN LISTS ITK_LIBRARIES)
+    if(TARGET "${_itk_lib}")
+      get_target_property(_iface "${_itk_lib}" INTERFACE_LINK_LIBRARIES)
+      if(_iface)
+        list(FILTER _iface EXCLUDE REGEX "itkdouble-conversion")
+        set_target_properties("${_itk_lib}" PROPERTIES
+          INTERFACE_LINK_LIBRARIES "${_iface}")
+      endif()
+    endif()
+  endforeach()
+  unset(_itk_lib)
+  unset(_iface)
+  unset(_all_targets)
+
+  # Also filter the ITK_LIBRARIES variable itself so any CMakeLists.txt that
+  # passes ${ITK_LIBRARIES} directly to target_link_libraries is also clean.
+  list(FILTER ITK_LIBRARIES EXCLUDE REGEX "itkdouble-conversion")
+  message(STATUS "ITK_LIBRARIES (filtered): ${ITK_LIBRARIES}")
 endif()
 
 # ========================

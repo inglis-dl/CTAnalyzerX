@@ -57,6 +57,11 @@ private slots:
 
 	void resumeProjectWorkflow(const QString& projectPath);
 
+	// Cancels the active workflow then starts a new one for the given file.
+	// Connected once to WorkflowStateMachine::canceled via a single-shot queued connection
+	// set up by onActionOpen when the machine is already active.
+	void onCancelAndStartPendingFile();
+
 	// WorkflowStateMachine integration slots
 	void onProcessingRequestLoadImage();
 	// Slot invoked when state machine asks MainWindow to open a specific image (project load)
@@ -107,6 +112,10 @@ private:
 	vtkSmartPointer<ImageLoader> m_imageLoader = nullptr;
 	QProgressBar* progressBar = nullptr;
 	bool defaultImageLoaded = false;
+
+	// Holds the file path requested while a cancel-and-restart is in progress.
+	// Set by onActionOpen, consumed and cleared by onCancelAndStartFile.
+	QString m_pendingOpenFile;
 
 	// Left-side workflow panel (replaces legacy control widgets)
 	WorkflowPanelWidget* m_workflowPanelWidget = nullptr;
