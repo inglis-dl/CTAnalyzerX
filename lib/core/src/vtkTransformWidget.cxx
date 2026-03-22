@@ -375,7 +375,7 @@ void vtkTransformWidget::SelectAction(vtkAbstractWidget* w)
 				dynT->Translate(delta);
 			}
 		}
-		// else: clicked an axis (OnX/OnY/OnZ) — do not move origin
+		// else: clicked an axis (OnX/OnY/OnZ) - do not move origin
 	}
 
 	// We are definitely selected

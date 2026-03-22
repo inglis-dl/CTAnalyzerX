@@ -26,16 +26,16 @@
 #include <vtkImageGaussianSmooth.h>
 #include <vtkImageThresholdConnectivity.h>
 
-// ITK headers required by segmentBoneIslandsWatershed
+// ITK headers required by segmentBoneIslandsGraphCut
 #include <itkImage.h>
 #include <itkVTKImageToImageFilter.h>
 #include <itkImageToVTKImageFilter.h>
 #include <itkCurvatureFlowImageFilter.h>
 #include <itkBinaryThresholdImageFilter.h>
-#include <itkSignedMaurerDistanceMapImageFilter.h>
-#include <itkInvertIntensityImageFilter.h>
-#include <itkWatershedImageFilter.h>
 #include <itkCastImageFilter.h>
+#include <itkConnectedComponentImageFilter.h>
+#include <itkRelabelComponentImageFilter.h>
+#include "GraphCut.h"                          // selects GridCut or Kolmogorov backend
 
 #include <QDebug>
 #include <QFile>
@@ -258,7 +258,7 @@ namespace PrototypeHelpers
 		result.centroid[1] = sumY / n;
 		result.centroid[2] = sumZ / n;
 
-		// --- Pass 2: 3×3 covariance (upper-triangle, population formula) ---
+		// --- Pass 2: 3x3 covariance (upper-triangle, population formula) ---
 		double c00 = 0.0, c01 = 0.0, c02 = 0.0;
 		double c11 = 0.0, c12 = 0.0;
 		double c22 = 0.0;
@@ -372,7 +372,7 @@ namespace PrototypeHelpers
 	}
 
 	// -----------------------------------------------------------------------
-	// Ray–AABB intersection (slab method)
+	// Ray-AABB intersection (slab method)
 	// -----------------------------------------------------------------------
 
 	bool rayAabbIntersect(const double rayOrigin[3], const double rayDir[3],
@@ -543,7 +543,7 @@ namespace PrototypeHelpers
 	}
 
 	// -----------------------------------------------------------------------
-	// Bone island segmentation — VTK-native seeded BFS region growing
+	// Bone island segmentation - VTK-native seeded BFS region growing
 	// -----------------------------------------------------------------------
 
 	std::vector<BoneIsland> segmentBoneIslands(
@@ -614,7 +614,7 @@ namespace PrototypeHelpers
 						out[2] >= 0 && out[2] < dims[2]);
 			};
 
-		// 26-connected neighbourhood offsets (all combinations of ±1 per axis)
+		// 26-connected neighbourhood offsets (all combinations of +/-1 per axis)
 		const int offsets[26][3] = {
 			{-1,-1,-1},{-1,-1, 0},{-1,-1, 1},
 			{-1, 0,-1},{-1, 0, 0},{-1, 0, 1},
@@ -664,7 +664,7 @@ namespace PrototypeHelpers
 			if (labelMap[static_cast<std::size_t>(seedFlat)] != 0u)
 			{
 				qWarning("segmentBoneIslands: seed %d voxel (%d,%d,%d) was already labelled %u; "
-						 "island would be empty — skipped.",
+						 "island would be empty - skipped.",
 						 s, seedVox[0], seedVox[1], seedVox[2],
 						 static_cast<unsigned>(labelMap[static_cast<std::size_t>(seedFlat)]));
 				continue;
@@ -722,7 +722,7 @@ namespace PrototypeHelpers
 			}
 
 			qDebug("segmentBoneIslands: seed %d ? island label %u, %lld voxels, "
-				   "BB voxel [%d,%d,%d]–[%d,%d,%d]",
+				   "BB voxel [%d,%d,%d]-[%d,%d,%d]",
 				   s, static_cast<unsigned>(islandLabel),
 				   static_cast<long long>(voxelCount),
 				   bbVoxMin[0], bbVoxMin[1], bbVoxMin[2],
@@ -923,7 +923,7 @@ namespace PrototypeHelpers
 
 		const double mid = 0.5 * (minVal + maxVal);
 
-		// High-luminance pastel palette — bright enough to contrast against the
+		// High-luminance pastel palette - bright enough to contrast against the
 		// VolumeView black renderer background (default VTK rendererColour).
 		// min  ? vivid yellow  (smallest island)
 		// mid  ? vivid cyan    (mid-range island)
@@ -992,7 +992,7 @@ namespace PrototypeHelpers
 	}
 
 	// -----------------------------------------------------------------------
-	// Bone island segmentation — VTK morphological pipeline (alternate)
+	// Bone island segmentation - VTK morphological pipeline (alternate)
 	// -----------------------------------------------------------------------
 
 	std::vector<BoneIsland> segmentBoneIslandsAlternate(
@@ -1016,13 +1016,11 @@ namespace PrototypeHelpers
 		if (progressCb) progressCb(0);
 
 		// ------------------------------------------------------------------
-		// Step 1: Gaussian smooth — reduce noise so the morphological
-		//         operators work on clean foreground/background boundaries.
+		// Step 1: Gaussian smooth
 		// ------------------------------------------------------------------
 		auto smoother = vtkSmartPointer<vtkImageGaussianSmooth>::New();
 		smoother->SetInputData(reslicedImage);
 		smoother->SetStandardDeviation(smoothStdDev);
-		// Radius factor 2 keeps the kernel tight (±2? covers ~95 % of the Gaussian).
 		smoother->SetRadiusFactor(2.0);
 		smoother->Update();
 
@@ -1030,8 +1028,7 @@ namespace PrototypeHelpers
 		if (progressCb) progressCb(10);
 
 		// ------------------------------------------------------------------
-		// Step 2: Erosion — disconnect thin bridges between closely touching
-		//         bone islands by shrinking all foreground regions inward.
+		// Step 2: Erosion
 		// ------------------------------------------------------------------
 		auto erode = vtkSmartPointer<vtkImageContinuousErode3D>::New();
 		erode->SetInputConnection(smoother->GetOutputPort());
@@ -1046,8 +1043,7 @@ namespace PrototypeHelpers
 		if (progressCb) progressCb(25);
 
 		// ------------------------------------------------------------------
-		// Step 3: Dilation — restore the eroded island cores back toward
-		//         their original size without re-bridging the gaps.
+		// Step 3: Dilation
 		// ------------------------------------------------------------------
 		auto dilate = vtkSmartPointer<vtkImageContinuousDilate3D>::New();
 		dilate->SetInputConnection(erode->GetOutputPort());
@@ -1062,44 +1058,37 @@ namespace PrototypeHelpers
 		if (progressCb) progressCb(40);
 
 		// ------------------------------------------------------------------
-		// Step 4: Seeded connected-threshold fill via
-		//         vtkImageThresholdConnectivity.
-		// One pass per seed: each accepted seed produces one island label.
-		// We run the filter independently for each seed and accumulate a
-		// hand-built label map so the output format matches segmentBoneIslands.
+		// Step 4: Seeded vtkImageThresholdConnectivity - one pass per seed.
 		// ------------------------------------------------------------------
 		vtkImageData* morphOutput = dilate->GetOutput();
 
-		const double* origin = reslicedImage->GetOrigin();   // keep original geometry
+		const double* origin  = reslicedImage->GetOrigin();
 		const double* spacing = reslicedImage->GetSpacing();
-		const int* dims = reslicedImage->GetDimensions();
+		const int*    dims    = reslicedImage->GetDimensions();
 
-		const vtkIdType nx = dims[0];
-		const vtkIdType ny = dims[1];
-		const vtkIdType nz = dims[2];
+		const vtkIdType nx         = dims[0];
+		const vtkIdType ny         = dims[1];
+		const vtkIdType nz         = dims[2];
 		const vtkIdType totalVoxels = nx * ny * nz;
 
-		// Label map built incrementally; 0 = background / unclaimed.
 		std::vector<unsigned char> labelMap(static_cast<std::size_t>(totalVoxels), 0u);
 
-		// Helper: flat index
 		auto flatIdx = [&](vtkIdType x, vtkIdType y, vtkIdType z) -> vtkIdType
-			{
-				return z * ny * nx + y * nx + x;
-			};
+		{
+			return z * ny * nx + y * nx + x;
+		};
 
-		// Helper: world ? nearest voxel (returns false when out of extent)
 		auto worldToVoxel = [&](const double w[3], int out[3]) -> bool
-			{
-				double cont[3] = { 0.0, 0.0, 0.0 };
-				reslicedImage->TransformPhysicalPointToContinuousIndex(w, cont);
-				out[0] = static_cast<int>(std::lround(cont[0]));
-				out[1] = static_cast<int>(std::lround(cont[1]));
-				out[2] = static_cast<int>(std::lround(cont[2]));
-				return (out[0] >= 0 && out[0] < dims[0] &&
-						out[1] >= 0 && out[1] < dims[1] &&
-						out[2] >= 0 && out[2] < dims[2]);
-			};
+		{
+			double cont[3] = { 0.0, 0.0, 0.0 };
+			reslicedImage->TransformPhysicalPointToContinuousIndex(w, cont);
+			out[0] = static_cast<int>(std::lround(cont[0]));
+			out[1] = static_cast<int>(std::lround(cont[1]));
+			out[2] = static_cast<int>(std::lround(cont[2]));
+			return (out[0] >= 0 && out[0] < dims[0] &&
+					out[1] >= 0 && out[1] < dims[1] &&
+					out[2] >= 0 && out[2] < dims[2]);
+		};
 
 		std::vector<BoneIsland> islands;
 		islands.reserve(seedsWorld.size());
@@ -1120,8 +1109,9 @@ namespace PrototypeHelpers
 				continue;
 			}
 
-			// Skip if a previous seed already claimed this voxel.
-			if (labelMap[static_cast<std::size_t>(flatIdx(seedVox[0], seedVox[1], seedVox[2]))] != 0u)
+			// Skip if already claimed by a previous seed
+			if (labelMap[static_cast<std::size_t>(
+					flatIdx(seedVox[0], seedVox[1], seedVox[2]))] != 0u)
 			{
 				qWarning("segmentBoneIslandsAlternate: seed %d voxel (%d,%d,%d) "
 						 "already labelled; skipped.",
@@ -1129,13 +1119,6 @@ namespace PrototypeHelpers
 				continue;
 			}
 
-			// ----------------------------------------------------------
-			// Run vtkImageThresholdConnectivity on the morphology output.
-			// The filter flood-fills connected voxels whose scalar value
-			// lies in [threshold, +inf) starting from the supplied seed.
-			// Background (out-of-range) voxels are set to 0; in-range
-			// connected voxels are set to 1 (ReplaceIn = 1, InValue = 1).
-			// ----------------------------------------------------------
 			auto conn = vtkSmartPointer<vtkImageThresholdConnectivity>::New();
 			conn->SetInputData(morphOutput);
 			conn->ThresholdByUpper(threshold);
@@ -1143,125 +1126,101 @@ namespace PrototypeHelpers
 			conn->SetOutValue(0.0);
 			conn->ReplaceInOn();
 			conn->ReplaceOutOn();
-			// VTK 8+: AddSeed is not available; use AddSeed(int*) instead.
-			int seed[3] = { seedVox[0], seedVox[1], seedVox[2] };
-			// conn->AddSeed(seed);
-			// SetSeedPoints takes world-space (physical) coordinates; the filter
-			// maps them to the nearest voxel internally — no index conversion needed.
 			auto seedPoints = vtkSmartPointer<vtkPoints>::New();
 			seedPoints->InsertNextPoint(seedW[0], seedW[1], seedW[2]);
 			conn->SetSeedPoints(seedPoints);
 			conn->Update();
 
-			vtkImageData* connOut = conn->GetOutput();
+			vtkImageData* connOut     = conn->GetOutput();
 			vtkDataArray* connScalars = connOut->GetPointData()->GetScalars();
 
 			if (!connScalars)
 			{
-				qWarning("segmentBoneIslandsAlternate: seed %d — connectivity filter "
+				qWarning("segmentBoneIslandsAlternate: seed %d - connectivity filter "
 						 "produced no scalars; skipped.", s);
 				continue;
 			}
 
-			// Check that the seed voxel was actually reached (above threshold).
 			const vtkIdType seedFlat = flatIdx(seedVox[0], seedVox[1], seedVox[2]);
 			if (connScalars->GetTuple1(seedFlat) < 0.5)
 			{
 				qWarning("segmentBoneIslandsAlternate: seed %d (%.2f, %.2f, %.2f) "
-						 "? voxel (%d,%d,%d) is below threshold after morphology; skipped.",
+						 "- voxel (%d,%d,%d) is below threshold after morphology; skipped.",
 						 s, seedW[0], seedW[1], seedW[2],
 						 seedVox[0], seedVox[1], seedVox[2]);
 				continue;
 			}
 
-			const unsigned char islandLabel = static_cast<unsigned char>(islands.size() + 1u);
+			const unsigned char islandLabel =
+				static_cast<unsigned char>(islands.size() + 1u);
 
-			// Merge the binary connectivity mask into our label map,
-			// skipping voxels already claimed by a previous island.
 			vtkIdType voxelCount = 0;
-
 			int bbVoxMin[3] = { seedVox[0], seedVox[1], seedVox[2] };
 			int bbVoxMax[3] = { seedVox[0], seedVox[1], seedVox[2] };
 
 			for (int k = 0; k < dims[2]; ++k)
+			for (int j = 0; j < dims[1]; ++j)
+			for (int i = 0; i < dims[0]; ++i)
 			{
-				for (int j = 0; j < dims[1]; ++j)
-				{
-					for (int i = 0; i < dims[0]; ++i)
-					{
-						const vtkIdType idx = flatIdx(i, j, k);
-						const auto      idxSz = static_cast<std::size_t>(idx);
+				const vtkIdType idx   = flatIdx(i, j, k);
+				const auto      idxSz = static_cast<std::size_t>(idx);
 
-						// Only accept voxels inside this seed's connected region
-						// that have not been taken by an earlier seed.
-						if (connScalars->GetTuple1(idx) < 0.5)
-							continue;
-						if (labelMap[idxSz] != 0u)
-							continue;
+				if (connScalars->GetTuple1(idx) < 0.5) continue;
+				if (labelMap[idxSz] != 0u)             continue;
 
-						labelMap[idxSz] = islandLabel;
-						++voxelCount;
+				labelMap[idxSz] = islandLabel;
+				++voxelCount;
 
-						bbVoxMin[0] = std::min(bbVoxMin[0], i);
-						bbVoxMin[1] = std::min(bbVoxMin[1], j);
-						bbVoxMin[2] = std::min(bbVoxMin[2], k);
-						bbVoxMax[0] = std::max(bbVoxMax[0], i);
-						bbVoxMax[1] = std::max(bbVoxMax[1], j);
-						bbVoxMax[2] = std::max(bbVoxMax[2], k);
-					}
-				}
+				bbVoxMin[0] = std::min(bbVoxMin[0], i);
+				bbVoxMin[1] = std::min(bbVoxMin[1], j);
+				bbVoxMin[2] = std::min(bbVoxMin[2], k);
+				bbVoxMax[0] = std::max(bbVoxMax[0], i);
+				bbVoxMax[1] = std::max(bbVoxMax[1], j);
+				bbVoxMax[2] = std::max(bbVoxMax[2], k);
 			}
 
-			qDebug("segmentBoneIslandsAlternate: seed %d ? island label %u, %lld voxels, "
-				   "BB voxel [%d,%d,%d]–[%d,%d,%d]",
+			qDebug("segmentBoneIslandsAlternate: seed %d - island label %u, %lld voxels, "
+				   "BB voxel [%d,%d,%d]-[%d,%d,%d]",
 				   s, static_cast<unsigned>(islandLabel),
 				   static_cast<long long>(voxelCount),
 				   bbVoxMin[0], bbVoxMin[1], bbVoxMin[2],
 				   bbVoxMax[0], bbVoxMax[1], bbVoxMax[2]);
 
-			// Build world-space bounding box for the JSON summary.
-			// Use VTK's index?physical transform so direction cosines are respected.
-			double bbIdxMin[3] = {
-				static_cast<double>(bbVoxMin[0]),
-				static_cast<double>(bbVoxMin[1]),
-				static_cast<double>(bbVoxMin[2])
-			};
-			double bbIdxMax[3] = {
-				static_cast<double>(bbVoxMax[0]),
-				static_cast<double>(bbVoxMax[1]),
-				static_cast<double>(bbVoxMax[2])
-			};
+			double bbIdxMin[3] = { static_cast<double>(bbVoxMin[0]),
+								   static_cast<double>(bbVoxMin[1]),
+								   static_cast<double>(bbVoxMin[2]) };
+			double bbIdxMax[3] = { static_cast<double>(bbVoxMax[0]),
+								   static_cast<double>(bbVoxMax[1]),
+								   static_cast<double>(bbVoxMax[2]) };
 			double bbWorldMin[3] = { 0.0, 0.0, 0.0 };
 			double bbWorldMax[3] = { 0.0, 0.0, 0.0 };
 			reslicedImage->TransformContinuousIndexToPhysicalPoint(bbIdxMin, bbWorldMin);
 			reslicedImage->TransformContinuousIndexToPhysicalPoint(bbIdxMax, bbWorldMax);
 
 			auto packVec3 = [](const double v[3]) -> QJsonArray
-				{
-					return QJsonArray{ v[0], v[1], v[2] };
-				};
+			{
+				return QJsonArray{ v[0], v[1], v[2] };
+			};
 
 			QJsonObject islandJson;
-			islandJson[QStringLiteral("label")] = static_cast<int>(islandLabel);
+			islandJson[QStringLiteral("label")]      = static_cast<int>(islandLabel);
 			islandJson[QStringLiteral("voxelCount")] = static_cast<qint64>(voxelCount);
-			islandJson[QStringLiteral("seedWorld")] = packVec3(seedW);
-			islandJson[QStringLiteral("bbMin")] = packVec3(bbWorldMin);
-			islandJson[QStringLiteral("bbMax")] = packVec3(bbWorldMax);
+			islandJson[QStringLiteral("seedWorld")]  = packVec3(seedW);
+			islandJson[QStringLiteral("bbMin")]      = packVec3(bbWorldMin);
+			islandJson[QStringLiteral("bbMax")]      = packVec3(bbWorldMax);
 
 			BoneIsland island;
-			island.label = static_cast<int>(islandLabel);
-			island.voxelCount = voxelCount;
+			island.label        = static_cast<int>(islandLabel);
+			island.voxelCount   = voxelCount;
 			island.seedWorld[0] = seedW[0];
 			island.seedWorld[1] = seedW[1];
 			island.seedWorld[2] = seedW[2];
 			island.seedVoxel[0] = seedVox[0];
 			island.seedVoxel[1] = seedVox[1];
 			island.seedVoxel[2] = seedVox[2];
-			island.json = islandJson;
-
+			island.json         = islandJson;
 			islands.push_back(island);
 
-			// Progress: spread seeds across [40, 90]
 			if (progressCb)
 			{
 				const int pct = 40 + static_cast<int>(
@@ -1270,9 +1229,6 @@ namespace PrototypeHelpers
 			}
 		}
 
-		// ------------------------------------------------------------------
-		// Pack the label map into a vtkImageData with the original geometry.
-		// ------------------------------------------------------------------
 		outLabelImage = vtkSmartPointer<vtkImageData>::New();
 		outLabelImage->SetDimensions(dims);
 		outLabelImage->SetSpacing(spacing);
@@ -1291,384 +1247,702 @@ namespace PrototypeHelpers
 	}
 
 	// -----------------------------------------------------------------------
-// Bone island segmentation — ITK watershed pipeline
-// -----------------------------------------------------------------------
-
-	std::vector<BoneIsland> segmentBoneIslandsWatershed(
+	// buildGraphCutSeedImages
+	//
+	// Foreground seed paths: 6 straight-line segments from the bone centroid
+	// (midpoint of the longest-axis landmark pair) out to each of the 6
+	// landmark surface points.
+	//
+	// Naming convention (by eigenvalue rank of paired distance):
+	//   S = smallest eigenvalue axis  (shortest paired distance)
+	//   M = medium  eigenvalue axis
+	//   L = largest eigenvalue axis   (longest paired distance)
+	//   Pos / Neg = positive / negative eigenvector direction
+	//
+	// centroidSpos, centroidSneg, centroidMpos, centroidMneg, centroidLneg
+	//   ? used as foreground seeds (5 of 6 segments).
+	//
+	// centroidLpos ? EXCLUDED from foreground seeds.
+	//   The Lpos tip is on the side adjacent to a neighbouring bone.
+	//   Including this segment risks seeding through a touch-point and
+	//   pulling the adjacent bone into the foreground label.
+	//
+	// Background rays: one threshold-gated outward ray per selected landmark.
+	//   Spos, Sneg, Mpos, Mneg, Lneg ? 5 background rays.
+	//   Lpos ? no background ray (same reason as above).
+	//
+	// All background rays skip the first 10 voxels past the landmark surface
+	// before beginning the threshold gate (cortex-skip buffer).
+	// -----------------------------------------------------------------------
+	void buildGraphCutSeedImages(
 		vtkImageData* reslicedImage,
-		double                                   threshold,
-		const std::vector<std::array<double, 3>>& seedsWorld,
-		vtkSmartPointer<vtkImageData>& outLabelImage,
-		double                                   watershedLevel,
-		double                                   watershedThreshold,
-		int                                      smoothIterations,
-		double                                   smoothTimeStep,
-		const std::function<void(int)>& progressCb)
+		const std::array<std::array<std::array<double, 3>, 2>, 3>& landmarkPoints,
+		const double                             eigenvectors[3][3],
+		vtkSmartPointer<vtkImageData>& outForegroundSeeds,
+		vtkSmartPointer<vtkImageData>& outBackgroundSeeds,
+		double                                   threshold)
 	{
-		if (!reslicedImage || seedsWorld.empty())
-			return {};
-
-		// Hoist scalar pointer — used in seed loop, must not be re-fetched per iteration.
-		vtkDataArray* srcScalars = reslicedImage->GetPointData()->GetScalars();
-		if (!srcScalars)
-		{
-			qWarning("segmentBoneIslandsWatershed: resliced image has no scalar data.");
-			return {};
-		}
-
-		if (progressCb) progressCb(0);
-
-		constexpr unsigned int Dim = 3;
-		using FloatPixel = float;
-		using FloatImage = itk::Image<FloatPixel, Dim>;
-		using LabelPixel = itk::IdentifierType;
-		using LabelImage = itk::Image<LabelPixel, Dim>;
-
-		// ------------------------------------------------------------------
-		// Step 1: VTK ? ITK bridge (cast to float in VTK to avoid a second
-		// full-volume copy inside the ITK bridge).
-		// ------------------------------------------------------------------
-		vtkSmartPointer<vtkImageData> floatInput = reslicedImage;
-		if (reslicedImage->GetScalarType() != VTK_FLOAT)
-		{
-			auto castVTK = vtkSmartPointer<vtkImageShiftScale>::New();
-			castVTK->SetInputData(reslicedImage);
-			castVTK->SetOutputScalarTypeToFloat();
-			castVTK->SetShift(0.0);
-			castVTK->SetScale(1.0);
-			castVTK->Update();
-			floatInput = castVTK->GetOutput();
-		}
-
-		using VtkToItk = itk::VTKImageToImageFilter<FloatImage>;
-		auto vtkToItk = VtkToItk::New();
-		vtkToItk->SetInput(floatInput);
-		vtkToItk->Update();
-
-		if (progressCb) progressCb(5);
-
-		// ------------------------------------------------------------------
-		// Step 2: Binary threshold on the RAW CT data FIRST.
-		//
-		// CurvatureFlow on raw CT values (range ~0–7000 HU) with the default
-		// timeStep=0.125 is numerically stable.  But running CurvatureFlow
-		// AFTER thresholding on a 0/1 binary image causes the filter to spread
-		// the 0?1 transition across many voxels, effectively destroying the
-		// binary mask and producing distMax=0 from the distance map — which
-		// was the crash observed in the debug output.
-		// ------------------------------------------------------------------
-		using ThreshType = itk::BinaryThresholdImageFilter<FloatImage, FloatImage>;
-		auto thresh = ThreshType::New();
-		thresh->SetInput(vtkToItk->GetOutput());
-		thresh->SetLowerThreshold(static_cast<FloatPixel>(threshold));
-		thresh->SetUpperThreshold(std::numeric_limits<FloatPixel>::max());
-		thresh->SetInsideValue(1.0f);
-		thresh->SetOutsideValue(0.0f);
-		thresh->Update();
-
-		qDebug("segmentBoneIslandsWatershed: BinaryThreshold done (threshold=%.4f).",
-			   threshold);
-		if (progressCb) progressCb(15);
-
-		// ------------------------------------------------------------------
-		// Step 3: CurvatureFlow smoothing on the BINARY mask.
-		// This gently smooths the 0/1 boundary to reduce jagged basin edges
-		// in the distance map without destroying the foreground mask.
-		// Only run when smoothIterations > 0.
-		// ------------------------------------------------------------------
-		FloatImage::ConstPointer smoothedInput;
-		if (smoothIterations > 0)
-		{
-			using SmootherType = itk::CurvatureFlowImageFilter<FloatImage, FloatImage>;
-			auto smoother = SmootherType::New();
-			smoother->SetInput(thresh->GetOutput());
-			smoother->SetTimeStep(smoothTimeStep);
-			smoother->SetNumberOfIterations(smoothIterations);
-			smoother->Update();
-			smoothedInput = smoother->GetOutput();
-
-			qDebug("segmentBoneIslandsWatershed: CurvatureFlow done "
-				   "(iterations=%d, timeStep=%.4f).", smoothIterations, smoothTimeStep);
-		}
-		else
-		{
-			smoothedInput = thresh->GetOutput();
-		}
-		if (progressCb) progressCb(30);
-
-		// ------------------------------------------------------------------
-		// Step 4: Signed Maurer distance map (inside = positive).
-		// Input is the (optionally smoothed) binary mask — guaranteed non-empty
-		// because we threshold before smoothing.
-		// ------------------------------------------------------------------
-		using DistType = itk::SignedMaurerDistanceMapImageFilter<FloatImage, FloatImage>;
-		auto dist = DistType::New();
-		dist->SetInput(smoothedInput);
-		dist->SetInsideIsPositive(true);
-		dist->SetUseImageSpacing(true);
-		dist->SetSquaredDistance(false);
-		dist->Update();
-
-		qDebug("segmentBoneIslandsWatershed: distance map done.");
-		if (progressCb) progressCb(50);
-
-		// ------------------------------------------------------------------
-		// Step 5: Invert so ridges become basins.
-		// Guard: distMax <= 0 means no foreground voxels above threshold.
-		// ------------------------------------------------------------------
-		const FloatPixel* distBuf = dist->GetOutput()->GetBufferPointer();
-		const std::size_t nDistPx =
-			dist->GetOutput()->GetLargestPossibleRegion().GetNumberOfPixels();
-		const FloatPixel distMax =
-			*std::max_element(distBuf, distBuf + nDistPx);
-
-		if (distMax <= 0.0f)
-		{
-			qWarning("segmentBoneIslandsWatershed: distance map maximum is %.4f — "
-					 "no foreground voxels above threshold %.4f; aborting.",
-					 static_cast<double>(distMax), threshold);
-			return {};
-		}
-
-		using InvertType = itk::InvertIntensityImageFilter<FloatImage, FloatImage>;
-		auto invert = InvertType::New();
-		invert->SetInput(dist->GetOutput());
-		invert->SetMaximum(distMax);
-		invert->Update();
-
-		qDebug("segmentBoneIslandsWatershed: invert done (distMax=%.4f).",
-			   static_cast<double>(distMax));
-		if (progressCb) progressCb(60);
-
-		// ------------------------------------------------------------------
-		// Step 6: Watershed segmentation.
-		// ------------------------------------------------------------------
-		using WatershedType = itk::WatershedImageFilter<FloatImage>;
-		auto watershed = WatershedType::New();
-		watershed->SetInput(invert->GetOutput());
-		watershed->SetLevel(watershedLevel);
-		watershed->SetThreshold(watershedThreshold);
-		watershed->Update();
-
-		qDebug("segmentBoneIslandsWatershed: watershed done "
-			   "(level=%.3f, threshold=%.3f).", watershedLevel, watershedThreshold);
-		if (progressCb) progressCb(75);
-
-		// ------------------------------------------------------------------
-		// Step 7: Remap ITK watershed labels to compact 1-based island labels.
-		//
-		// Pass A — O(nSeeds): resolve accepted seeds ? basinLabel mapping.
-		// Pass B — O(N) single sweep: flood label map and accumulate BBs.
-		// Total: O(N + nSeeds) vs the previous O(N × nSeeds).
-		// ------------------------------------------------------------------
-		LabelImage::ConstPointer itkLabels = watershed->GetOutput();
-		const LabelPixel* labelBuf = itkLabels->GetBufferPointer();
-
 		const double* origin = reslicedImage->GetOrigin();
 		const double* spacing = reslicedImage->GetSpacing();
 		const int* dims = reslicedImage->GetDimensions();
+		vtkDataArray* scalars = reslicedImage->GetPointData()->GetScalars();
 
 		const vtkIdType nx = dims[0];
 		const vtkIdType ny = dims[1];
 		const vtkIdType nz = dims[2];
 		const vtkIdType totalVoxels = nx * ny * nz;
 
-		// x-fastest flat index — matches both VTK and ITK memory layout.
-		auto flatIdx = [&](vtkIdType x, vtkIdType y, vtkIdType z) -> vtkIdType
+		const double step = std::min({ spacing[0], spacing[1], spacing[2] });
+
+		auto allocSeedImage = [&]() -> vtkSmartPointer<vtkImageData>
 			{
-				return z * ny * nx + y * nx + x;
+				auto img = vtkSmartPointer<vtkImageData>::New();
+				img->SetDimensions(dims);
+				img->SetSpacing(spacing);
+				img->SetOrigin(origin);
+				img->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+				std::memset(img->GetScalarPointer(), 0,
+					static_cast<std::size_t>(totalVoxels));
+				return img;
 			};
 
-		auto worldToVoxel = [&](const double w[3], int out[3]) -> bool
+		outForegroundSeeds = allocSeedImage();
+		outBackgroundSeeds = allocSeedImage();
+
+		auto* fgPtr = static_cast<unsigned char*>(outForegroundSeeds->GetScalarPointer());
+		auto* bgPtr = static_cast<unsigned char*>(outBackgroundSeeds->GetScalarPointer());
+
+		// ------------------------------------------------------------------
+		// Helper: mark a world-space point in a seed buffer.
+		// ------------------------------------------------------------------
+		auto markVoxel = [&](unsigned char* buf, const double w[3])
 			{
-				double cont[3] = { 0.0, 0.0, 0.0 };
-				reslicedImage->TransformPhysicalPointToContinuousIndex(w, cont);
-				out[0] = static_cast<int>(std::lround(cont[0]));
-				out[1] = static_cast<int>(std::lround(cont[1]));
-				out[2] = static_cast<int>(std::lround(cont[2]));
-				return (out[0] >= 0 && out[0] < dims[0] &&
-						out[1] >= 0 && out[1] < dims[1] &&
-						out[2] >= 0 && out[2] < dims[2]);
+				const int ix = static_cast<int>((w[0] - origin[0]) / spacing[0] + 0.5);
+				const int iy = static_cast<int>((w[1] - origin[1]) / spacing[1] + 0.5);
+				const int iz = static_cast<int>((w[2] - origin[2]) / spacing[2] + 0.5);
+				if (ix < 0 || ix >= dims[0] ||
+					iy < 0 || iy >= dims[1] ||
+					iz < 0 || iz >= dims[2])
+					return;
+				buf[iz * ny * nx + iy * nx + ix] = 1u;
 			};
 
-		// --- Pass A: seed ? basin resolution ---
-		std::vector<BoneIsland> islands;
-		std::unordered_map<LabelPixel, unsigned char> basinToIsland;
-		islands.reserve(seedsWorld.size());
-		basinToIsland.reserve(seedsWorld.size() * 2);
+		// ------------------------------------------------------------------
+		// Helper: sample the scalar value at a world-space point.
+		// Returns 0 when the point is outside the image extent.
+		// ------------------------------------------------------------------
+		auto sampleScalar = [&](const double w[3]) -> double
+			{
+				const int ix = static_cast<int>((w[0] - origin[0]) / spacing[0] + 0.5);
+				const int iy = static_cast<int>((w[1] - origin[1]) / spacing[1] + 0.5);
+				const int iz = static_cast<int>((w[2] - origin[2]) / spacing[2] + 0.5);
+				if (ix < 0 || ix >= dims[0] ||
+					iy < 0 || iy >= dims[1] ||
+					iz < 0 || iz >= dims[2])
+					return 0.0;
+				const vtkIdType flat = static_cast<vtkIdType>(iz) * ny * nx
+					+ static_cast<vtkIdType>(iy) * nx + ix;
+				return scalars->GetTuple1(flat);
+			};
 
-		const int nSeeds = static_cast<int>(seedsWorld.size());
+		// ------------------------------------------------------------------
+		// Helper: walk a straight-line foreground segment from p0 to p1.
+		// ------------------------------------------------------------------
+		auto walkSegment = [&](unsigned char* buf,
+							   const double   p0[3],
+							   const double   p1[3])
+			{
+				const double dx = p1[0] - p0[0];
+				const double dy = p1[1] - p0[1];
+				const double dz = p1[2] - p0[2];
+				const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
+				if (len < 1e-6) { markVoxel(buf, p0); return; }
+				const double dir[3] = { dx / len, dy / len, dz / len };
+				double cur[3] = { p0[0], p0[1], p0[2] };
+				double walked = 0.0;
+				while (walked <= len)
+				{
+					markVoxel(buf, cur);
+					cur[0] += dir[0] * step;
+					cur[1] += dir[1] * step;
+					cur[2] += dir[2] * step;
+					walked += step;
+				}
+			};
 
-		for (int s = 0; s < nSeeds; ++s)
+		// ------------------------------------------------------------------
+		// Helper: walk a threshold-gated background ray from 'start' outward
+		// in 'dir'.  Skips the first cortexSkipVoxels steps past the landmark
+		// surface before the threshold gate activates.  Stops immediately upon
+		// re-entering any bone-density tissue (scalar >= threshold).
+		// ------------------------------------------------------------------
+		constexpr int cortexSkipVoxels = 10;
+
+		auto walkBgRay = [&](const double start[3], const double dir[3])
+			{
+				const double bbMin[3] = { origin[0], origin[1], origin[2] };
+				const double bbMax[3] = {
+					origin[0] + (dims[0] - 1) * spacing[0],
+					origin[1] + (dims[1] - 1) * spacing[1],
+					origin[2] + (dims[2] - 1) * spacing[2]
+				};
+
+				double tExit = 0.0;
+				if (!rayAabbExit(start, dir, bbMin, bbMax, tExit))
+					return;
+
+				const double skipDist = cortexSkipVoxels * step;
+
+				double cur[3] = { start[0] + dir[0] * skipDist,
+								  start[1] + dir[1] * skipDist,
+								  start[2] + dir[2] * skipDist };
+				double walked = skipDist;
+				vtkIdType bgVoxelsMarked = 0;
+
+				while (walked <= tExit)
+				{
+					if (sampleScalar(cur) >= threshold)
+					{
+						qDebug("buildGraphCutSeedImages: BG ray stopped at bone "
+							   "re-entry after %.1f mm (%lld voxels marked).",
+							   walked, static_cast<long long>(bgVoxelsMarked));
+						break;
+					}
+
+					markVoxel(bgPtr, cur);
+					++bgVoxelsMarked;
+
+					cur[0] += dir[0] * step;
+					cur[1] += dir[1] * step;
+					cur[2] += dir[2] * step;
+					walked += step;
+				}
+			};
+
+		// ------------------------------------------------------------------
+		// Sort axes by paired landmark distance (lPos-lNeg span) ascending.
+		//   axisInfos[0] = S axis (smallest eigenvalue / shortest span)
+		//   axisInfos[1] = M axis (medium)
+		//   axisInfos[2] = L axis (largest eigenvalue / longest span)
+		// ------------------------------------------------------------------
+		struct AxisInfo { int axisIdx; double pairedDist; };
+		std::array<AxisInfo, 3> axisInfos;
+		for (int i = 0; i < 3; ++i)
 		{
-			const auto& sw = seedsWorld[static_cast<std::size_t>(s)];
-			const double seedW[3] = { sw[0], sw[1], sw[2] };
+			const double* lPos = landmarkPoints[static_cast<std::size_t>(i)][0].data();
+			const double* lNeg = landmarkPoints[static_cast<std::size_t>(i)][1].data();
+			const double dx = lPos[0] - lNeg[0];
+			const double dy = lPos[1] - lNeg[1];
+			const double dz = lPos[2] - lNeg[2];
+			axisInfos[static_cast<std::size_t>(i)] = {
+				i, std::sqrt(dx * dx + dy * dy + dz * dz)
+			};
+		}
+		std::sort(axisInfos.begin(), axisInfos.end(),
+			[](const AxisInfo& a, const AxisInfo& b)
+			{ return a.pairedDist < b.pairedDist; });
 
-			int seedVox[3];
-			if (!worldToVoxel(seedW, seedVox))
-			{
-				qWarning("segmentBoneIslandsWatershed: seed %d (%.2f, %.2f, %.2f) "
-						 "is outside the image extent; skipped.",
-						 s, seedW[0], seedW[1], seedW[2]);
-				continue;
-			}
+		// Resolve named axis indices after sort
+		const int sAxisIdx = axisInfos[0].axisIdx;   // smallest eigenvalue
+		const int mAxisIdx = axisInfos[1].axisIdx;   // medium eigenvalue
+		const int lAxisIdx = axisInfos[2].axisIdx;   // largest eigenvalue
 
-			const vtkIdType  seedFlat = flatIdx(seedVox[0], seedVox[1], seedVox[2]);
-			const LabelPixel basinLabel = labelBuf[static_cast<std::size_t>(seedFlat)];
+		qDebug("buildGraphCutSeedImages: S=axis%d(%.2f)  M=axis%d(%.2f)  L=axis%d(%.2f)",
+			   sAxisIdx, axisInfos[0].pairedDist,
+			   mAxisIdx, axisInfos[1].pairedDist,
+			   lAxisIdx, axisInfos[2].pairedDist);
 
-			if (basinLabel == 0)
-			{
-				qWarning("segmentBoneIslandsWatershed: seed %d (%.2f, %.2f, %.2f) "
-						 "maps to background basin 0; skipped.",
-						 s, seedW[0], seedW[1], seedW[2]);
-				continue;
-			}
+		// Resolve the 6 landmark pointers by name
+		const double* centroidSpos = landmarkPoints[static_cast<std::size_t>(sAxisIdx)][0].data();
+		const double* centroidSneg = landmarkPoints[static_cast<std::size_t>(sAxisIdx)][1].data();
+		const double* centroidMpos = landmarkPoints[static_cast<std::size_t>(mAxisIdx)][0].data();
+		const double* centroidMneg = landmarkPoints[static_cast<std::size_t>(mAxisIdx)][1].data();
+		const double* centroidLpos = landmarkPoints[static_cast<std::size_t>(lAxisIdx)][0].data();
+		const double* centroidLneg = landmarkPoints[static_cast<std::size_t>(lAxisIdx)][1].data();
 
-			// srcScalars hoisted above — no per-iteration re-fetch.
-			if (srcScalars->GetTuple1(seedFlat) < threshold)
-			{
-				qWarning("segmentBoneIslandsWatershed: seed %d voxel (%d,%d,%d) "
-						 "is below threshold in source image; skipped.",
-						 s, seedVox[0], seedVox[1], seedVox[2]);
-				continue;
-			}
+		// The bone centroid is the midpoint of the L-axis landmark pair.
+		// All 6 foreground segments radiate from this point outward to their
+		// respective landmark tips.
+		const double boneCentroid[3] = {
+			0.5 * (centroidLpos[0] + centroidLneg[0]),
+			0.5 * (centroidLpos[1] + centroidLneg[1]),
+			0.5 * (centroidLpos[2] + centroidLneg[2])
+		};
 
-			if (basinToIsland.count(basinLabel))
-			{
-				qWarning("segmentBoneIslandsWatershed: seed %d voxel (%d,%d,%d) "
-						 "basin %llu already claimed by island %u; skipped.",
-						 s, seedVox[0], seedVox[1], seedVox[2],
-						 static_cast<unsigned long long>(basinLabel),
-						 static_cast<unsigned>(basinToIsland[basinLabel]));
-				continue;
-			}
+		qDebug("buildGraphCutSeedImages: boneCentroid=(%.2f, %.2f, %.2f)",
+			   boneCentroid[0], boneCentroid[1], boneCentroid[2]);
 
-			const unsigned char islandLabel =
-				static_cast<unsigned char>(islands.size() + 1u);
-			basinToIsland[basinLabel] = islandLabel;
+		// ------------------------------------------------------------------
+		// Foreground segments - centroid ? each landmark tip.
+		//
+		// centroidLpos is EXCLUDED: that tip is adjacent to a neighbouring
+		// bone and the segment would cross the touch-point, pulling the wrong
+		// bone into the foreground label.
+		//
+		// 5 segments used:
+		//   centroid ? Spos
+		//   centroid ? Sneg
+		//   centroid ? Mpos
+		//   centroid ? Mneg
+		//   centroid ? Lneg
+		// ------------------------------------------------------------------
+		walkSegment(fgPtr, boneCentroid, centroidSpos);
+		qDebug("buildGraphCutSeedImages: FG centroid?Spos");
 
-			BoneIsland island;
-			island.label = static_cast<int>(islandLabel);
-			island.voxelCount = 0;
-			island.seedWorld[0] = seedW[0];
-			island.seedWorld[1] = seedW[1];
-			island.seedWorld[2] = seedW[2];
-			island.seedVoxel[0] = seedVox[0];
-			island.seedVoxel[1] = seedVox[1];
-			island.seedVoxel[2] = seedVox[2];
-			islands.push_back(island);
+		walkSegment(fgPtr, boneCentroid, centroidSneg);
+		qDebug("buildGraphCutSeedImages: FG centroid?Sneg");
+
+		walkSegment(fgPtr, boneCentroid, centroidMpos);
+		qDebug("buildGraphCutSeedImages: FG centroid?Mpos");
+
+		walkSegment(fgPtr, boneCentroid, centroidMneg);
+		qDebug("buildGraphCutSeedImages: FG centroid?Mneg");
+
+		walkSegment(fgPtr, boneCentroid, centroidLneg);
+		qDebug("buildGraphCutSeedImages: FG centroid?Lneg");
+
+		// centroidLpos - intentionally excluded from foreground seeds.
+		qDebug("buildGraphCutSeedImages: FG centroid?Lpos SKIPPED (adjacent bone side).");
+
+		// ------------------------------------------------------------------
+		// Background rays - outward from 5 selected landmark tips.
+		//
+		// Each ray fires in the outward eigenvector direction from the
+		// landmark surface point, skips cortexSkipVoxels past the surface,
+		// then marks soft-tissue / air voxels until bone re-entry.
+		//
+		// Lpos ? no background ray (same exclusion as foreground above).
+		// ------------------------------------------------------------------
+
+		// Spos: outward along +S eigenvector
+		{
+			const double dirSpos[3] = { eigenvectors[sAxisIdx][0],
+										 eigenvectors[sAxisIdx][1],
+										 eigenvectors[sAxisIdx][2] };
+			walkBgRay(centroidSpos, dirSpos);
+			qDebug("buildGraphCutSeedImages: BG ray from Spos");
 		}
 
-		if (islands.empty())
+		// Sneg: outward along -S eigenvector
 		{
-			qWarning("segmentBoneIslandsWatershed: no seeds resolved to valid basins.");
+			const double dirSneg[3] = { -eigenvectors[sAxisIdx][0],
+										-eigenvectors[sAxisIdx][1],
+										-eigenvectors[sAxisIdx][2] };
+			walkBgRay(centroidSneg, dirSneg);
+			qDebug("buildGraphCutSeedImages: BG ray from Sneg");
+		}
+
+		// Mpos: outward along +M eigenvector
+		{
+			const double dirMpos[3] = { eigenvectors[mAxisIdx][0],
+										 eigenvectors[mAxisIdx][1],
+										 eigenvectors[mAxisIdx][2] };
+			walkBgRay(centroidMpos, dirMpos);
+			qDebug("buildGraphCutSeedImages: BG ray from Mpos");
+		}
+
+		// Mneg: outward along -M eigenvector
+		{
+			const double dirMneg[3] = { -eigenvectors[mAxisIdx][0],
+										-eigenvectors[mAxisIdx][1],
+										-eigenvectors[mAxisIdx][2] };
+			walkBgRay(centroidMneg, dirMneg);
+			qDebug("buildGraphCutSeedImages: BG ray from Mneg");
+		}
+
+		// Lneg: outward along -L eigenvector
+		{
+			const double dirLneg[3] = { -eigenvectors[lAxisIdx][0],
+										-eigenvectors[lAxisIdx][1],
+										-eigenvectors[lAxisIdx][2] };
+			walkBgRay(centroidLneg, dirLneg);
+			qDebug("buildGraphCutSeedImages: BG ray from Lneg");
+		}
+
+		// Lpos - intentionally excluded from background rays.
+		qDebug("buildGraphCutSeedImages: BG ray from Lpos SKIPPED (adjacent bone side).");
+
+		outForegroundSeeds->Modified();
+		outBackgroundSeeds->Modified();
+
+		qDebug("buildGraphCutSeedImages: seed images built "
+			   "(5 FG segments from centroid, 5 threshold-gated BG rays).");
+	}
+
+	// -----------------------------------------------------------------------
+// Bone island segmentation - ITK ImageGridCutFilter (graph cut)
+// -----------------------------------------------------------------------
+
+	std::vector<BoneIsland> segmentBoneIslandsGraphCut(
+		vtkImageData* reslicedImage,
+		double                                     threshold,
+		const std::vector<std::array<double, 3>>& foregroundSeedsWorld,
+		const std::vector<std::array<double, 3>>& backgroundSeedsWorld,
+		vtkSmartPointer<vtkImageData>& outLabelImage,
+		double                                     sigma,
+		vtkIdType                                  minIslandVoxels,
+		const std::function<void(int)>& progressCb)
+	{
+		if (!reslicedImage || foregroundSeedsWorld.empty())
+			return {};
+
+		vtkDataArray* srcScalars = reslicedImage->GetPointData()->GetScalars();
+		if (!srcScalars)
+		{
+			qWarning("segmentBoneIslandsGraphCut: resliced image has no scalar data.");
 			return {};
 		}
 
-		// --- Pass B: single O(N) sweep ---
-		const int nIslands = static_cast<int>(islands.size());
-		std::vector<int> bbVoxMin(static_cast<std::size_t>(nIslands * 3), INT_MAX);
-		std::vector<int> bbVoxMax(static_cast<std::size_t>(nIslands * 3), INT_MIN);
-		std::vector<unsigned char> labelMap(static_cast<std::size_t>(totalVoxels), 0u);
+		if (progressCb) progressCb(0);
 
-		for (vtkIdType k = 0; k < nz; ++k)
+		constexpr unsigned int Dim = 3;
+
+		using ShortPixel = short;
+		using BinaryPixel = unsigned char;
+		using LabelPixel = unsigned short;
+		using InputImage = itk::Image<ShortPixel, Dim>;
+		using BinaryImage = itk::Image<BinaryPixel, Dim>;
+		using LabelImage = itk::Image<LabelPixel, Dim>;
+
+		// ------------------------------------------------------------------
+		// Step 1 - VTK ? ITK (cast to short)
+		// ------------------------------------------------------------------
+		vtkSmartPointer<vtkImageData> shortInput = reslicedImage;
+		if (reslicedImage->GetScalarType() != VTK_SHORT)
 		{
-			for (vtkIdType j = 0; j < ny; ++j)
+			auto castVTK = vtkSmartPointer<vtkImageShiftScale>::New();
+			castVTK->SetInputData(reslicedImage);
+			castVTK->SetOutputScalarTypeToShort();
+			castVTK->SetShift(0.0);
+			castVTK->SetScale(1.0);
+			castVTK->Update();
+			shortInput = castVTK->GetOutput();
+		}
+
+		using VtkToItk = itk::VTKImageToImageFilter<InputImage>;
+		auto vtkToItk = VtkToItk::New();
+		vtkToItk->SetInput(shortInput);
+		vtkToItk->Update();
+		InputImage::ConstPointer itkInput = vtkToItk->GetOutput();
+
+		const int* dims = reslicedImage->GetDimensions();
+		if (progressCb) progressCb(10);
+
+		// ------------------------------------------------------------------
+		// Step 2 - foreground seed image.
+		// Mark each foreground seed voxel and its 6 face-neighbours as FG=1.
+		// ------------------------------------------------------------------
+		auto fgImage = BinaryImage::New();
+		fgImage->SetRegions(itkInput->GetLargestPossibleRegion());
+		fgImage->CopyInformation(itkInput);
+		fgImage->Allocate();
+		fgImage->FillBuffer(0u);
+
+		constexpr itk::OffsetValueType stencil[7][3] = {
+			{ 0, 0, 0},
+			{ 1, 0, 0}, {-1, 0, 0},
+			{ 0, 1, 0}, { 0,-1, 0},
+			{ 0, 0, 1}, { 0, 0,-1}
+		};
+
+		for (const auto& sw : foregroundSeedsWorld)
+		{
+			double cont[3];
+			reslicedImage->TransformPhysicalPointToContinuousIndex(sw.data(), cont);
+			for (const auto& off : stencil)
 			{
-				for (vtkIdType i = 0; i < nx; ++i)
-				{
-					const vtkIdType idx = flatIdx(i, j, k);
-					const auto      idxSz = static_cast<std::size_t>(idx);
-
-					const auto it = basinToIsland.find(labelBuf[idxSz]);
-					if (it == basinToIsland.end())
-						continue;
-
-					const unsigned char iLabel = it->second;
-					labelMap[idxSz] = iLabel;
-
-					const std::size_t ii = static_cast<std::size_t>(iLabel - 1);
-					++islands[ii].voxelCount;
-
-					const int ix = static_cast<int>(i);
-					const int iy = static_cast<int>(j);
-					const int iz = static_cast<int>(k);
-					bbVoxMin[ii * 3 + 0] = std::min(bbVoxMin[ii * 3 + 0], ix);
-					bbVoxMin[ii * 3 + 1] = std::min(bbVoxMin[ii * 3 + 1], iy);
-					bbVoxMin[ii * 3 + 2] = std::min(bbVoxMin[ii * 3 + 2], iz);
-					bbVoxMax[ii * 3 + 0] = std::max(bbVoxMax[ii * 3 + 0], ix);
-					bbVoxMax[ii * 3 + 1] = std::max(bbVoxMax[ii * 3 + 1], iy);
-					bbVoxMax[ii * 3 + 2] = std::max(bbVoxMax[ii * 3 + 2], iz);
-				}
+				const itk::Index<3> ni = {
+					static_cast<itk::IndexValueType>(std::lround(cont[0])) + off[0],
+					static_cast<itk::IndexValueType>(std::lround(cont[1])) + off[1],
+					static_cast<itk::IndexValueType>(std::lround(cont[2])) + off[2]
+				};
+				if (fgImage->GetLargestPossibleRegion().IsInside(ni))
+					fgImage->SetPixel(ni, 1u);
 			}
 		}
 
-		if (progressCb) progressCb(90);
+		if (progressCb) progressCb(20);
 
-		// --- Build JSON and bounding boxes ---
-		for (int ii = 0; ii < nIslands; ++ii)
+		// ------------------------------------------------------------------
+		// Step 3 - background seed image.
+		// Use explicit background seeds when provided; fall back to the
+		// automatic bottom-5%-of-range strategy otherwise.
+		// ------------------------------------------------------------------
+		auto bgImage = BinaryImage::New();
+		bgImage->SetRegions(itkInput->GetLargestPossibleRegion());
+		bgImage->CopyInformation(itkInput);
+		bgImage->Allocate();
+		bgImage->FillBuffer(0u);
+
+		if (!backgroundSeedsWorld.empty())
 		{
-			const auto iiSz = static_cast<std::size_t>(ii);
-
-			double bbIdxMin[3] = {
-				static_cast<double>(bbVoxMin[iiSz * 3 + 0]),
-				static_cast<double>(bbVoxMin[iiSz * 3 + 1]),
-				static_cast<double>(bbVoxMin[iiSz * 3 + 2])
-			};
-			double bbIdxMax[3] = {
-				static_cast<double>(bbVoxMax[iiSz * 3 + 0]),
-				static_cast<double>(bbVoxMax[iiSz * 3 + 1]),
-				static_cast<double>(bbVoxMax[iiSz * 3 + 2])
-			};
-			double bbWorldMin[3] = { 0.0, 0.0, 0.0 };
-			double bbWorldMax[3] = { 0.0, 0.0, 0.0 };
-			reslicedImage->TransformContinuousIndexToPhysicalPoint(bbIdxMin, bbWorldMin);
-			reslicedImage->TransformContinuousIndexToPhysicalPoint(bbIdxMax, bbWorldMax);
-
-			auto packVec3 = [](const double v[3]) -> QJsonArray
+			// Explicit background seeds - same 7-point stencil as foreground
+			for (const auto& sw : backgroundSeedsWorld)
+			{
+				double cont[3];
+				reslicedImage->TransformPhysicalPointToContinuousIndex(sw.data(), cont);
+				for (const auto& off : stencil)
 				{
-					return QJsonArray{ v[0], v[1], v[2] };
-				};
+					const itk::Index<3> ni = {
+						static_cast<itk::IndexValueType>(std::lround(cont[0])) + off[0],
+						static_cast<itk::IndexValueType>(std::lround(cont[1])) + off[1],
+						static_cast<itk::IndexValueType>(std::lround(cont[2])) + off[2]
+					};
+					if (bgImage->GetLargestPossibleRegion().IsInside(ni))
+						bgImage->SetPixel(ni, 1u);
+				}
+			}
+		}
+		else
+		{
+			// Automatic fallback: lowest 5 % of scalar range
+			double scalarRange[2];
+			reslicedImage->GetScalarRange(scalarRange);
+			const double bgCeiling =
+				scalarRange[0] + 0.05 * (scalarRange[1] - scalarRange[0]);
 
-			const double seedW[3] = {
-				islands[iiSz].seedWorld[0],
-				islands[iiSz].seedWorld[1],
-				islands[iiSz].seedWorld[2]
-			};
+			using BgThreshFilter =
+				itk::BinaryThresholdImageFilter<InputImage, BinaryImage>;
+			auto bgThresh = BgThreshFilter::New();
+			bgThresh->SetInput(itkInput);
+			bgThresh->SetLowerThreshold(static_cast<ShortPixel>(scalarRange[0]));
+			bgThresh->SetUpperThreshold(
+				static_cast<ShortPixel>(std::floor(bgCeiling)));
+			bgThresh->SetInsideValue(1u);
+			bgThresh->SetOutsideValue(0u);
+			bgThresh->Update();
 
-			QJsonObject islandJson;
-			islandJson[QStringLiteral("label")] = islands[iiSz].label;
-			islandJson[QStringLiteral("voxelCount")] = static_cast<qint64>(islands[iiSz].voxelCount);
-			islandJson[QStringLiteral("seedWorld")] = packVec3(seedW);
-			islandJson[QStringLiteral("bbMin")] = packVec3(bbWorldMin);
-			islandJson[QStringLiteral("bbMax")] = packVec3(bbWorldMax);
-			islands[iiSz].json = islandJson;
-
-			qDebug("segmentBoneIslandsWatershed: island %d  %lld voxels  "
-				   "BB voxel [%d,%d,%d]–[%d,%d,%d]",
-				   islands[iiSz].label,
-				   static_cast<long long>(islands[iiSz].voxelCount),
-				   bbVoxMin[iiSz * 3 + 0], bbVoxMin[iiSz * 3 + 1], bbVoxMin[iiSz * 3 + 2],
-				   bbVoxMax[iiSz * 3 + 0], bbVoxMax[iiSz * 3 + 1], bbVoxMax[iiSz * 3 + 2]);
+			itk::ImageRegionConstIterator<BinaryImage> srcIt(
+				bgThresh->GetOutput(),
+				bgThresh->GetOutput()->GetLargestPossibleRegion());
+			itk::ImageRegionIterator<BinaryImage> dstIt(
+				bgImage, bgImage->GetLargestPossibleRegion());
+			for (srcIt.GoToBegin(), dstIt.GoToBegin();
+				 !srcIt.IsAtEnd(); ++srcIt, ++dstIt)
+				dstIt.Set(srcIt.Get());
 		}
 
+		if (progressCb) progressCb(30);
+
 		// ------------------------------------------------------------------
-		// Step 8: Pack compact label map into a vtkImageData.
+		// Step 4 - graph cut
 		// ------------------------------------------------------------------
+		using GCFilter = GraphCut::FilterType<InputImage, BinaryImage, BinaryImage, BinaryImage>;
+		auto gcFilter = GCFilter::New();
+		gcFilter->SetInputImage(itkInput);
+		gcFilter->SetForegroundImage(fgImage.GetPointer());
+		gcFilter->SetBackgroundImage(bgImage.GetPointer());
+		gcFilter->SetSigma(sigma);
+		gcFilter->SetBoundaryDirectionTypeToNoDirection();
+		gcFilter->Update();
+
+		qDebug("segmentBoneIslandsGraphCut: graph cut done (sigma=%.1f).", sigma);
+		if (progressCb) progressCb(70);
+
+		// ------------------------------------------------------------------
+		// Step 5 - connected-component labelling on the binary FG mask
+		// ------------------------------------------------------------------
+		using CCFilter = itk::ConnectedComponentImageFilter<BinaryImage, LabelImage>;
+		using RelabelFilter = itk::RelabelComponentImageFilter<LabelImage, LabelImage>;
+
+		auto cc = CCFilter::New();
+		cc->SetInput(gcFilter->GetOutput());
+		cc->SetFullyConnected(false);
+		cc->Update();
+
+		auto relabel = RelabelFilter::New();
+		relabel->SetInput(cc->GetOutput());
+		relabel->SetMinimumObjectSize(static_cast<unsigned long>(minIslandVoxels));
+		relabel->Update();
+
+		const int nLabels = static_cast<int>(relabel->GetNumberOfObjects());
+		qDebug("segmentBoneIslandsGraphCut: %d component(s) after relabelling "
+			   "(minIslandVoxels=%lld).", nLabels,
+			   static_cast<long long>(minIslandVoxels));
+
+		if (nLabels == 0)
+		{
+			qWarning("segmentBoneIslandsGraphCut: no components survived the minimum-size filter.");
+			return {};
+		}
+
+		if (progressCb) progressCb(85);
+
+		// ------------------------------------------------------------------
+		// Step 6 - ITK label image ? VTK
+		// ------------------------------------------------------------------
+		using ItkToVtk = itk::ImageToVTKImageFilter<LabelImage>;
+		auto itkToVtk = ItkToVtk::New();
+		itkToVtk->SetInput(relabel->GetOutput());
+		itkToVtk->Update();
+
 		outLabelImage = vtkSmartPointer<vtkImageData>::New();
-		outLabelImage->SetDimensions(dims);
-		outLabelImage->SetSpacing(spacing);
-		outLabelImage->SetOrigin(origin);
-		outLabelImage->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+		outLabelImage->DeepCopy(itkToVtk->GetOutput());
 
-		unsigned char* outPtr = static_cast<unsigned char*>(
-			outLabelImage->GetScalarPointer());
+		// ------------------------------------------------------------------
+		// Step 7 - build BoneIsland metadata (single O(N) sweep)
+		// ------------------------------------------------------------------
+		vtkDataArray* labelScalars = outLabelImage->GetPointData()->GetScalars();
 
-		std::copy(labelMap.begin(), labelMap.end(), outPtr);
+		const vtkIdType totalVoxels =
+			static_cast<vtkIdType>(dims[0]) * dims[1] * dims[2];
+
+		struct IslandAccum
+		{
+			vtkIdType         voxelCount = 0;
+			std::array<int, 3> bbMin = { INT_MAX, INT_MAX, INT_MAX };
+			std::array<int, 3> bbMax = { INT_MIN, INT_MIN, INT_MIN };
+		};
+
+		std::vector<IslandAccum> accum(static_cast<std::size_t>(nLabels));
+
+		for (vtkIdType k = 0; k < dims[2]; ++k)
+			for (vtkIdType j = 0; j < dims[1]; ++j)
+				for (vtkIdType i = 0; i < dims[0]; ++i)
+				{
+					const vtkIdType flat = k * dims[1] * dims[0] + j * dims[0] + i;
+					const int lbl = static_cast<int>(labelScalars->GetTuple1(flat));
+					if (lbl < 1 || lbl > nLabels) continue;
+
+					IslandAccum& a = accum[static_cast<std::size_t>(lbl - 1)];
+					++a.voxelCount;
+					a.bbMin[0] = std::min(a.bbMin[0], static_cast<int>(i));
+					a.bbMin[1] = std::min(a.bbMin[1], static_cast<int>(j));
+					a.bbMin[2] = std::min(a.bbMin[2], static_cast<int>(k));
+					a.bbMax[0] = std::max(a.bbMax[0], static_cast<int>(i));
+					a.bbMax[1] = std::max(a.bbMax[1], static_cast<int>(j));
+					a.bbMax[2] = std::max(a.bbMax[2], static_cast<int>(k));
+				}
+
+		std::vector<BoneIsland> islands;
+		islands.reserve(static_cast<std::size_t>(nLabels));
+
+		auto packVec3 = [](const double v[3]) -> QJsonArray {
+			return QJsonArray{ v[0], v[1], v[2] };
+			};
+
+		for (int li = 0; li < nLabels; ++li)
+		{
+			const IslandAccum& a = accum[static_cast<std::size_t>(li)];
+
+			double idxMin[3] = { static_cast<double>(a.bbMin[0]),
+								 static_cast<double>(a.bbMin[1]),
+								 static_cast<double>(a.bbMin[2]) };
+			double idxMax[3] = { static_cast<double>(a.bbMax[0]),
+								 static_cast<double>(a.bbMax[1]),
+								 static_cast<double>(a.bbMax[2]) };
+			double wMin[3] = {}, wMax[3] = {};
+			reslicedImage->TransformContinuousIndexToPhysicalPoint(idxMin, wMin);
+			reslicedImage->TransformContinuousIndexToPhysicalPoint(idxMax, wMax);
+
+			// Assign provenance to the nearest foreground seed
+			const double cx = 0.5 * (wMin[0] + wMax[0]);
+			const double cy = 0.5 * (wMin[1] + wMax[1]);
+			const double cz = 0.5 * (wMin[2] + wMax[2]);
+
+			const double* nearestSeed = foregroundSeedsWorld[0].data();
+			double minD2 = std::numeric_limits<double>::max();
+			for (const auto& sw : foregroundSeedsWorld)
+			{
+				const double d2 = (cx - sw[0]) * (cx - sw[0])
+					+ (cy - sw[1]) * (cy - sw[1])
+					+ (cz - sw[2]) * (cz - sw[2]);
+				if (d2 < minD2) { minD2 = d2; nearestSeed = sw.data(); }
+			}
+
+			const int islandLabel = li + 1;
+			QJsonObject islandJson;
+			islandJson[QStringLiteral("label")] = islandLabel;
+			islandJson[QStringLiteral("voxelCount")] = static_cast<qint64>(a.voxelCount);
+			islandJson[QStringLiteral("seedWorld")] = packVec3(nearestSeed);
+			islandJson[QStringLiteral("bbMin")] = packVec3(wMin);
+			islandJson[QStringLiteral("bbMax")] = packVec3(wMax);
+
+			BoneIsland island;
+			island.label = islandLabel;
+			island.voxelCount = a.voxelCount;
+			island.seedWorld[0] = nearestSeed[0];
+			island.seedWorld[1] = nearestSeed[1];
+			island.seedWorld[2] = nearestSeed[2];
+			island.json = islandJson;
+			islands.push_back(island);
+
+			qDebug("segmentBoneIslandsGraphCut: island %d  voxels=%lld  "
+				   "BB [%d,%d,%d]-[%d,%d,%d]",
+				   islandLabel, static_cast<long long>(a.voxelCount),
+				   a.bbMin[0], a.bbMin[1], a.bbMin[2],
+				   a.bbMax[0], a.bbMax[1], a.bbMax[2]);
+		}
 
 		if (progressCb) progressCb(100);
-
 		return islands;
+	}
+
+	// -----------------------------------------------------------------------
+// Graph-cut seed image visualiser
+// -----------------------------------------------------------------------
+
+	vtkSmartPointer<vtkActor> makeSeedImageActor(
+		vtkImageData* seedImage,
+		double        r, double g, double b,
+		double        pointSize)
+	{
+		if (!seedImage)
+			return vtkSmartPointer<vtkActor>::New(); // empty actor - safe no-op
+
+		const double* origin = seedImage->GetOrigin();
+		const double* spacing = seedImage->GetSpacing();
+		const int* dims = seedImage->GetDimensions();
+		vtkDataArray* scalars = seedImage->GetPointData()->GetScalars();
+
+		if (!scalars)
+			return vtkSmartPointer<vtkActor>::New();
+
+		auto pts = vtkSmartPointer<vtkPoints>::New();
+		auto cells = vtkSmartPointer<vtkCellArray>::New();
+
+		// Reserve an upper-bound to avoid repeated reallocation.
+		// The seed images are sparse so actual usage is usually << total.
+		const vtkIdType totalVoxels =
+			static_cast<vtkIdType>(dims[0]) * dims[1] * dims[2];
+		pts->Allocate(totalVoxels / 10);
+
+		for (vtkIdType k = 0; k < dims[2]; ++k)
+			for (vtkIdType j = 0; j < dims[1]; ++j)
+				for (vtkIdType i = 0; i < dims[0]; ++i)
+				{
+					const vtkIdType flat = k * dims[1] * dims[0] + j * dims[0] + i;
+					if (scalars->GetTuple1(flat) < 0.5)
+						continue;
+
+					// World-space voxel centre
+					const double wx = origin[0] + i * spacing[0];
+					const double wy = origin[1] + j * spacing[1];
+					const double wz = origin[2] + k * spacing[2];
+
+					const vtkIdType ptId = pts->InsertNextPoint(wx, wy, wz);
+					cells->InsertNextCell(1, &ptId); // one vtkVertex per seed voxel
+				}
+
+		qDebug("makeSeedImageActor: %lld seed voxels extracted.",
+			   static_cast<long long>(pts->GetNumberOfPoints()));
+
+		auto pd = vtkSmartPointer<vtkPolyData>::New();
+		pd->SetPoints(pts);
+		pd->SetVerts(cells);
+
+		auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+		mapper->SetInputData(pd);
+		mapper->ScalarVisibilityOff();
+
+		auto actor = vtkSmartPointer<vtkActor>::New();
+		actor->SetMapper(mapper);
+		actor->GetProperty()->SetRepresentationToPoints();
+		actor->GetProperty()->SetPointSize(static_cast<float>(pointSize));
+		actor->GetProperty()->SetColor(r, g, b);
+		actor->GetProperty()->SetLighting(false);  // flat colour, unaffected by lights
+
+		return actor;
 	}
 
 } // namespace PrototypeHelpers

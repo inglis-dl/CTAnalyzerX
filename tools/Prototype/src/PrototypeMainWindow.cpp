@@ -6,6 +6,8 @@
 #include "ImageLoader.h"
 #include "JsonUtils.h"
 
+// Add with the other VTK includes at the top
+#include <vtkBillboardTextActor3D.h>
 #include <vtkBoundingBox.h>
 #include <vtkCamera.h>
 #include <vtkColorTransferFunction.h>
@@ -21,16 +23,19 @@
 #include <vtkRenderWindow.h>
 #include <vtkScalarBarActor.h>
 #include <vtkSmartPointer.h>
+#include <vtkTextProperty.h>
 
 #include <QAction>
 #include <QCloseEvent>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMessageBox>
 #include <QTimer>
 #include <QThread>
 
@@ -60,8 +65,18 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	statusBar()->addPermanentWidget(m_progressBar);
 
 	// ------------------------------------------------------------------
-	// Toolbar button order: Reslice | Landmark | Regions | Regions Alt | Clean | Outline | Restart
+	// Toolbar button order:
+	//   File | Reslice | Landmark | Regions | Regions Alt |
+	//   Graph Cut | Clean | Outline | Restart
 	// ------------------------------------------------------------------
+
+	// "File" toolbar button - always enabled.
+	// Opens a QFileDialog to select a project sidecar JSON.
+	// This is the primary entry point when no path is given on the command line.
+	m_actFile = new QAction(tr("File"), this);
+	m_actFile->setToolTip(tr("Open a project sidecar JSON file"));
+	ui->toolBar->addAction(m_actFile);
+	connect(m_actFile, &QAction::triggered, this, &PrototypeMainWindow::onFileOpen);
 
 	// "Reslice" toolbar button: reslice the volume aligned to the PCA axes
 	m_actReslice = new QAction(tr("Reslice"), this);
@@ -81,20 +96,20 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	ui->toolBar->addAction(m_actRegions);
 	connect(m_actRegions, &QAction::triggered, this, &PrototypeMainWindow::onRegions);
 
-	// "Regions Alt" toolbar button: morphological pipeline (smooth ? erode ? dilate ? connectivity)
+	// "Regions Alt" toolbar button: morphological pipeline (smooth -> erode -> dilate -> connectivity)
 	m_actRegionsAlt = new QAction(tr("Regions Alt"), this);
 	m_actRegionsAlt->setToolTip(tr("Segment bone islands using the morphological pipeline "
-		"(Gaussian smooth ? erode ? dilate ? seeded connectivity)"));
+		"(Gaussian smooth -> erode -> dilate -> seeded connectivity)"));
 	ui->toolBar->addAction(m_actRegionsAlt);
 	connect(m_actRegionsAlt, &QAction::triggered, this, &PrototypeMainWindow::onRegionsAlt);
 
-	// "Watershed" toolbar button: ITK watershed region-growing segmentation.
-	m_actRegionsWatershed = new QAction(tr("Watershed"), this);
-	m_actRegionsWatershed->setToolTip(tr("Segment bone islands using the ITK watershed pipeline "
-		"(CurvatureFlow smooth ? distance map ? watershed)"));
-	ui->toolBar->addAction(m_actRegionsWatershed);
-	connect(m_actRegionsWatershed, &QAction::triggered,
-			this, &PrototypeMainWindow::onRegionsWatershed);
+	// "Graph Cut" toolbar button: ITK ImageGridCutFilter (multi-threaded GridCut solver)
+	m_actRegionsGraphCut = new QAction(tr("Graph Cut"), this);
+	m_actRegionsGraphCut->setToolTip(tr(
+		"Segment bone islands using ITK graph cut (ImageGridCutFilter, multi-threaded GridCut solver)"));
+	ui->toolBar->addAction(m_actRegionsGraphCut);
+	connect(m_actRegionsGraphCut, &QAction::triggered,
+			this, &PrototypeMainWindow::onRegionsGraphCut);
 
 	// "Clean" toolbar button: post-segmentation clean step.
 	// Enabled only after segmentation completes AND at least 8 Reslice operations
@@ -116,7 +131,7 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	connect(m_actOutline, &QAction::toggled, this, &PrototypeMainWindow::onOutlineToggled);
 
 	// "Restart" toolbar button: revert to the original image and reset the workflow.
-	// Always enabled — Restart can be applied at any workflow step.
+	// Always enabled - Restart can be applied at any workflow step.
 	m_actRestart = new QAction(tr("Restart"), this);
 	m_actRestart->setToolTip(tr("Revert to the original image and reset the workflow to the start"));
 	ui->toolBar->addAction(m_actRestart);
@@ -150,7 +165,7 @@ PrototypeMainWindow::~PrototypeMainWindow()
 }
 
 // ---------------------------------------------------------------------------
-// Window close — flush the JSON cache to the prototype sidecar
+// Window close - flush the JSON cache to the prototype sidecar
 // ---------------------------------------------------------------------------
 
 void PrototypeMainWindow::closeEvent(QCloseEvent* event)
@@ -171,26 +186,30 @@ void PrototypeMainWindow::setWorkflowStep(WorkflowStep step)
 	// Restart is always enabled and managed independently.
 	//
 	// Workflow routes:
-	//   A) Idle ? Resliced ? Landmarked ? Segmented  (via Regions)
-	//   B) Idle ? Resliced ? Landmarked ? Segmented  (via Regions Alt)
+	//   A) Idle -> Resliced -> Landmarked -> Segmented  (via Regions)
+	//   B) Idle -> Resliced -> Landmarked -> Segmented  (via Regions Alt)
+	//   C) Idle -> Resliced -> Landmarked -> Segmented  (via Graph Cut)
 	//
-	// At each step exactly one (or two, at Landmarked) button is enabled:
-	//   Idle       : Reslice=on,  Landmark=off, Regions=off, RegionsAlt=off
-	//   Resliced   : Reslice=off, Landmark=on,  Regions=off, RegionsAlt=off
-	//   Landmarked : Reslice=off, Landmark=off, Regions=on,  RegionsAlt=on
-	//   Segmented  : Reslice=off, Landmark=off, Regions=off, RegionsAlt=off
+	// At each step exactly one (or three, at Landmarked) button is enabled:
+	//   Idle       : Reslice=on,  Landmark=off, Regions=off, RegionsAlt=off, GraphCut=off
+	//   Resliced   : Reslice=off, Landmark=on,  Regions=off, RegionsAlt=off, GraphCut=off
+	//   Landmarked : Reslice=off, Landmark=off, Regions=on,  RegionsAlt=on,  GraphCut=on
+	//   Segmented  : Reslice=off, Landmark=off, Regions=off, RegionsAlt=off, GraphCut=off
 
-	const bool atIdle = (step == WorkflowStep::Idle);
-	const bool atResliced = (step == WorkflowStep::Resliced);
+	const bool atIdle      = (step == WorkflowStep::Idle);
+	const bool atResliced  = (step == WorkflowStep::Resliced);
 	const bool atLandmarked = (step == WorkflowStep::Landmarked);
+
+	// File is always available - the user can open a new sidecar at any time.
+	m_actFile->setEnabled(true);
 
 	m_actReslice->setEnabled(atIdle);
 	m_actLandmark->setEnabled(atResliced);
 	m_actRegions->setEnabled(atLandmarked);
 	m_actRegionsAlt->setEnabled(atLandmarked);
-	m_actRegionsWatershed->setEnabled(atLandmarked);
+	m_actRegionsGraphCut->setEnabled(atLandmarked);
 
-	// Restart is always enabled — it can be applied at any time.
+	// Restart is always enabled - it can be applied at any time.
 	m_actRestart->setEnabled(true);
 }
 
@@ -290,6 +309,12 @@ void PrototypeMainWindow::clearPcaOverlay()
 	{
 		if (a) { ren->RemoveActor(a); a = nullptr; }
 	}
+
+	// Remove landmark label actors added by onLandmark()
+	for (auto& a : m_landmarkLabelActors)
+	{
+		if (a) { ren->RemoveActor(a); a = nullptr; }
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +343,28 @@ void PrototypeMainWindow::clearIslandActors()
 		ren->RemoveActor(m_islandScalarBar);
 		m_islandScalarBar = nullptr;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Graph-cut seed actor management
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::clearGraphCutSeedActors()
+{
+	if (!ui || !ui->volumeView)
+		return;
+
+	vtkRenderer* ren = ui->volumeView->renderer();
+	if (!ren)
+		return;
+
+	// Remove the debug seed-cloud actors (FG green + BG orange) added by
+	// onRegionsGraphCut() and release the smart-pointer references.
+	for (auto& a : m_graphCutSeedActors)
+	{
+		if (a) { ren->RemoveActor(a); a = nullptr; }
+	}
+	m_graphCutSeedActors.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +537,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 
 	// Determine window/level from the image and the cached sidecar threshold.
 	// level  = threshold (falls back to scalar range midpoint if not present)
-	// window = 2 × overall standard deviation (from computeScalarThresholdStats)
+	// window = 2 x overall standard deviation (from computeScalarThresholdStats)
 	//
 	// computeScalarThresholdStats() is called unconditionally here so that
 	// m_imageStats is always populated for downstream steps (e.g. Clean),
@@ -511,7 +558,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 
 	m_imageStats = PrototypeHelpers::computeScalarThresholdStats(image, effectiveThreshold);
 
-	qDebug("setImage: imageStats — mean=%.4f  stdDev=%.4f  "
+	qDebug("setImage: imageStats - mean=%.4f  stdDev=%.4f  "
 		   "meanFg=%.4f  stdDevFg=%.4f  meanBg=%.4f  stdDevBg=%.4f",
 		   m_imageStats.value(QStringLiteral("mean")).toDouble(),
 		   m_imageStats.value(QStringLiteral("stdDev")).toDouble(),
@@ -525,7 +572,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 		m_imageStats.value(QStringLiteral("max")).toDouble(255.0) };
 
 	// level: threshold when finite, otherwise midpoint of the scalar range.
-	// window: 2 × whole-volume standard deviation sourced from m_imageStats.
+	// window: 2 x whole-volume standard deviation sourced from m_imageStats.
 	const double level = std::isfinite(m_threshold)
 		? m_threshold
 		: 0.5 * (scalarRange[0] + scalarRange[1]);
@@ -583,7 +630,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	if (!ren)
 		return;
 
-	// Sphere glyph radius = 8 % of the circumsphere radius (4× the original 2 % size)
+	// Sphere glyph radius = 8 % of the circumsphere radius (4x the original 2 % size)
 	const double glyphR = 0.08 * m_pca.circumRadius;
 
 	// Axis colours: R=axis0 (largest variance), G=axis1, B=axis2
@@ -610,7 +657,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 		m_axisActors[i] = PrototypeHelpers::makeLineActor(tipNeg, tipPos, col[0], col[1], col[2], 2.5);
 		ren->AddActor(m_axisActors[i]);
 
-		// Sphere glyphs at both ends (4× the original 2 % size)
+		// Sphere glyphs at both ends (4x the original 2 % size)
 		m_tipActors[static_cast<std::size_t>(i * 2)] = PrototypeHelpers::makeSphereActor(tipPos, glyphR, col[0], col[1], col[2]);
 		m_tipActors[static_cast<std::size_t>(i * 2 + 1)] = PrototypeHelpers::makeSphereActor(tipNeg, glyphR, col[0], col[1], col[2]);
 		ren->AddActor(m_tipActors[static_cast<std::size_t>(i * 2)]);
@@ -630,6 +677,39 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	ui->volumeView->renderer()->ResetCamera();
 	ui->volumeView->renderer()->ResetCameraClippingRange();
 	ui->volumeView->render();
+}
+
+
+// ---------------------------------------------------------------------------
+// File open slot - lets the user pick a project sidecar JSON at any time
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::onFileOpen()
+{
+	const QString path = QFileDialog::getOpenFileName(
+		this,
+		tr("Open Project Sidecar"),
+		QString(),                              // start in last-used directory
+		tr("JSON Sidecar Files (*.json);;All Files (*)"));
+
+	if (path.isEmpty())
+		return;   // user cancelled - leave current state untouched
+
+	try
+	{
+		// Reset workflow state before loading so stale actors and cached data
+		// from a previous session do not bleed into the new one.
+		onRestart();
+
+		loadFromSidecar(path);
+	}
+	catch (const std::exception& ex)
+	{
+		QMessageBox::critical(
+			this,
+			tr("CTAXPrototype - Load Error"),
+			QString::fromStdString(ex.what()));
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +741,10 @@ void PrototypeMainWindow::onLandmark()
 	// Sphere glyph radius reused from setImage() (8 % of circumsphere radius)
 	const double glyphR = 0.08 * m_pca.circumRadius;
 
+	// Label offset: push the text slightly away from the sphere glyph so it
+	// does not sit inside it.  1.5 x sphere radius in world units.
+	const double labelOffset = 1.5 * glyphR;
+
 	// Axis colours matching those in setImage()
 	const double axisColors[3][3] = {
 		{ 1.0, 0.2, 0.2 },  // axis 0 - red
@@ -668,22 +752,25 @@ void PrototypeMainWindow::onLandmark()
 		{ 0.2, 0.2, 1.0 },  // axis 2 - blue
 	};
 
+	// Axis label names: axis 0 = largest eigenvalue (longest), axis 2 = smallest
+	const char* axisNames[3] = { "L", "M", "S" };   // Largest / Medium / Smallest
+
 	// JSON arrays to accumulate per-axis landmark data
 	QJsonArray jsonLandmarks;
+
+	// Remove any existing landmark label actors before rebuilding
+	if (ren)
+	{
+		for (auto& a : m_landmarkLabelActors)
+		{
+			if (a) { ren->RemoveActor(a); a = nullptr; }
+		}
+	}
 
 	for (int i = 0; i < 3; ++i)
 	{
 		const double* col = axisColors[i];
 
-		// Each eigen axis has two directions (+/-) relative to the centroid.
-		// For each direction the search ray is cast from the centroid outward,
-		// intersected with the image bounding box, and then walked INWARD from
-		// that bounding-box entry point toward the centroid.  The first voxel
-		// whose scalar value crosses from below-threshold to above-threshold is
-		// the surface landmark point.
-		//
-		// axisDir (+): centroid ? +axis  (outward direction for the + half)
-		// axisDir (-): centroid ? -axis  (outward direction for the - half)
 		const double axisDirPos[3] = { m_pca.axes[i][0],  m_pca.axes[i][1],  m_pca.axes[i][2] };
 		const double axisDirNeg[3] = { -m_pca.axes[i][0], -m_pca.axes[i][1], -m_pca.axes[i][2] };
 
@@ -702,9 +789,7 @@ void PrototypeMainWindow::onLandmark()
 			   lPos[0], lPos[1], lPos[2],
 			   lNeg[0], lNeg[1], lNeg[2]);
 
-		// Relocate the existing tip sphere actors to the new surface positions.
-		// The actors are already in the renderer from setImage(); we replace them
-		// in-place rather than removing and re-adding to avoid flicker.
+		// Relocate the existing tip sphere actors to the new surface positions
 		if (ren)
 		{
 			const std::size_t posIdx = static_cast<std::size_t>(i * 2);
@@ -718,6 +803,61 @@ void PrototypeMainWindow::onLandmark()
 
 			ren->AddActor(m_tipActors[posIdx]);
 			ren->AddActor(m_tipActors[negIdx]);
+
+			// ------------------------------------------------------------------
+			// Billboard text labels at each landmark tip.
+			//
+			// The label for the positive tip is "<name>+" and for the negative
+			// tip is "<name>-".  Each label is offset along its own eigenvector
+			// direction so it clears the sphere glyph.
+			//
+			// vtkBillboardTextActor3D always faces the camera so the text is
+			// readable from any viewpoint without requiring a vtkFollower camera
+			// reference.  DisplayOffset shifts the label in screen pixels after
+			// billboard projection - (10, 10) moves it up-right of the anchor.
+			// ------------------------------------------------------------------
+			auto makeLandmarkLabel =
+				[&](const double pt[3], const double dir[3],
+					const char* sign, const double c[3])
+				-> vtkSmartPointer<vtkBillboardTextActor3D>
+				{
+					// World-space anchor = tip point + offset along eigenvector
+					const double ax = pt[0] + dir[0] * labelOffset;
+					const double ay = pt[1] + dir[1] * labelOffset;
+					const double az = pt[2] + dir[2] * labelOffset;
+
+					auto label = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+
+					const std::string text = std::string(axisNames[i]) + sign;
+					label->SetInput(text.c_str());
+					label->SetPosition(ax, ay, az);
+
+					// Small screen-space nudge so the text doesn't overlap the sphere
+					label->SetDisplayOffset(8, 8);
+
+					vtkTextProperty* tp = label->GetTextProperty();
+					tp->SetFontFamilyToArial();
+					tp->SetFontSize(14);
+					tp->SetBold(1);
+					tp->SetItalic(0);
+					tp->SetShadow(1);           // thin drop-shadow improves legibility
+					tp->SetShadowOffset(1, -1);
+					tp->SetColor(c[0], c[1], c[2]);
+					tp->SetOpacity(1.0);
+
+					return label;
+				};
+
+			const std::size_t lblPosIdx = static_cast<std::size_t>(i * 2);
+			const std::size_t lblNegIdx = static_cast<std::size_t>(i * 2 + 1);
+
+			m_landmarkLabelActors[lblPosIdx] =
+				makeLandmarkLabel(lPos, axisDirPos, "+", col);
+			m_landmarkLabelActors[lblNegIdx] =
+				makeLandmarkLabel(lNeg, axisDirNeg, "-", col);
+
+			ren->AddActor(m_landmarkLabelActors[lblPosIdx]);
+			ren->AddActor(m_landmarkLabelActors[lblNegIdx]);
 		}
 
 		// Accumulate JSON for this axis
@@ -771,7 +911,7 @@ void PrototypeMainWindow::onLandmark()
 	if (ren)
 		ui->volumeView->render();
 
-	// Landmark completed — advance to Landmarked: Regions and Regions Alt enabled.
+	// Landmark completed - advance to Landmarked: Regions and Regions Alt enabled.
 	setWorkflowStep(WorkflowStep::Landmarked);
 }
 
@@ -863,12 +1003,12 @@ void PrototypeMainWindow::onReslice()
 	++m_resliceCount;
 	qDebug("onReslice: m_resliceCount=%d", m_resliceCount);
 
-	// Reslice completed — advance to Resliced: only Landmark enabled.
+	// Reslice completed - advance to Resliced: only Landmark enabled.
 	setWorkflowStep(WorkflowStep::Resliced);
 }
 
 // ---------------------------------------------------------------------------
-// Shared helper — build island actors from a completed segmentation result
+// Shared helper - build island actors from a completed segmentation result
 // and merge the regions summary into the landmark JSON cache.
 // Called by both onRegions() and onRegionsAlt() after segmentation completes.
 // ---------------------------------------------------------------------------
@@ -951,7 +1091,7 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 	}
 
 	// ------------------------------------------------------------------
-	// Scalar bar — only when there are at least 2 distinct islands so the
+	// Scalar bar - only when there are at least 2 distinct islands so the
 	// colour scale has meaningful variation to display
 	// ------------------------------------------------------------------
 	if (nIslands > 1 && ren)
@@ -963,7 +1103,7 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 
 		ren->AddActor(m_islandScalarBar);
 
-		qDebug("applyIslandSegmentationResult: scalar bar added (%d islands, range %lld–%lld voxels).",
+		qDebug("applyIslandSegmentationResult: scalar bar added (%d islands, range %lld-%lld voxels).",
 			   nIslands,
 			   static_cast<long long>(minVoxels),
 			   static_cast<long long>(maxVoxels));
@@ -982,7 +1122,7 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 }
 
 // ---------------------------------------------------------------------------
-// Regions slot — threshold + seeded BFS flood-fill ? island surface actors
+// Threshold + seeded BFS flood-fill ? island surface actors
 // ---------------------------------------------------------------------------
 
 void PrototypeMainWindow::onRegions()
@@ -1062,12 +1202,12 @@ void PrototypeMainWindow::onRegions()
 
 	applyIslandSegmentationResult(islands, labelImage);
 
-	// Segmentation completed — advance to Segmented: no step buttons enabled.
+	// Segmentation completed - advance to Segmented: no step buttons enabled.
 	setWorkflowStep(WorkflowStep::Segmented);
 }
 
 // ---------------------------------------------------------------------------
-// Regions Alt slot — morphological pipeline (smooth ? erode ? dilate ? connectivity)
+// Morphological pipeline (smooth ? erode ? dilate ? connectivity)
 // ---------------------------------------------------------------------------
 
 void PrototypeMainWindow::onRegionsAlt()
@@ -1116,7 +1256,7 @@ void PrototypeMainWindow::onRegionsAlt()
 	// ------------------------------------------------------------------
 	// Progress callback
 	// ------------------------------------------------------------------
-	showProgressStart();
+showProgressStart();
 	const auto regionProgress = [this](int percent)
 		{
 			showProgressValue(percent);
@@ -1136,7 +1276,7 @@ void PrototypeMainWindow::onRegionsAlt()
 			seeds,
 			labelImage,
 			1.0,  // smoothStdDev: Gaussian standard deviation in voxel units
-			1,    // morphKernelSize: half-width ? 3×3×3 structuring element
+			1,    // morphKernelSize: half-width ? 3x3x3 structuring element
 			regionProgress);
 
 	showProgressEnd();
@@ -1149,107 +1289,133 @@ void PrototypeMainWindow::onRegionsAlt()
 
 	applyIslandSegmentationResult(islands, labelImage);
 
-	// Segmentation completed — advance to Segmented: no step buttons enabled.
+	// Segmentation completed - advance to Segmented: no step buttons enabled.
 	setWorkflowStep(WorkflowStep::Segmented);
 }
 
-// ---------------------------------------------------------------------------
-// Watershed slot — ITK seeded watershed segmentation
-// ---------------------------------------------------------------------------
-
-void PrototypeMainWindow::onRegionsWatershed()
+void PrototypeMainWindow::onRegionsGraphCut()
 {
-	// ------------------------------------------------------------------
-	// Pre-conditions (identical to onRegions / onRegionsAlt)
-	// ------------------------------------------------------------------
-	if (!m_reslicedImage)
+	if (!m_reslicedImage || m_landmarkResult.isEmpty() || !std::isfinite(m_threshold))
 	{
-		qWarning("onRegionsWatershed: no resliced image available; run Reslice first.");
+		qWarning("onRegionsGraphCut: pre-conditions not met "
+				 "(reslice + landmark + finite threshold required).");
 		return;
 	}
 
-	if (m_landmarkResult.isEmpty())
-	{
-		qWarning("onRegionsWatershed: no landmark points available; run Landmark first.");
-		return;
-	}
-
-	if (!std::isfinite(m_threshold))
-	{
-		qWarning("onRegionsWatershed: threshold is not finite; cannot segment.");
-		return;
-	}
-
-	// ------------------------------------------------------------------
-	// Collect the 6 landmark world-space seed points from m_landmarkPoints.
-	// Each of the 3 axes contributes one positive and one negative seed.
-	// ------------------------------------------------------------------
-	std::vector<std::array<double, 3>> seeds;
-	seeds.reserve(6);
-
-	for (int i = 0; i < 3; ++i)
-	{
-		for (int d = 0; d < 2; ++d)
-		{
-			const double* pt = m_landmarkPoints[static_cast<std::size_t>(i)]
-				[static_cast<std::size_t>(d)].data();
-			seeds.push_back({ pt[0], pt[1], pt[2] });
-		}
-	}
-
-	qDebug("onRegionsWatershed: running watershed pipeline with %zu seeds, threshold=%.4f",
-		   seeds.size(), m_threshold);
-
-	// ------------------------------------------------------------------
-	// Progress callback
-	// ------------------------------------------------------------------
 	showProgressStart();
-	const auto regionProgress = [this](int percent)
+	const auto progress = [this](int pct)
 		{
-			showProgressValue(percent);
+			showProgressValue(pct);
 			m_progressBar->update();
 			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 		};
 
 	// ------------------------------------------------------------------
-	// Run watershed segmentation
-	// (level=0.1, threshold=0.0, smoothIterations=5, smoothTimeStep=0.125)
+	// Build foreground and background seed images from landmark paths.
+	//
+	// Foreground: voxel paths from the bone centroid to each of the 5
+	//             selected landmark surface points (Lpos excluded - that
+	//             tip is adjacent to a neighbouring bone).
+	// Background: threshold-gated outward rays from the same 5 landmark
+	//             tips, stopping on re-entry into any bone-density tissue.
+	// ------------------------------------------------------------------
+	vtkSmartPointer<vtkImageData> fgSeedImage;
+	vtkSmartPointer<vtkImageData> bgSeedImage;
+
+	PrototypeHelpers::buildGraphCutSeedImages(
+		m_reslicedImage,
+		m_landmarkPoints,
+		m_pca.axes,
+		fgSeedImage,
+		bgSeedImage,
+		m_threshold);
+
+	// ------------------------------------------------------------------
+	// Debug visualisation - add seed point cloud actors to the renderer.
+	// Green = foreground seeds, orange = background seeds.
+	// Actors are tracked in m_graphCutSeedActors so onRestart() can
+	// remove them when the workflow is reset.
+	// ------------------------------------------------------------------
+	vtkRenderer* ren = (ui && ui->volumeView) ? ui->volumeView->renderer() : nullptr;
+	if (ren)
+	{
+		auto fgActor = PrototypeHelpers::makeSeedImageActor(fgSeedImage, 0.0, 1.0, 0.0, 4.0);
+		auto bgActor = PrototypeHelpers::makeSeedImageActor(bgSeedImage, 1.0, 0.3, 0.0, 4.0);
+		ren->AddActor(fgActor);
+		ren->AddActor(bgActor);
+		m_graphCutSeedActors.push_back(fgActor);
+		m_graphCutSeedActors.push_back(bgActor);
+		ui->volumeView->render();
+	}
+
+	// ------------------------------------------------------------------
+	// Extract world-space coordinates of all seed voxels for
+	// segmentBoneIslandsGraphCut.
+	// ------------------------------------------------------------------
+	const double* origin = m_reslicedImage->GetOrigin();
+	const double* spacing = m_reslicedImage->GetSpacing();
+	const int* dims = m_reslicedImage->GetDimensions();
+
+	const vtkIdType totalVoxels =
+		static_cast<vtkIdType>(dims[0]) * dims[1] * dims[2];
+
+	std::vector<std::array<double, 3>> fgSeeds;
+	std::vector<std::array<double, 3>> bgSeeds;
+	fgSeeds.reserve(static_cast<std::size_t>(totalVoxels / 10));
+	bgSeeds.reserve(static_cast<std::size_t>(totalVoxels / 10));
+
+	auto* fgPtr = static_cast<unsigned char*>(fgSeedImage->GetScalarPointer());
+	auto* bgPtr = static_cast<unsigned char*>(bgSeedImage->GetScalarPointer());
+
+	for (vtkIdType k = 0; k < dims[2]; ++k)
+		for (vtkIdType j = 0; j < dims[1]; ++j)
+			for (vtkIdType i = 0; i < dims[0]; ++i)
+			{
+				const vtkIdType flat = k * dims[1] * dims[0] + j * dims[0] + i;
+				const double wx = origin[0] + i * spacing[0];
+				const double wy = origin[1] + j * spacing[1];
+				const double wz = origin[2] + k * spacing[2];
+				if (fgPtr[flat]) fgSeeds.push_back({ wx, wy, wz });
+				if (bgPtr[flat]) bgSeeds.push_back({ wx, wy, wz });
+			}
+
+	qDebug("onRegionsGraphCut: %zu FG seed voxels, %zu BG seed voxels.",
+		   fgSeeds.size(), bgSeeds.size());
+
+	// ------------------------------------------------------------------
+	// Run graph-cut segmentation
 	// ------------------------------------------------------------------
 	vtkSmartPointer<vtkImageData> labelImage;
-
 	const std::vector<PrototypeHelpers::BoneIsland> islands =
-		PrototypeHelpers::segmentBoneIslandsWatershed(
+		PrototypeHelpers::segmentBoneIslandsGraphCut(
 			m_reslicedImage,
 			m_threshold,
-			seeds,
+			fgSeeds,
+			bgSeeds,
 			labelImage,
-			0.1,    // watershedLevel
-			0.05,   // watershedThreshold — suppress low-gradient background basins
-			5,      // smoothIterations
-			0.125,  // smoothTimeStep
-			regionProgress);
+			/*sigma=*/100.0,
+			/*minIslandVoxels=*/50,
+			progress);
 
 	showProgressEnd();
 
 	if (islands.empty())
 	{
-		qWarning("onRegionsWatershed: no bone islands were found.");
+		qWarning("onRegionsGraphCut: no bone islands found.");
 		return;
 	}
 
 	applyIslandSegmentationResult(islands, labelImage);
-
-	// Segmentation completed — advance to Segmented: no step buttons enabled.
 	setWorkflowStep(WorkflowStep::Segmented);
 }
 
 // ---------------------------------------------------------------------------
-// Clean slot — post-segmentation clean step
+// Clean slot - post-segmentation clean step
 //
 // Algorithm:
 //   1. Derive the noise distribution from the cached background statistics:
 //      draw = clamp(backgroundMean + U(-2?, +2?),  volMin, volMax)
-//      where U(-2?, +2?) is a uniform random value in [-2·bgStdDev, +2·bgStdDev].
+//      where U(-2?, +2?) is a uniform random value in [-2*bgStdDev, +2*bgStdDev].
 //   2. Deep-copy the resliced volume into C.
 //   3. For every voxel v in the resliced volume:
 //        if v > threshold  AND  v is NOT inside any segmented island label:
@@ -1289,7 +1455,7 @@ void PrototypeMainWindow::onClean()
 	}
 
 	// ------------------------------------------------------------------
-	// Scalar range of the resliced volume — used to clamp random draws
+	// Scalar range of the resliced volume - used to clamp random draws
 	// ------------------------------------------------------------------
 
 	const double scalarRange[2] = {
@@ -1301,12 +1467,12 @@ void PrototypeMainWindow::onClean()
 	// ------------------------------------------------------------------
 	// Background noise distribution parameters sourced from m_imageStats,
 	// which is populated by setImage() via computeScalarThresholdStats().
-	// "meanBg"   — mean scalar value of all below-threshold voxels.
-	// "stdDevBg" — standard deviation of below-threshold voxels.
+	// "meanBg"   - mean scalar value of all below-threshold voxels.
+	// "stdDevBg" - standard deviation of below-threshold voxels.
 	// ------------------------------------------------------------------
 	const double bgMean = m_imageStats.value(QStringLiteral("meanBg")).toDouble(0.0);
 	const double bgStdDev = m_imageStats.value(QStringLiteral("stdDevBg")).toDouble(0.0);
-	const double noiseHalfWidth = 2.0 * bgStdDev;   // ± 2? uniform range
+	const double noiseHalfWidth = 2.0 * bgStdDev;   // +/- 2? uniform range
 
 	qDebug("onClean: bgMean=%.4f  bgStdDev=%.4f  noiseHalfWidth=%.4f  "
 		   "volMin=%.4f  volMax=%.4f  threshold=%.4f",
@@ -1384,7 +1550,7 @@ void PrototypeMainWindow::onClean()
 		if (v <= m_threshold || l != 0.0)
 			continue;
 
-		// Voxel is above-threshold AND outside every segmented island —
+		// Voxel is above-threshold AND outside every segmented island -
 		// replace it with a background-noise draw clamped to [volMin, volMax].
 		const double noise = noiseDist(rng);
 		const double noiseVal = std::clamp(bgMean + noise, volMin, volMax);
@@ -1403,14 +1569,14 @@ void PrototypeMainWindow::onClean()
 	//
 	// Steps:
 	//   1. Compute Dmin = half the shortest inter-landmark paired distance
-	//      (pos–neg pair along the same axis) in world coordinates.
+	//      (pos-neg pair along the same axis) in world coordinates.
 	//   2. Build a vtkBoundingBox B over all segmented island voxels in
 	//      world coordinates (label > 0 in m_labelImage).
 	//   3. Inflate B by Dmin uniformly from its centroid.
 	//   4. Map B to voxel extent in cleanedImage and apply vtkExtractVOI.
 	// ------------------------------------------------------------------
 
-	// Step 1 — Dmin: half the shortest paired landmark distance.
+	// Step 1 - Dmin: half the shortest paired landmark distance.
 	// m_landmarkPoints[axis][0] = positive direction surface point
 	// m_landmarkPoints[axis][1] = negative direction surface point
 	double minPairedDist = std::numeric_limits<double>::max();
@@ -1429,7 +1595,7 @@ void PrototypeMainWindow::onClean()
 
 	qDebug("onClean: minPairedLandmarkDist=%.4f  dMin=%.4f", minPairedDist, dMin);
 
-	// Step 2 — island bounding box in world coordinates  [progress 80 ? 95]
+	// Step 2 - island bounding box in world coordinates  [progress 80 ? 95]
 	// Iterate the label image; accumulate world positions of all labelled voxels.
 	showProgressValue(80);
 	m_progressBar->update();
@@ -1481,7 +1647,7 @@ void PrototypeMainWindow::onClean()
 
 	islandBB.Inflate(dMin);
 
-	// Step 4 — map world BB to voxel extent in cleanedImage and run vtkExtractVOI
+	// Step 4 - map world BB to voxel extent in cleanedImage and run vtkExtractVOI
 	// [progress 95 ? 100]
 	showProgressValue(95);
 	m_progressBar->update();
@@ -1528,7 +1694,7 @@ void PrototypeMainWindow::onClean()
 		cleanedImage = croppedCopy;
 
 		const int* croppedDims = cleanedImage->GetDimensions();
-		qDebug("onClean: VOI crop applied — new dims: %d x %d x %d",
+		qDebug("onClean: VOI crop applied - new dims: %d x %d x %d",
 			   croppedDims[0], croppedDims[1], croppedDims[2]);
 	}
 	else
@@ -1564,12 +1730,12 @@ void PrototypeMainWindow::onClean()
 	ui->volumeView->renderer()->ResetCameraClippingRange();
 	ui->volumeView->render();
 
-	// Clean completed — advance to Cleaned: all step buttons disabled.
+	// Clean completed - advance to Cleaned: all step buttons disabled.
 	setWorkflowStep(WorkflowStep::Cleaned);
 }
 
 // ---------------------------------------------------------------------------
-// Restart slot — revert to the original image and reset the full workflow
+// Restart slot - revert to the original image and reset the full workflow
 // ---------------------------------------------------------------------------
 
 void PrototypeMainWindow::onRestart()
@@ -1627,7 +1793,7 @@ void PrototypeMainWindow::loadFromSidecarAsync(const QString& sidecarPath)
 }
 
 // ---------------------------------------------------------------------------
-// onOutlineToggled — forward the checked state to VolumeView::setOutlineVisible
+// onOutlineToggled - forward the checked state to VolumeView::setOutlineVisible
 // ---------------------------------------------------------------------------
 
 void PrototypeMainWindow::onOutlineToggled(bool checked)

@@ -208,7 +208,7 @@ static QString detectUnitsFromDICOM(vtkDICOMReader* reader)
 
 static QString detectUnitsFromScanco(vtkScancoCTReader* reader)
 {
-	// scancodump prints element sizes with [mm] in the reference — assume mm
+	// scancodump prints element sizes with [mm] in the reference - assume mm
 	(void)reader;
 	return QStringLiteral("mm");
 }

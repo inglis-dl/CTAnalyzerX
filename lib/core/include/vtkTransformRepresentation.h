@@ -14,7 +14,7 @@
  *   - An origin handle (sphere) representing the widget origin.
  *   - Three axes (X/Y/Z) generated from vtkAxes sources. The class keeps two
  *     axis sets:
- *     - StaticAxes: translated to follow origin only (no rotation) — useful
+ *     - StaticAxes: translated to follow origin only (no rotation) - useful
  *       to represent a translation-only reference frame.
  *     - DynamicAxes: full transform (rotation + translation) applied so the
  *       axes represent the current orientation of the transform.

@@ -57,7 +57,7 @@ namespace PrototypeHelpers
 	                const std::function<void(int)>& progressCb = nullptr);
 
 	// -----------------------------------------------------------------------
-	// Ray–AABB intersection (slab method)
+	// Ray-AABB intersection (slab method)
 	// -----------------------------------------------------------------------
 
 	bool rayAabbIntersect(const double rayOrigin[3], const double rayDir[3],
@@ -99,20 +99,20 @@ namespace PrototypeHelpers
 		const std::function<void(int)>&          progressCb = nullptr);
 
 	// -----------------------------------------------------------------------
-	// Bone island segmentation — VTK morphological pipeline
+	// Bone island segmentation - VTK morphological pipeline
 	// -----------------------------------------------------------------------
 
 	// Alternative segmentation pipeline that pre-processes the input with:
-	//   1. vtkImageGaussianSmooth    – suppress noise before morphology.
-	//   2. vtkImageContinuousErode3D – shrink thin connections between regions.
-	//   3. vtkImageContinuousDilate3D– restore island cores after erosion.
-	//   4. vtkImageThresholdConnectivity – seed-based connected-threshold fill.
+	//   1. vtkImageGaussianSmooth     - suppress noise before morphology.
+	//   2. vtkImageContinuousErode3D  - shrink thin connections between regions.
+	//   3. vtkImageContinuousDilate3D - restore island cores after erosion.
+	//   4. vtkImageThresholdConnectivity - seed-based connected-threshold fill.
 	// The resulting label image uses one integer label per accepted seed and
 	// the returned BoneIsland vector is coloured by island voxel-count scale,
 	// identical to segmentBoneIslands.
 	// `smoothStdDev`   : Gaussian standard deviation in voxel units (default 1.0).
 	// `morphKernelSize`: half-width of the erode/dilate structuring element
-	//                    (default 1 ? 3×3×3 kernel).
+	//                    (default 1 -> 3x3x3 kernel).
 	std::vector<BoneIsland> segmentBoneIslandsAlternate(
 		vtkImageData*                            reslicedImage,
 		double                                   threshold,
@@ -123,34 +123,38 @@ namespace PrototypeHelpers
 		const std::function<void(int)>&          progressCb      = nullptr);
 
 	// -----------------------------------------------------------------------
-	// Bone island segmentation — ITK watershed pipeline
+	// Bone island segmentation - ITK ImageGridCutFilter (graph cut)
 	// -----------------------------------------------------------------------
-
-	// Watershed pipeline:
-	//   1. itk::CurvatureFlowImageFilter     – edge-preserving smoothing.
-	//   2. itk::BinaryThresholdImageFilter   – mask voxels >= threshold.
-	//   3. itk::SignedMaurerDistanceMapImageFilter – inside-positive distance.
-	//   4. itk::InvertIntensityImageFilter   – invert so ridges become basins.
-	//   5. itk::WatershedImageFilter         – over-segment into labelled basins.
-	//   6. Seed-to-label matching            – retain only basins that contain
-	//      a landmark seed; one BoneIsland per accepted seed.
 	//
-	// Parameters:
-	//   `watershedLevel`    : merging aggressiveness 0–1 (default 0.1).
-	//                         Higher values merge more basins.
-	//   `watershedThreshold`: minimum gradient magnitude to consider (default 0.0).
-	//   `smoothIterations`  : CurvatureFlow iteration count (default 5).
-	//   `smoothTimeStep`    : CurvatureFlow time step (default 0.125).
-	std::vector<BoneIsland> segmentBoneIslandsWatershed(
+	// Uses GraphCut::FilterType which resolves to ImageGridCutFilter (GridCut,
+	// multi-threaded) when GRIDCUT_LIBRARY_AVAILABLE is defined, or falls back
+	// to ImageGraphCut3DKolmogorovFilter (single-threaded) otherwise.
+	//
+	// Foreground seed image: voxel paths from the bone centroid out to each of
+	// the 5 selected landmark surface points (Lpos excluded - adjacent bone side).
+	// Background seed image: threshold-gated outward rays from the same 5
+	// landmark tips, stopping on re-entry into bone-density tissue.
+	//
+	// `sigma`  : Gaussian width for the boundary term exp(-delta^2 / 2*sigma^2).
+	//            For 16-bit CT bone data try 50-200; smaller = sharper edges.
+	// `minIslandVoxels` : connected components smaller than this are discarded.
+	void buildGraphCutSeedImages(
+		vtkImageData*                            reslicedImage,
+		const std::array<std::array<std::array<double,3>,2>,3>& landmarkPoints,
+		const double                             eigenvectors[3][3],
+		vtkSmartPointer<vtkImageData>&           outForegroundSeeds,
+		vtkSmartPointer<vtkImageData>&           outBackgroundSeeds,
+		double                                   threshold);
+
+	std::vector<BoneIsland> segmentBoneIslandsGraphCut(
 		vtkImageData*                            reslicedImage,
 		double                                   threshold,
-		const std::vector<std::array<double,3>>& seedsWorld,
+		const std::vector<std::array<double,3>>& foregroundSeedsWorld,
+		const std::vector<std::array<double,3>>& backgroundSeedsWorld,
 		vtkSmartPointer<vtkImageData>&           outLabelImage,
-		double                                   watershedLevel      = 0.1,
-		double                                   watershedThreshold  = 0.0,
-		int                                      smoothIterations    = 5,
-		double                                   smoothTimeStep      = 0.125,
-		const std::function<void(int)>&          progressCb          = nullptr);
+		double                                   sigma           = 100.0,
+		vtkIdType                                minIslandVoxels = 50,
+		const std::function<void(int)>&          progressCb      = nullptr);
 
 	// -----------------------------------------------------------------------
 	// VTK actor / prop builders
@@ -191,5 +195,15 @@ namespace PrototypeHelpers
 		vtkColorTransferFunction* colorTF,
 		vtkIdType                 minVoxels,
 		vtkIdType                 maxVoxels);
+
+	// Converts a binary seed image (1 = seed, 0 = background) produced by
+	// buildGraphCutSeedImages into a vtkPolyData of point vertices suitable
+	// for rendering as a point cloud overlay.
+	// Each above-zero voxel centre is emitted as one vertex.
+	// Colour the returned actor with r,g,b to distinguish FG from BG seeds.
+	vtkSmartPointer<vtkActor> makeSeedImageActor(
+		vtkImageData* seedImage,
+		double        r, double g, double b,
+		double        pointSize = 3.0);
 
 } // namespace PrototypeHelpers

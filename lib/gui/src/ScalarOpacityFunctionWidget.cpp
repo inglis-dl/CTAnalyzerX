@@ -437,7 +437,7 @@ public:
 				m_nodes[i]->setPen(nodePen);
 				m_nodes[i]->setBrush(q_ptr->palette().color(QPalette::Window));
 				m_nodes[i]->setZValue(1000.0 + ((i == 1 || i == 2) ? 2.0 : 0.0));
-				// NodeItem ctor sets ItemIgnoresTransformations=true for constant pixel size — clear it
+				// NodeItem ctor sets ItemIgnoresTransformations=true for constant pixel size - clear it
 				m_nodes[i]->setFlag(QGraphicsItem::ItemIgnoresTransformations, false);
 			}
 			else {

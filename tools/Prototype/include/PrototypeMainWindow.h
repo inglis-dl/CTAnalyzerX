@@ -19,6 +19,7 @@ class vtkScalarBarActor;
 class ImageLoader;
 class vtkEventQtSlotConnect;
 class QAction;
+class vtkBillboardTextActor3D;
 
 namespace Ui { class MainWindow; }
 
@@ -64,25 +65,31 @@ private slots:
 	// using the same colour/scalar-bar logic as onRegions().
 	void onRegionsAlt();
 
+	// Triggered by the "Graph Cut" toolbar button.
+	// Builds foreground seed paths (centroid ? 5 landmark tips) and background
+	// seed rays (outward from the same 5 tips, threshold-gated), then runs
+	// ITK ImageGridCutFilter (GridCut multi-threaded solver) to segment bone
+	// islands.  Results are displayed using the same colour/scalar-bar logic
+	// as onRegions() and onRegionsAlt().
+	void onRegionsGraphCut();
+
 	// Triggered by the "Clean" toolbar button.
-	// Enabled only after segmentation (Regions or Regions Alt) has completed
-	// and at least 8 Reslice steps have been performed.
-	// Stub: disables all preceding workflow step buttons and advances to Cleaned.
+	// Enabled only after segmentation (Regions, Regions Alt, or Graph Cut) has
+	// completed and at least 8 Reslice steps have been performed.
+	// Replaces above-threshold voxels outside every segmented island with
+	// background noise, then VOI-crops the result and advances to Cleaned.
 	void onClean();
 
 	void onOutlineToggled(bool checked);
 
 	// Triggered by the "Restart" toolbar button.
 	// Reverts the view to the original loaded image and its default PCA-positioned
-	// axes, clears all reslice/landmark/region state, and resets the workflow
-	// step buttons so only "Reslice" is enabled.
+	// axes, clears all reslice/landmark/region/graph-cut state, and resets the
+	// workflow step buttons so only "Reslice" is enabled.
 	void onRestart();
 
-	// Triggered by the "Watershed" toolbar button.
-	// Runs the ITK watershed pipeline (CurvatureFlow smooth ? binary threshold ?
-	// signed distance map ? invert ? watershed) and displays the island surfaces
-	// using the same colour/scalar-bar logic as onRegions() and onRegionsAlt().
-	void onRegionsWatershed();
+	// Open a json sidecar file and load the cropped image.
+	void onFileOpen();
 
 private:
 	// -----------------------------------------------------------------------
@@ -93,12 +100,13 @@ private:
 	// Restart transitions back to Idle from any state.
 	// Route A: Resliced ? Landmarked ? Segmented (via onRegions)
 	// Route B: Resliced ? Landmarked ? Segmented (via onRegionsAlt)
+	// Route C: Resliced ? Landmarked ? Segmented (via onRegionsGraphCut)
 	// Clean is available after Segmented when m_resliceCount >= 8.
 	enum class WorkflowStep
 	{
 		Idle,        // image loaded; only Reslice enabled
 		Resliced,    // reslice done; only Landmark enabled
-		Landmarked,  // landmark done; Regions and RegionsAlt enabled
+		Landmarked,  // landmark done; Regions, RegionsAlt, and GraphCut enabled
 		Segmented,   // segmentation done; Clean enabled (when reslice count >= 8)
 		Cleaned      // clean done; no step buttons enabled
 	};
@@ -131,17 +139,18 @@ private:
 	QAction* m_actOutline = nullptr;
 
 	// Workflow step toolbar actions (owned by the toolbar / QObject parent chain).
+	QAction* m_actFile = nullptr;
 	QAction* m_actReslice = nullptr;
 	QAction* m_actLandmark = nullptr;
 	QAction* m_actRegions = nullptr;
 	QAction* m_actRegionsAlt = nullptr;
+	QAction* m_actRegionsGraphCut = nullptr;
 	// "Clean" toolbar button: enabled after segmentation completes and
 	// at least 8 Reslice steps have been performed in this session.
 	QAction* m_actClean = nullptr;
 	QAction* m_actRestart = nullptr;
-	QAction* m_actRegionsWatershed = nullptr;
 
-	// Current workflow position — drives enabled/disabled state of step buttons.
+	// Current workflow position - drives enabled/disabled state of step buttons.
 	WorkflowStep m_workflowStep = WorkflowStep::Idle;
 
 	// Cumulative count of successful Reslice operations in the current session.
@@ -178,6 +187,11 @@ private:
 	// Removed from the renderer and reset by clearIslandActors().
 	vtkSmartPointer<vtkScalarBarActor> m_islandScalarBar;
 
+	// Debug seed-cloud actors added by onRegionsGraphCut() to visualise the
+	// foreground (green) and background (orange) seed point clouds.
+	// Cleared by clearGraphCutSeedActors() which is called from onRestart().
+	std::vector<vtkSmartPointer<vtkActor>> m_graphCutSeedActors;
+
 	QJsonObject m_originalPcaJson;
 	QJsonObject m_reslicedPcaJson;
 
@@ -185,9 +199,9 @@ private:
 	// via PrototypeHelpers::computeScalarThresholdStats().  Empty when no image
 	// has been loaded or when m_threshold is not finite.
 	// Keys provided by computeScalarThresholdStats():
-	//   "mean"     / "stdDev"     — whole-volume statistics
-	//   "meanFg"   / "stdDevFg"   — above-threshold (foreground) statistics
-	//   "meanBg"   / "stdDevBg"   — below-threshold (background) statistics
+	//   "mean"     / "stdDev"     - whole-volume statistics
+	//   "meanFg"   / "stdDevFg"   - above-threshold (foreground) statistics
+	//   "meanBg"   / "stdDevBg"   - below-threshold (background) statistics
 	// Consumers read individual values via m_imageStats.value("key").toDouble().
 	QJsonObject m_imageStats;
 
@@ -200,10 +214,18 @@ private:
 	// from the VolumeView renderer and clears the internal vectors/pointers.
 	void clearIslandActors();
 
+	// Removes the graph-cut debug seed-cloud actors (foreground + background)
+	// added by onRegionsGraphCut() from the VolumeView renderer and clears
+	// m_graphCutSeedActors.  Called by onRestart().
+	void clearGraphCutSeedActors();
+
 	// Shared post-segmentation helper: builds actors, scalar bar, and updates
 	// the landmark JSON cache from a completed island segmentation result.
-	// Called by both onRegions() and onRegionsAlt() to avoid duplication.
+	// Called by onRegions(), onRegionsAlt(), and onRegionsGraphCut() to avoid
+	// duplication.
 	void applyIslandSegmentationResult(
 		const std::vector<PrototypeHelpers::BoneIsland>& islands,
 		vtkSmartPointer<vtkImageData>                    labelImage);
+
+	std::array<vtkSmartPointer<vtkBillboardTextActor3D>, 6> m_landmarkLabelActors;
 };

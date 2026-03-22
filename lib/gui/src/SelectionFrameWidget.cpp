@@ -276,7 +276,7 @@ bool SelectionFrameWidget::eventFilter(QObject* watched, QEvent* event)
 					}
 
 					if (giveFrameFocus) {
-						// target won't take focus — give focus to the frame (may forward to focusProxy)
+						// target won't take focus - give focus to the frame (may forward to focusProxy)
 						setFocus(Qt::MouseFocusReason);
 						// ensure toplevel is active
 						if (QWidget* w = this->window()) { w->raise(); w->activateWindow(); }

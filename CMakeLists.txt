@@ -33,6 +33,9 @@ endif()
 if(MSVC)
     add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING>)
     add_compile_definitions(_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING)
+    # Treat all source files as UTF-8; eliminates the code-page prompt and
+    # ensures Unicode literals in comments/strings compile without warnings.
+    add_compile_options(/utf-8)
 endif()
 
 # Work around ITK/Qt double-conversion symbol collisions on MSVC.

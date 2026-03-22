@@ -380,7 +380,7 @@ void MainWindow::onActionOpen()
 	// when canceled() fires and start the new workflow.
 	m_pendingOpenFile = fileName;
 	m_workflowStateMachine->cancel();
-	statusBar()->showMessage(tr("Canceling current job…"), 2000);
+	statusBar()->showMessage(tr("Canceling current job..."), 2000);
 }
 
 void MainWindow::onActionResume()
@@ -624,7 +624,7 @@ void MainWindow::updateRecentFilesMenu()
 				return;
 			}
 
-			// Machine is active — prompt user to cancel and restart (same policy as drag/drop).
+			// Machine is active - prompt user to cancel and restart (same policy as drag/drop).
 			const auto resp = QMessageBox::question(this, tr("Processing in progress"),
 				tr("A processing job is currently running.\n\nCancel it and start processing the selected file?\n\n%1").arg(filePath),
 				QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
@@ -1065,7 +1065,7 @@ void MainWindow::dropEvent(QDropEvent* event)
 		return;
 	}
 
-	// Machine is active — prompt user to cancel and restart
+	// Machine is active - prompt user to cancel and restart
 	const auto resp = QMessageBox::question(this, tr("Processing in progress"),
 		tr("A processing job is currently running.\n\nCancel it and start processing the dropped file?\n\n%1").arg(droppedPath),
 		QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
@@ -1087,7 +1087,7 @@ void MainWindow::dropEvent(QDropEvent* event)
 		return;
 	}
 
-	// User chose not to cancel — ignore or accept w/out action to indicate handled
+	// User chose not to cancel - ignore or accept w/out action to indicate handled
 	statusBar()->showMessage(tr("Dropped file ignored while processing is active"), 2000);
 	event->acceptProposedAction();
 }
