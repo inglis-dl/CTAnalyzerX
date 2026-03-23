@@ -206,9 +206,12 @@ MainWindow::MainWindow(QWidget* parent)
 		}, Qt::QueuedConnection);
 
 	// Cancel-and-restart: fired by onActionOpen when the machine is active.
-	// UniqueConnection prevents duplicates; the slot reads m_pendingOpenFile directly.
+	// QueuedConnection ensures onCancelAndStartPendingFile() is invoked after
+	// the current call stack unwinds, guaranteeing m_pendingOpenFile is set
+	// before the slot reads it regardless of whether canceled() is emitted
+	// synchronously inside cancel().
 	connect(m_workflowStateMachine, &WorkflowStateMachine::canceled,
-		this, &MainWindow::onCancelAndStartPendingFile);
+		this, &MainWindow::onCancelAndStartPendingFile, Qt::QueuedConnection);
 
 	// ========================================================================
 	// Phase 3: Declarative UI property bindings

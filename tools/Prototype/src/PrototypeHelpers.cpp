@@ -30,9 +30,9 @@
 #include <itkImage.h>
 #include <itkVTKImageToImageFilter.h>
 #include <itkImageToVTKImageFilter.h>
-#include <itkCurvatureFlowImageFilter.h>
+//#include <itkCurvatureFlowImageFilter.h>
 #include <itkBinaryThresholdImageFilter.h>
-#include <itkCastImageFilter.h>
+//#include <itkCastImageFilter.h>
 #include <itkConnectedComponentImageFilter.h>
 #include <itkRelabelComponentImageFilter.h>
 #include "GraphCut.h"                          // selects GridCut or Kolmogorov backend
@@ -1062,33 +1062,33 @@ namespace PrototypeHelpers
 		// ------------------------------------------------------------------
 		vtkImageData* morphOutput = dilate->GetOutput();
 
-		const double* origin  = reslicedImage->GetOrigin();
+		const double* origin = reslicedImage->GetOrigin();
 		const double* spacing = reslicedImage->GetSpacing();
-		const int*    dims    = reslicedImage->GetDimensions();
+		const int* dims = reslicedImage->GetDimensions();
 
-		const vtkIdType nx         = dims[0];
-		const vtkIdType ny         = dims[1];
-		const vtkIdType nz         = dims[2];
+		const vtkIdType nx = dims[0];
+		const vtkIdType ny = dims[1];
+		const vtkIdType nz = dims[2];
 		const vtkIdType totalVoxels = nx * ny * nz;
 
 		std::vector<unsigned char> labelMap(static_cast<std::size_t>(totalVoxels), 0u);
 
 		auto flatIdx = [&](vtkIdType x, vtkIdType y, vtkIdType z) -> vtkIdType
-		{
-			return z * ny * nx + y * nx + x;
-		};
+			{
+				return z * ny * nx + y * nx + x;
+			};
 
 		auto worldToVoxel = [&](const double w[3], int out[3]) -> bool
-		{
-			double cont[3] = { 0.0, 0.0, 0.0 };
-			reslicedImage->TransformPhysicalPointToContinuousIndex(w, cont);
-			out[0] = static_cast<int>(std::lround(cont[0]));
-			out[1] = static_cast<int>(std::lround(cont[1]));
-			out[2] = static_cast<int>(std::lround(cont[2]));
-			return (out[0] >= 0 && out[0] < dims[0] &&
-					out[1] >= 0 && out[1] < dims[1] &&
-					out[2] >= 0 && out[2] < dims[2]);
-		};
+			{
+				double cont[3] = { 0.0, 0.0, 0.0 };
+				reslicedImage->TransformPhysicalPointToContinuousIndex(w, cont);
+				out[0] = static_cast<int>(std::lround(cont[0]));
+				out[1] = static_cast<int>(std::lround(cont[1]));
+				out[2] = static_cast<int>(std::lround(cont[2]));
+				return (out[0] >= 0 && out[0] < dims[0] &&
+						out[1] >= 0 && out[1] < dims[1] &&
+						out[2] >= 0 && out[2] < dims[2]);
+			};
 
 		std::vector<BoneIsland> islands;
 		islands.reserve(seedsWorld.size());
@@ -1111,7 +1111,7 @@ namespace PrototypeHelpers
 
 			// Skip if already claimed by a previous seed
 			if (labelMap[static_cast<std::size_t>(
-					flatIdx(seedVox[0], seedVox[1], seedVox[2]))] != 0u)
+				flatIdx(seedVox[0], seedVox[1], seedVox[2]))] != 0u)
 			{
 				qWarning("segmentBoneIslandsAlternate: seed %d voxel (%d,%d,%d) "
 						 "already labelled; skipped.",
@@ -1131,7 +1131,7 @@ namespace PrototypeHelpers
 			conn->SetSeedPoints(seedPoints);
 			conn->Update();
 
-			vtkImageData* connOut     = conn->GetOutput();
+			vtkImageData* connOut = conn->GetOutput();
 			vtkDataArray* connScalars = connOut->GetPointData()->GetScalars();
 
 			if (!connScalars)
@@ -1159,25 +1159,25 @@ namespace PrototypeHelpers
 			int bbVoxMax[3] = { seedVox[0], seedVox[1], seedVox[2] };
 
 			for (int k = 0; k < dims[2]; ++k)
-			for (int j = 0; j < dims[1]; ++j)
-			for (int i = 0; i < dims[0]; ++i)
-			{
-				const vtkIdType idx   = flatIdx(i, j, k);
-				const auto      idxSz = static_cast<std::size_t>(idx);
+				for (int j = 0; j < dims[1]; ++j)
+					for (int i = 0; i < dims[0]; ++i)
+					{
+						const vtkIdType idx = flatIdx(i, j, k);
+						const auto      idxSz = static_cast<std::size_t>(idx);
 
-				if (connScalars->GetTuple1(idx) < 0.5) continue;
-				if (labelMap[idxSz] != 0u)             continue;
+						if (connScalars->GetTuple1(idx) < 0.5) continue;
+						if (labelMap[idxSz] != 0u)             continue;
 
-				labelMap[idxSz] = islandLabel;
-				++voxelCount;
+						labelMap[idxSz] = islandLabel;
+						++voxelCount;
 
-				bbVoxMin[0] = std::min(bbVoxMin[0], i);
-				bbVoxMin[1] = std::min(bbVoxMin[1], j);
-				bbVoxMin[2] = std::min(bbVoxMin[2], k);
-				bbVoxMax[0] = std::max(bbVoxMax[0], i);
-				bbVoxMax[1] = std::max(bbVoxMax[1], j);
-				bbVoxMax[2] = std::max(bbVoxMax[2], k);
-			}
+						bbVoxMin[0] = std::min(bbVoxMin[0], i);
+						bbVoxMin[1] = std::min(bbVoxMin[1], j);
+						bbVoxMin[2] = std::min(bbVoxMin[2], k);
+						bbVoxMax[0] = std::max(bbVoxMax[0], i);
+						bbVoxMax[1] = std::max(bbVoxMax[1], j);
+						bbVoxMax[2] = std::max(bbVoxMax[2], k);
+					}
 
 			qDebug("segmentBoneIslandsAlternate: seed %d - island label %u, %lld voxels, "
 				   "BB voxel [%d,%d,%d]-[%d,%d,%d]",
@@ -1198,27 +1198,27 @@ namespace PrototypeHelpers
 			reslicedImage->TransformContinuousIndexToPhysicalPoint(bbIdxMax, bbWorldMax);
 
 			auto packVec3 = [](const double v[3]) -> QJsonArray
-			{
-				return QJsonArray{ v[0], v[1], v[2] };
-			};
+				{
+					return QJsonArray{ v[0], v[1], v[2] };
+				};
 
 			QJsonObject islandJson;
-			islandJson[QStringLiteral("label")]      = static_cast<int>(islandLabel);
+			islandJson[QStringLiteral("label")] = static_cast<int>(islandLabel);
 			islandJson[QStringLiteral("voxelCount")] = static_cast<qint64>(voxelCount);
-			islandJson[QStringLiteral("seedWorld")]  = packVec3(seedW);
-			islandJson[QStringLiteral("bbMin")]      = packVec3(bbWorldMin);
-			islandJson[QStringLiteral("bbMax")]      = packVec3(bbWorldMax);
+			islandJson[QStringLiteral("seedWorld")] = packVec3(seedW);
+			islandJson[QStringLiteral("bbMin")] = packVec3(bbWorldMin);
+			islandJson[QStringLiteral("bbMax")] = packVec3(bbWorldMax);
 
 			BoneIsland island;
-			island.label        = static_cast<int>(islandLabel);
-			island.voxelCount   = voxelCount;
+			island.label = static_cast<int>(islandLabel);
+			island.voxelCount = voxelCount;
 			island.seedWorld[0] = seedW[0];
 			island.seedWorld[1] = seedW[1];
 			island.seedWorld[2] = seedW[2];
 			island.seedVoxel[0] = seedVox[0];
 			island.seedVoxel[1] = seedVox[1];
 			island.seedVoxel[2] = seedVox[2];
-			island.json         = islandJson;
+			island.json = islandJson;
 			islands.push_back(island);
 
 			if (progressCb)
@@ -1301,8 +1301,10 @@ namespace PrototypeHelpers
 				img->SetSpacing(spacing);
 				img->SetOrigin(origin);
 				img->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+				// sizeof(unsigned char) == 1, so byte count == totalVoxels.
+				// This memset is only correct for VTK_UNSIGNED_CHAR scalars.
 				std::memset(img->GetScalarPointer(), 0,
-					static_cast<std::size_t>(totalVoxels));
+					static_cast<std::size_t>(totalVoxels) * sizeof(unsigned char));
 				return img;
 			};
 
@@ -1570,8 +1572,17 @@ namespace PrototypeHelpers
 	}
 
 	// -----------------------------------------------------------------------
-// Bone island segmentation - ITK ImageGridCutFilter (graph cut)
-// -----------------------------------------------------------------------
+    // Bone island segmentation - ITK ImageGridCutFilter (graph cut)
+    // -----------------------------------------------------------------------
+	// For a typical Scanco .isq or DICOM bone CT crop (voxel size ~0.05-0.1 mm):
+    //
+    //   sigma           = 200.0  - 600.0
+    //     Start at 300. Increase if the interior fragments; decrease if it leaks.
+    //
+    //   minIslandVoxels = 100    - 500
+    //     A 1 mm^3 cube at 0.05 mm voxel spacing = 8000 voxels.
+    //     50 is safe for removing noise; raise to 500+ if many small spurious
+    //     fragments survive after tuning sigma.
 
 	std::vector<BoneIsland> segmentBoneIslandsGraphCut(
 		vtkImageData* reslicedImage,
@@ -1729,11 +1740,13 @@ namespace PrototypeHelpers
 		// ------------------------------------------------------------------
 		using GCFilter = GraphCut::FilterType<InputImage, BinaryImage, BinaryImage, BinaryImage>;
 		auto gcFilter = GCFilter::New();
-		gcFilter->SetInputImage(itkInput);
+		gcFilter->SetInputImage(itkInput.GetPointer());
 		gcFilter->SetForegroundImage(fgImage.GetPointer());
 		gcFilter->SetBackgroundImage(bgImage.GetPointer());
 		gcFilter->SetSigma(sigma);
 		gcFilter->SetBoundaryDirectionTypeToNoDirection();
+		gcFilter->SetForegroundPixelValue(1u);   // ADD: explicit FG output value
+		gcFilter->SetBackgroundPixelValue(0u);   // ADD: explicit BG output value
 		gcFilter->Update();
 
 		qDebug("segmentBoneIslandsGraphCut: graph cut done (sigma=%.1f).", sigma);
