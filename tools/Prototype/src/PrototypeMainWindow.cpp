@@ -515,12 +515,25 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	// Remove any PCA overlay from a previous image.
 	clearPcaOverlay();
 
+	// Remove island surface actors, scalar bar, and graph-cut seed actors
+	// that belong to a prior segmentation run.  These must be cleared before
+	// m_labelImage is released so the actor pipeline does not hold a dangling
+	// reference to a VTK image that is about to be replaced.
+	clearIslandActors();
+	clearGraphCutSeedActors();
+
+	// Release derived segmentation data so downstream steps (onLandmark,
+	// onRegions*) always start from a clean slate for the incoming image.
+	m_labelImage = nullptr;
+	m_islands.clear();
+
 	// Cache raw pointer for use by onLandmark() (lifetime owned by m_imageLoader pipeline).
 	m_image = image;
 
 	// Invalidate any previously cached PCA result and landmark data.
 	m_pca.valid = false;
 	m_landmarkResult = QJsonObject{};
+	m_landmarkPoints = {};
 
 	ui->volumeView->setImageData(image);
 	ui->volumeView->updateData();
@@ -547,7 +560,6 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	// because the Clean step is gated on a finite threshold being available.
 	if (!image)
 		return;
-
 
 	// Compute threshold-partitioned statistics once and cache for all consumers.
 	// Pass the threshold only when it is finite; computeScalarThresholdStats
@@ -580,7 +592,6 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	const double window = 2.0 * m_imageStats.value(QStringLiteral("stdDev")).toDouble(1.0);
 
 	ui->volumeView->setColorWindowLevel(window, level);
-
 
 	// ------------------------------------------------------------------
 	// PCA overlay: only when a finite threshold is available
