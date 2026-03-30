@@ -18,6 +18,7 @@
 #include <vtkImageReslice.h>
 #include <vtkMath.h>
 #include <vtkMatrix4x4.h>
+#include <vtkNIFTIImageWriter.h>
 #include <vtkPointData.h>
 #include <vtkRenderer.h>
 #include <vtkRenderWindow.h>
@@ -130,6 +131,14 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	ui->toolBar->addAction(m_actOutline);
 	connect(m_actOutline, &QAction::toggled, this, &PrototypeMainWindow::onOutlineToggled);
 
+	// "Export Reslice" toolbar button: reslice -> landmark -> threshold crop -> NIfTI export.
+	m_actExportReslice = new QAction(tr("Export Reslice"), this);
+	m_actExportReslice->setToolTip(tr(
+		"Reslice, landmark, threshold-crop the volume and export as a NIfTI file"));
+	ui->toolBar->addAction(m_actExportReslice);
+	connect(m_actExportReslice, &QAction::triggered,
+		this, &PrototypeMainWindow::onExportReslice);
+
 	// "Restart" toolbar button: revert to the original image and reset the workflow.
 	// Always enabled - Restart can be applied at any workflow step.
 	m_actRestart = new QAction(tr("Restart"), this);
@@ -208,6 +217,11 @@ void PrototypeMainWindow::setWorkflowStep(WorkflowStep step)
 	m_actRegions->setEnabled(atLandmarked);
 	m_actRegionsAlt->setEnabled(atLandmarked);
 	m_actRegionsGraphCut->setEnabled(atLandmarked);
+
+	// Export Reslice is available whenever a valid image and finite threshold exist.
+	// It runs its own internal reslice + landmark pipeline so it does not require
+	// a specific prior workflow step.
+	m_actExportReslice->setEnabled(m_image != nullptr && std::isfinite(m_threshold));
 
 	// Restart is always enabled - it can be applied at any time.
 	m_actRestart->setEnabled(true);
@@ -687,7 +701,11 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 
 	ui->volumeView->renderer()->ResetCamera();
 	ui->volumeView->renderer()->ResetCameraClippingRange();
-	ui->volumeView->render();
+
+	// Align the camera to the PCA axes immediately after the initial
+	// ResetCamera so the bone is framed with the correct orientation from
+	// the first frame, before Reslice or Landmark have been run.
+	alignCameraToMediumAxis();
 }
 
 
@@ -920,7 +938,9 @@ void PrototypeMainWindow::onLandmark()
 		   qUtf8Printable(QJsonDocument(m_landmarkJson).toJson(QJsonDocument::Indented)));
 
 	if (ren)
+	{
 		ui->volumeView->render();
+	}
 
 	// Landmark completed - advance to Landmarked: Regions and Regions Alt enabled.
 	setWorkflowStep(WorkflowStep::Landmarked);
@@ -1218,7 +1238,7 @@ void PrototypeMainWindow::onRegions()
 }
 
 // ---------------------------------------------------------------------------
-// Morphological pipeline (smooth ? erode ? dilate ? connectivity)
+// Morphological pipeline (smooth -> erode -> dilate -> connectivity)
 // ---------------------------------------------------------------------------
 
 void PrototypeMainWindow::onRegionsAlt()
@@ -1425,8 +1445,8 @@ void PrototypeMainWindow::onRegionsGraphCut()
 //
 // Algorithm:
 //   1. Derive the noise distribution from the cached background statistics:
-//      draw = clamp(backgroundMean + U(-2?, +2?),  volMin, volMax)
-//      where U(-2?, +2?) is a uniform random value in [-2*bgStdDev, +2*bgStdDev].
+//      draw = clamp(backgroundMean + U(-2sig, +2sig),  volMin, volMax)
+//      where U(-2sig, +2sig) is a uniform random value in [-2*bgStdDev, +2*bgStdDev].
 //   2. Deep-copy the resliced volume into C.
 //   3. For every voxel v in the resliced volume:
 //        if v > threshold  AND  v is NOT inside any segmented island label:
@@ -1813,4 +1833,327 @@ void PrototypeMainWindow::onOutlineToggled(bool checked)
 		return;
 
 	ui->volumeView->setOutlineVisible(checked);
+}
+
+// ---------------------------------------------------------------------------
+// Export Reslice slot
+//
+// Pipeline:
+//   1. onReslice()   - PCA-aligned reslice of the current volume.
+//   2. onLandmark()  - Locate surface landmark points on the resliced volume.
+//   3. Threshold     - Identify bone voxels (scalar > m_threshold).
+//   4. Padded BB     - Build a bounding box over bone voxels, inflated by
+//                      dMin = 0.5 * shortest inter-landmark paired distance.
+//   5. vtkExtractVOI - Crop to the padded bounding box.
+//   6. NIfTI export  - Write the cropped volume to an auto-generated path:
+//                        <sidecar_dir>/<crop_basename>_reslice_export.nii
+//
+// Pre-conditions:
+//   - A valid PCA result (m_pca.valid) and cached image (m_image) must exist.
+//   - m_threshold must be finite.
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::onExportReslice()
+{
+	// ------------------------------------------------------------------
+	// Pre-conditions
+	// ------------------------------------------------------------------
+	if (!m_pca.valid || !m_image)
+	{
+		QMessageBox::warning(this, tr("Export Reslice"),
+			tr("Load an image with a valid PCA result before exporting."));
+		return;
+	}
+
+	if (!std::isfinite(m_threshold))
+	{
+		QMessageBox::warning(this, tr("Export Reslice"),
+			tr("A finite threshold is required to perform the export.\n"
+			"Open a project sidecar that contains a threshold value."));
+		return;
+	}
+
+	// ------------------------------------------------------------------
+	// Step 1: Reslice
+	// ------------------------------------------------------------------
+	onReslice();
+
+	if (!m_reslicedImage)
+	{
+		QMessageBox::critical(this, tr("Export Reslice"),
+			tr("Reslice step failed; export aborted."));
+		return;
+	}
+
+	// ------------------------------------------------------------------
+	// Step 2: Landmark
+	// ------------------------------------------------------------------
+	onLandmark();
+
+	// m_landmarkPoints is populated by onLandmark(); validate it.
+	{
+		bool hasPoints = false;
+		for (int ax = 0; ax < 3; ++ax)
+			for (int d = 0; d < 2; ++d)
+				if (m_landmarkPoints[static_cast<std::size_t>(ax)]
+					[static_cast<std::size_t>(d)][0] != 0.0 ||
+					m_landmarkPoints[static_cast<std::size_t>(ax)]
+					[static_cast<std::size_t>(d)][1] != 0.0 ||
+					m_landmarkPoints[static_cast<std::size_t>(ax)]
+					[static_cast<std::size_t>(d)][2] != 0.0)
+				{
+					hasPoints = true;
+					break;
+				}
+
+		if (!hasPoints)
+		{
+			QMessageBox::critical(this, tr("Export Reslice"),
+				tr("Landmark step did not produce valid surface points; export aborted."));
+			return;
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// Step 3: Build a bone-voxel bounding box from the resliced image.
+	//
+	// Iterate every voxel in m_reslicedImage; accumulate world-space
+	// positions of all voxels with scalar > m_threshold.
+	// ------------------------------------------------------------------
+	showProgressStart();
+	showProgressValue(5);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	vtkDataArray* scalars = m_reslicedImage->GetPointData()->GetScalars();
+	if (!scalars)
+	{
+		QMessageBox::critical(this, tr("Export Reslice"),
+			tr("Resliced image has no scalar data; export aborted."));
+		showProgressEnd();
+		return;
+	}
+
+	const double* origin = m_reslicedImage->GetOrigin();
+	const double* spacing = m_reslicedImage->GetSpacing();
+	const int* dims = m_reslicedImage->GetDimensions();
+
+	vtkBoundingBox boneBB;
+	const vtkIdType totalVoxels =
+		static_cast<vtkIdType>(dims[0]) * dims[1] * dims[2];
+
+	for (vtkIdType idx = 0; idx < totalVoxels; ++idx)
+	{
+		if ((idx & 0xFFFF) == 0)
+		{
+			const int pct = static_cast<int>(
+				std::clamp(static_cast<double>(idx) /
+				static_cast<double>(totalVoxels), 0.0, 1.0) * 40.0) + 5;
+			showProgressValue(pct);
+			m_progressBar->update();
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+		}
+
+		if (scalars->GetTuple1(idx) <= m_threshold)
+			continue;
+
+		// Flat index -> (i, j, k)
+		const vtkIdType i = idx % dims[0];
+		const vtkIdType j = (idx / dims[0]) % dims[1];
+		const vtkIdType k = idx / (static_cast<vtkIdType>(dims[0]) * dims[1]);
+
+		const double wx = origin[0] + i * spacing[0];
+		const double wy = origin[1] + j * spacing[1];
+		const double wz = origin[2] + k * spacing[2];
+
+		boneBB.AddPoint(wx, wy, wz);
+	}
+
+	if (!boneBB.IsValid())
+	{
+		QMessageBox::critical(this, tr("Export Reslice"),
+			tr("No above-threshold (bone) voxels found in the resliced volume; "
+			"export aborted."));
+		showProgressEnd();
+		return;
+	}
+
+	// ------------------------------------------------------------------
+	// Step 4: Compute dMin = 0.5 * shortest paired landmark distance,
+	//         then inflate the bounding box uniformly.
+	// ------------------------------------------------------------------
+	double minPairedDist = std::numeric_limits<double>::max();
+	for (int ax = 0; ax < 3; ++ax)
+	{
+		const double* lPos = m_landmarkPoints[static_cast<std::size_t>(ax)][0].data();
+		const double* lNeg = m_landmarkPoints[static_cast<std::size_t>(ax)][1].data();
+		const double dx = lPos[0] - lNeg[0];
+		const double dy = lPos[1] - lNeg[1];
+		const double dz = lPos[2] - lNeg[2];
+		minPairedDist = std::min(minPairedDist, std::sqrt(dx * dx + dy * dy + dz * dz));
+	}
+
+	const double dMin = 0.5 * minPairedDist;
+	boneBB.Inflate(dMin);
+
+	qDebug("onExportReslice: bone BB inflated by dMin=%.4f", dMin);
+
+	// ------------------------------------------------------------------
+	// Step 5: Map world BB to voxel extent and run vtkExtractVOI
+	// ------------------------------------------------------------------
+	showProgressValue(50);
+	m_progressBar->update();
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	double worldMin[3], worldMax[3];
+	boneBB.GetMinPoint(worldMin);
+	boneBB.GetMaxPoint(worldMax);
+
+	double voxelIdxMin[3], voxelIdxMax[3];
+	m_reslicedImage->TransformPhysicalPointToContinuousIndex(worldMin, voxelIdxMin);
+	m_reslicedImage->TransformPhysicalPointToContinuousIndex(worldMax, voxelIdxMax);
+
+	int extent[6];
+	m_reslicedImage->GetExtent(extent);
+
+	const int voiXMin = std::clamp(static_cast<int>(std::lround(voxelIdxMin[0])), extent[0], extent[1]);
+	const int voiXMax = std::clamp(static_cast<int>(std::lround(voxelIdxMax[0])), extent[0], extent[1]);
+	const int voiYMin = std::clamp(static_cast<int>(std::lround(voxelIdxMin[1])), extent[2], extent[3]);
+	const int voiYMax = std::clamp(static_cast<int>(std::lround(voxelIdxMax[1])), extent[2], extent[3]);
+	const int voiZMin = std::clamp(static_cast<int>(std::lround(voxelIdxMin[2])), extent[4], extent[5]);
+	const int voiZMax = std::clamp(static_cast<int>(std::lround(voxelIdxMax[2])), extent[4], extent[5]);
+
+	qDebug("onExportReslice: VOI extent  x=[%d,%d]  y=[%d,%d]  z=[%d,%d]",
+		voiXMin, voiXMax, voiYMin, voiYMax, voiZMin, voiZMax);
+
+	auto extractVOI = vtkSmartPointer<vtkExtractVOI>::New();
+	extractVOI->SetInputData(m_reslicedImage);
+	extractVOI->SetVOI(voiXMin, voiXMax, voiYMin, voiYMax, voiZMin, voiZMax);
+	extractVOI->SetSampleRate(1, 1, 1);
+	extractVOI->Update();
+
+	vtkImageData* cropped = extractVOI->GetOutput();
+	if (!cropped || cropped->GetNumberOfPoints() == 0)
+	{
+		QMessageBox::critical(this, tr("Export Reslice"),
+			tr("VOI crop produced an empty volume; export aborted."));
+		showProgressEnd();
+		return;
+	}
+
+	const int* croppedDims = cropped->GetDimensions();
+	qDebug("onExportReslice: cropped dims: %d x %d x %d",
+		croppedDims[0], croppedDims[1], croppedDims[2]);
+
+	// ------------------------------------------------------------------
+	// Step 6: Auto-generate output path and write NIfTI
+	//
+	// Pattern: <sidecar_dir>/<crop_basename>_reslice_export.nii
+	// Fallback (no sidecar): <temp_dir>/reslice_export.nii
+	// ------------------------------------------------------------------
+	showProgressValue(80);
+	m_progressBar->update();
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	QString outputPath;
+	if (!m_sidecarPath.isEmpty() && !m_cropPath.isEmpty())
+	{
+		const QString cropBase = QFileInfo(m_cropPath).completeBaseName();
+		const QString sidecarDir = QFileInfo(m_sidecarPath).absolutePath();
+		outputPath = QDir(sidecarDir).filePath(cropBase + QStringLiteral("_reslice_export.nii"));
+	}
+	else
+	{
+		outputPath = QDir::temp().filePath(QStringLiteral("reslice_export.nii"));
+	}
+
+	auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
+	writer->SetInputData(cropped);
+	writer->SetFileName(outputPath.toUtf8().constData());
+	writer->Write();
+
+	showProgressEnd();
+
+	qDebug("onExportReslice: wrote NIfTI to '%s'", qUtf8Printable(outputPath));
+
+	statusBar()->showMessage(
+		tr("Export Reslice: saved to %1").arg(outputPath), 6000);
+
+	QMessageBox::information(this, tr("Export Reslice"),
+		tr("Resliced and cropped volume saved to:\n%1").arg(outputPath));
+}
+
+// ---------------------------------------------------------------------------
+// alignCameraToMediumAxis
+//
+// Realigns the VolumeView camera so that:
+//   - The view-up vector points along the medium PCA axis (axis index 1,
+//     positive direction), derived from m_pca.axes[1].
+//   - The view direction points along the small PCA axis positive-to-negative
+//     direction (axis index 2, negated), derived from m_pca.axes[2].
+//   - The focal point is set to the PCA centroid.
+//   - The camera-to-focal distance is preserved from the current camera.
+//
+// Uses m_pca directly so it can be called as soon as setImage() has finished
+// computing the PCA, before onReslice() or onLandmark() have run.
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::alignCameraToMediumAxis()
+{
+	if (!m_pca.valid || !ui || !ui->volumeView)
+		return;
+
+	vtkRenderer* ren = ui->volumeView->renderer();
+	if (!ren)
+		return;
+
+	vtkCamera* cam = ren->GetActiveCamera();
+	if (!cam)
+		return;
+
+	// ------------------------------------------------------------------
+	// View-up: medium PCA axis positive direction (axis index 1).
+	// m_pca.axes[1] is already a unit vector; use it directly.
+	// ------------------------------------------------------------------
+	const double* viewUp = m_pca.axes[1];
+
+	// ------------------------------------------------------------------
+	// View direction: small PCA axis positive -> negative (axis index 2
+	// negated).  The camera looks along -axes[2] so the small axis points
+	// "into" the screen.
+	// ------------------------------------------------------------------
+	const double viewDir[3] = {
+		-m_pca.axes[2][0],
+		-m_pca.axes[2][1],
+		-m_pca.axes[2][2]
+	};
+
+	// ------------------------------------------------------------------
+	// Focal point: PCA centroid.
+	// Distance: preserved from the current camera so the zoom level is
+	// unchanged across successive calls (e.g. Reslice -> Landmark).
+	// ------------------------------------------------------------------
+	const double* c = m_pca.centroid;
+	const double  dist = cam->GetDistance();
+
+	// New camera position: step back from the centroid along -viewDir.
+	const double camPos[3] = {
+		c[0] - dist * viewDir[0],
+		c[1] - dist * viewDir[1],
+		c[2] - dist * viewDir[2]
+	};
+
+	cam->SetFocalPoint(c[0], c[1], c[2]);
+	cam->SetPosition(camPos[0], camPos[1], camPos[2]);
+	cam->SetViewUp(viewUp[0], viewUp[1], viewUp[2]);
+
+	ren->ResetCameraClippingRange();
+	ui->volumeView->render();
+
+	qDebug("alignCameraToMediumAxis: "
+		"viewDir=(%.4f,%.4f,%.4f)  viewUp=(%.4f,%.4f,%.4f)  "
+		"focalPt=(%.4f,%.4f,%.4f)  dist=%.4f",
+		viewDir[0], viewDir[1], viewDir[2],
+		viewUp[0], viewUp[1], viewUp[2],
+		c[0], c[1], c[2],
+		dist);
 }

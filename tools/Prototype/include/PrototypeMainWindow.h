@@ -91,6 +91,9 @@ private slots:
 	// Open a json sidecar file and load the cropped image.
 	void onFileOpen();
 
+	// in private slots:
+	void onExportReslice();
+
 private:
 	// -----------------------------------------------------------------------
 	// Workflow step state machine
@@ -137,6 +140,9 @@ private:
 
 	// Checkable toolbar action for the bounding-box outline toggle.
 	QAction* m_actOutline = nullptr;
+
+	// in private members (alongside m_actOutline etc.):
+	QAction* m_actExportReslice = nullptr;
 
 	// Workflow step toolbar actions (owned by the toolbar / QObject parent chain).
 	QAction* m_actFile = nullptr;
@@ -228,4 +234,6 @@ private:
 		vtkSmartPointer<vtkImageData>                    labelImage);
 
 	std::array<vtkSmartPointer<vtkBillboardTextActor3D>, 6> m_landmarkLabelActors;
+
+	void alignCameraToMediumAxis();
 };
