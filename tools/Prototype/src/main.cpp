@@ -36,7 +36,6 @@ int main(int argc, char* argv[])
 	Q_INIT_RESOURCE(resources);
 
 	QApplication::setStyle(QStyleFactory::create("Fusion"));
-
 	QFont menuFont = QApplication::font("QMenu");
 	if (menuFont.family().isEmpty())
 		menuFont = QFont(QStringLiteral("Segoe UI"), 9);
