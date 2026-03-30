@@ -1,5 +1,6 @@
 ﻿#include "ViewerMainWindow.h"
 
+#include "CollapsibleGroupBox.h"
 #include "ImageInfoWidget.h"
 #include "ImageLoader.h"
 #include "LightboxWidget.h"
@@ -79,17 +80,23 @@ void ViewerMainWindow::buildUi()
 	scrollLayout->setSpacing(6);
 
 	// Image info section
-	auto* infoLabel = new QLabel(QStringLiteral("Image Info"), scrollContent);
 	m_imageInfo = new ImageInfoWidget(scrollContent);
+	auto* grpImageInfo = new CollapsibleGroupBox(tr("Info"), scrollContent);
+	auto* imageInfoLayout = new QVBoxLayout;
+	imageInfoLayout->setContentsMargins(0, 0, 0, 0);
+	imageInfoLayout->addWidget(m_imageInfo);
+	grpImageInfo->setLayout(imageInfoLayout);
 
 	// Window / level section
-	auto* wlLabel = new QLabel(QStringLiteral("Window / Level"), scrollContent);
 	m_windowLevel = new WindowLevelWidget(scrollContent);
+	auto* grpWindowLevel = new CollapsibleGroupBox(tr("Window/Level"), scrollContent);
+	auto* windowLevelLayout = new QVBoxLayout;
+	windowLevelLayout->setContentsMargins(0, 0, 0, 0);
+	windowLevelLayout->addWidget(m_windowLevel);
+	grpWindowLevel->setLayout(windowLevelLayout);
 
-	scrollLayout->addWidget(infoLabel);
-	scrollLayout->addWidget(m_imageInfo);
-	scrollLayout->addWidget(wlLabel);
-	scrollLayout->addWidget(m_windowLevel);
+	scrollLayout->addWidget(grpImageInfo);
+	scrollLayout->addWidget(grpWindowLevel);
 	scrollLayout->addStretch();
 
 	auto* scrollArea = new QScrollArea;
