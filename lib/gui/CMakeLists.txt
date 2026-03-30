@@ -27,6 +27,7 @@ target_sources(CTAXGui
     src/WindowLevelBridge.cpp
 #    src/WindowLevelBus.cpp
     src/WindowLevelWidget.cpp
+	src/VtkQtOutputWindow.cpp
     resources/CropWidget.ui
     resources/ImageInfoWidget.ui
     resources/LandmarkWidget.ui
@@ -63,6 +64,7 @@ target_sources(CTAXGui
     include/WindowLevelBridge.h
 #    include/WindowLevelBus.h
     include/WindowLevelWidget.h
+	include/VtkQtOutputWindow.h
 )
 
 target_include_directories(CTAXGui
