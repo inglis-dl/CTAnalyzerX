@@ -159,7 +159,6 @@ VolumeView::~VolumeView()
 
 void VolumeView::createMenuAndActions()
 {
-	// Populate the menu with orientations + command items handled via MenuButton::itemSelected
 	setSelectionList({
 		QStringLiteral("Volume"),
 		QStringLiteral("Slice Planes"),
@@ -171,32 +170,68 @@ void VolumeView::createMenuAndActions()
 		QStringLiteral("Reset Camera")
 	});
 
+	// ------------------------------------------------------------------
+	// Insert the "Outline" checkable action immediately before the
+	// separator that precedes the orientation items, producing:
+	//   Volume | Slice Planes | Show/Hide | Outline | <sep> | XY | YZ | XZ | Reset Camera
+	// ------------------------------------------------------------------
+	if (auto* mb = menuButton())
+	{
+		QMenu* menu = mb->menu();
+		if (menu)
+		{
+			// Find the first separator inserted by setMenuItems() for the
+			// "--" token, sitting between "Show/Hide" and "XY".
+			QAction* insertBefore = nullptr;
+			const QList<QAction*> actions = menu->actions();
+			for (QAction* act : actions)
+			{
+				if (act->isSeparator())
+				{
+					insertBefore = act;
+					break;
+				}
+			}
+
+			m_actOutline = new QAction(tr("Outline"), this);
+			m_actOutline->setCheckable(true);
+			m_actOutline->setChecked(m_outlineVisible);
+			m_actOutline->setEnabled(false);  // enabled once image data is set
+
+			// Insert directly before the existing separator (no leading separator).
+			// Fall back to appending when no separator was found (defensive).
+			if (insertBefore)
+				menu->insertAction(insertBefore, m_actOutline);
+			else
+				menu->addAction(m_actOutline);
+
+			connect(m_actOutline, &QAction::toggled,
+				this, &VolumeView::setOutlineVisible);
+		}
+	}
+
 	// Drive behavior entirely from MenuButton::itemSelected
-	if (auto* mb = menuButton()) {
-		connect(mb, &MenuButton::itemSelected, this, [this](const QString& item) {
-			// Orientation selections
-			if (item == QLatin1String("XY") || item == QLatin1String("YZ") || item == QLatin1String("XZ")) {
+	if (auto* mb = menuButton())
+	{
+		connect(mb, &MenuButton::itemSelected, this, [this](const QString& item)
+		{
+			if (item == QLatin1String("XY") || item == QLatin1String("YZ") || item == QLatin1String("XZ"))
+			{
 				const ViewOrientation orient = labelToOrientation(item);
 				setViewOrientation(orient);
 				setTitle(m_orthoPlanesVisible ? QStringLiteral("Slice Planes") : QStringLiteral("Volume"));
 				return;
 			}
 
-			if (item == QLatin1String("Volume")) {
-				// Toggle to 3D volume rendering
+			if (item == QLatin1String("Volume"))
 				setOrthoPlanesVisible(false);
-			}
-			else if (item == QLatin1String("Slice Planes")) {
-				// Toggle to slice planes view
+			else if (item == QLatin1String("Slice Planes"))
 				setOrthoPlanesVisible(true);
-			}
-			else if (item == QLatin1String("Show/Hide")) {
+			else if (item == QLatin1String("Show/Hide"))
 				hideAllContent();
-			}
-			else if (item == QLatin1String("Reset Camera")) {
+			else if (item == QLatin1String("Reset Camera"))
 				resetCamera();
-			}
-			// Restore the title to reflect current state
+
 			if (m_contentHidden)
 				setTitle(QStringLiteral("Hidden"));
 			else
@@ -285,8 +320,6 @@ void VolumeView::updateData()
 
 	if (!m_imageInitialized) {
 
-
-
 		if (m_orthoPlanes) {
 			// Ensure the ortho-planes source is wired to the shared shifted/scaled image
 			m_orthoPlanes->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
@@ -365,7 +398,28 @@ void VolumeView::updateData()
 	emit imageExtentsChanged(m_extent[0], m_extent[1], m_extent[2], m_extent[3], m_extent[4], m_extent[5]);
 
 	setOrthoPlanesVisible(m_orthoPlanesVisible);
+
+	// Sync the Outline menu item now that a valid image is present.
+	// The outline actor itself keeps whatever visibility it had before
+	// (m_outlineVisible is not reset here), so the user's toggle persists
+	// across image updates.
+	m_outlineActor->SetVisibility(m_outlineVisible);
+	updateOutlineMenuState();
+
 	render();
+}
+
+void VolumeView::updateOutlineMenuState()
+{
+	if (!m_actOutline)
+		return;
+
+	const bool hasImage = (m_imageData != nullptr);
+	m_actOutline->setEnabled(hasImage);
+
+	// Keep the check mark in sync with the actor without re-triggering toggled().
+	const QSignalBlocker blocker(m_actOutline);
+	m_actOutline->setChecked(m_outlineVisible);
 }
 
 void VolumeView::setColorWindowLevel(double window, double level)
@@ -1251,6 +1305,7 @@ void VolumeView::setOutlineVisible(bool visible)
 {
 	m_outlineActor->SetVisibility(visible);
 	m_outlineVisible = visible;
+	updateOutlineMenuState();
 	render();
 }
 

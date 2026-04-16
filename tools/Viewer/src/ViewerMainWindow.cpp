@@ -190,11 +190,6 @@ void ViewerMainWindow::wireConnections()
 	// Register the WindowLevelWidget with the Lightbox so it mediates all
 	// propagation (controller <-> slice views <-> volume view).
 	m_lightbox->setWindowLevelWidget(m_windowLevel);
-
-	// ScalarOpacityFunctionWidget: wire it to the VolumeView scalar opacity
-	// once an image is actually loaded (done inside openFile after setInputConnection).
-	// The initial wiring is handled by setWindowLevelWidget above for the WL part;
-	// the scalar opacity part is wired explicitly in openFile().
 }
 
 // ── Slots ────────────────────────────────────────────────────────────────────

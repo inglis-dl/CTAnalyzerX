@@ -128,6 +128,10 @@ private:
 	vtkSmartPointer<vtkActor>            m_outlineActor;
 	bool m_outlineVisible = false;
 	QColor m_outlineColor = QColor(255, 0, 0);
+	QAction* m_actOutline = nullptr;
+
+	// Syncs m_actOutline checked/enabled state to current image and visibility state.
+	void updateOutlineMenuState();
 
 	void updateMappedOpacityFromActual();
 
