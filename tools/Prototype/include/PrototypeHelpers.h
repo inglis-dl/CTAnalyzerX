@@ -112,7 +112,7 @@ namespace PrototypeHelpers
 	// identical to segmentBoneIslands.
 	// `smoothStdDev`   : Gaussian standard deviation in voxel units (default 1.0).
 	// `morphKernelSize`: half-width of the erode/dilate structuring element
-	//                    (default 1 -> 3x3x3 kernel).
+	//                    (default 1  3x3x3 kernel).
 	std::vector<BoneIsland> segmentBoneIslandsAlternate(
 		vtkImageData*                            reslicedImage,
 		double                                   threshold,
@@ -206,4 +206,17 @@ namespace PrototypeHelpers
 		double        r, double g, double b,
 		double        pointSize = 3.0);
 
+	// -----------------------------------------------------------------------
+	// Region statistics helpers  (used by onRegions iterative loop)
+	// -----------------------------------------------------------------------
+
+	// Mean and standard deviation of reslicedImage intensities at all voxels
+	// where labelImage scalar > 0.  Returns {0, 0} when no labelled voxels exist.
+	struct RegionStats { double mean = 0.0; double stdDev = 0.0; };
+
+	RegionStats computeRegionStats(vtkImageData* reslicedImage,
+	                               vtkImageData* labelImage);
+
+	// Physical volume (mm^3) of all voxels in labelImage where scalar > 0.
+	double computeRegionVolumeMm3(vtkImageData* labelImage);
 } // namespace PrototypeHelpers

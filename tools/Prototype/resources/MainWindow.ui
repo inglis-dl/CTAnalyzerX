@@ -17,9 +17,9 @@
    <enum>Qt::ToolButtonTextOnly</enum>
   </property>
   <widget class="QWidget" name="centralWidget">
-   <layout class="QVBoxLayout" name="verticalLayout">
+   <layout class="QHBoxLayout" name="horizontalLayout">
     <property name="spacing">
-     <number>0</number>
+     <number>2</number>
     </property>
     <property name="leftMargin">
      <number>0</number>
@@ -34,7 +34,24 @@
      <number>0</number>
     </property>
     <item>
-     <widget class="VolumeView" name="volumeView" native="true"/>
+     <widget class="SliceView" name="sliceView" native="true">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+        <horstretch>1</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <widget class="VolumeView" name="volumeView" native="true">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+        <horstretch>1</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
+      </property>
+     </widget>
     </item>
    </layout>
   </widget>
@@ -56,6 +73,11 @@
    <class>VolumeView</class>
    <extends>QWidget</extends>
    <header>VolumeView.h</header>
+  </customwidget>
+  <customwidget>
+   <class>SliceView</class>
+   <extends>QWidget</extends>
+   <header>SliceView.h</header>
   </customwidget>
  </customwidgets>
  <resources/>

@@ -1,8 +1,9 @@
-#include "PrototypeMainWindow.h"
+﻿#include "PrototypeMainWindow.h"
 #include "PrototypeHelpers.h"
 #include "ui_MainWindow.h"
 
 #include "VolumeView.h"
+#include "SliceView.h"
 #include "ImageLoader.h"
 #include "JsonUtils.h"
 
@@ -27,19 +28,41 @@
 #include <vtkTextProperty.h>
 
 #include <QAction>
+#include <QButtonGroup>
+#include <QChart>
+#include <QChartView>
+#include <QCheckBox>
 #include <QCloseEvent>
+#include <QCoreApplication>
 #include <QDebug>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QHeaderView>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
+#include <QLineSeries>
 #include <QMessageBox>
+#include <QPushButton>
+#include <QScatterSeries>
+#include <QSet>
+#include <QSpinBox>
+#include <QTableWidget>
 #include <QTimer>
 #include <QThread>
+#include <QValueAxis>
+#include <QVBoxLayout>
 
+#include <functional>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -47,6 +70,389 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+QT_CHARTS_USE_NAMESPACE   // expands to: using namespace QtCharts; (Qt5 only)
+
+namespace {
+
+	// ---------------------------------------------------------------------------
+	// IterationProgressDialog
+	//
+	// Non-modal dialog combining setup controls and iteration history.
+	//
+	// LEFT  : baseline stats, iterations spin, multiplier spin, live step label,
+	//         Run, Reset, and Apply Selection buttons.
+	// RIGHT : iteration history table (top) and threshold-vs-volume chart (bottom).
+	//
+	// The iteration history table accumulates one row per completed iteration.
+	// Each row shows the iteration index, threshold, total region volume ×10³,
+	// and a mutually exclusive checkbox so the user can nominate one iteration
+	// for final application.
+	//
+	// Apply Selection re-runs segmentation at the chosen threshold and updates
+	// the 3D view, letting the user lock in whichever iteration gave the best
+	// result without re-entering the setup parameters.
+	//
+	// Callbacks supplied by the caller:
+	//   setIterateCallback — given a threshold, segments and updates the 3D view.
+	//   setResetCallback   — restores the 3D view to the baseline segmentation.
+	// ---------------------------------------------------------------------------
+	class IterationProgressDialog : public QDialog
+	{
+	public:
+		using IterateFunc = std::function<
+			std::vector<PrototypeHelpers::BoneIsland>(double threshold)
+		>;
+		using ResetFunc = std::function<void()>;
+
+		explicit IterationProgressDialog(
+			double baselineThreshold,
+			double regionMean,
+			double regionStdDev,
+			double regionVolumeMm3,
+			const double voxelSpacing[3],
+			QWidget* parent = nullptr)
+			: QDialog(parent)
+			, m_baseThreshold(baselineThreshold)
+			, m_baseStdDev(regionStdDev)
+			, m_voxelVolMm3(voxelSpacing[0] * voxelSpacing[1] * voxelSpacing[2])
+		{
+			setWindowTitle(tr("Region Grow - Iteration"));
+			setMinimumSize(1100, 640);
+
+			// ── Left panel: setup ────────────────────────────────────────────
+			auto* setupForm = new QFormLayout;
+			setupForm->addRow(tr("Baseline threshold:"),
+				new QLabel(QString::number(baselineThreshold, 'f', 2), this));
+			setupForm->addRow(tr("Region mean:"),
+				new QLabel(QString::number(regionMean, 'f', 2), this));
+			setupForm->addRow(tr("Region std deviation:"),
+				new QLabel(QString::number(regionStdDev, 'f', 2), this));
+			setupForm->addRow(tr("Region volume (mm\u00B3):"),
+				new QLabel(QString::number(regionVolumeMm3, 'f', 1), this));
+
+			m_spinIterations = new QSpinBox(this);
+			m_spinIterations->setRange(1, 100);
+			m_spinIterations->setValue(10);
+			setupForm->addRow(tr("Iterations:"), m_spinIterations);
+
+			m_spinMultiplier = new QDoubleSpinBox(this);
+			m_spinMultiplier->setRange(0.01, 10.0);
+			m_spinMultiplier->setSingleStep(0.1);
+			m_spinMultiplier->setDecimals(3);
+			m_spinMultiplier->setValue(0.1);
+			setupForm->addRow(tr("Std-dev multiplier:"), m_spinMultiplier);
+
+			// Read-only label: multiplier × stdDev updated live as the spin changes.
+			m_labelStepSize = new QLabel(this);
+			m_labelStepSize->setTextInteractionFlags(Qt::NoTextInteraction);
+			updateStepSizeLabel(m_spinMultiplier->value());
+			setupForm->addRow(tr("Threshold step:"), m_labelStepSize);
+
+			connect(m_spinMultiplier,
+				QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+				this,
+				[this](double v) { updateStepSizeLabel(v); });
+
+			auto* setupBox = new QGroupBox(tr("Setup"), this);
+			setupBox->setLayout(setupForm);
+
+			m_btnRun = new QPushButton(tr("Run"), this);
+			connect(m_btnRun, &QPushButton::clicked, this,
+				[this] { runIterations(); });
+
+			m_btnReset = new QPushButton(tr("Reset"), this);
+			connect(m_btnReset, &QPushButton::clicked, this,
+				[this] { resetState(); });
+
+			// Apply Selection is enabled only when a row checkbox is checked.
+			m_btnApply = new QPushButton(tr("Apply Selection"), this);
+			m_btnApply->setEnabled(false);
+			connect(m_btnApply, &QPushButton::clicked, this,
+				[this] { applySelection(); });
+
+			auto* leftLayout = new QVBoxLayout;
+			leftLayout->addWidget(setupBox);
+			leftLayout->addSpacing(8);
+			leftLayout->addWidget(m_btnRun);
+			leftLayout->addWidget(m_btnReset);
+			leftLayout->addWidget(m_btnApply);
+			leftLayout->addStretch();
+
+			// ── Right panel: iteration history table (top) ───────────────────
+			// One row per completed iteration; the Select column is mutually
+			// exclusive so exactly one iteration can be nominated for Apply.
+			m_iterationTable = new QTableWidget(0, 5, this);
+			m_iterationTable->setHorizontalHeaderLabels(
+				{ tr("#"), tr("Threshold"), tr("Volume (\u00D710\u00B3 mm\u00B3)"), tr("Islands"), tr("Select") });
+			m_iterationTable->setSelectionMode(QAbstractItemView::NoSelection);
+			m_iterationTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+			m_iterationTable->verticalHeader()->setVisible(false);
+			m_iterationTable->horizontalHeader()->setSectionResizeMode(
+				2, QHeaderView::Stretch);
+			m_iterationTable->horizontalHeader()->setStretchLastSection(false);
+
+			// QButtonGroup enforces mutual exclusivity across all row checkboxes.
+			m_selectionGroup = new QButtonGroup(this);
+			m_selectionGroup->setExclusive(true);
+
+			connect(m_selectionGroup,
+				QOverload<int>::of(&QButtonGroup::buttonClicked),
+				this,
+				[this](int) {
+					m_btnApply->setEnabled(
+						m_selectionGroup->checkedButton() != nullptr);
+				});
+
+			auto* historyBox = new QGroupBox(tr("Iteration History"), this);
+			auto* historyBoxLayout = new QVBoxLayout(historyBox);
+			historyBoxLayout->addWidget(m_iterationTable);
+
+			// ── Right panel: chart (bottom) ───────────────────────────────────
+			m_series = new QLineSeries(this);
+			m_series->setName(tr("Volume"));
+
+			m_currentPoint = new QScatterSeries(this);
+			m_currentPoint->setName(tr("Current"));
+			m_currentPoint->setMarkerSize(10.0);
+			m_currentPoint->setColor(Qt::red);
+
+			m_chart = new QChart;
+			m_chart->addSeries(m_series);
+			m_chart->addSeries(m_currentPoint);
+			m_chart->setTitle(tr("Threshold vs. Region Volume"));
+			m_chart->legend()->setVisible(true);
+			m_chart->createDefaultAxes();
+			rebuildAxes();
+
+			auto* chartView = new QChartView(m_chart, this);
+			chartView->setRenderHint(QPainter::Antialiasing);
+
+			// Right side: table and chart stacked vertically
+			auto* rightLayout = new QVBoxLayout;
+			rightLayout->addWidget(historyBox, 1);
+			rightLayout->addWidget(chartView, 2);
+
+			// ── Root layout: left | right ─────────────────────────────────────
+			auto* root = new QHBoxLayout(this);
+			root->addLayout(leftLayout);
+			root->addLayout(rightLayout, 1);
+		}
+
+		void setIterateCallback(IterateFunc fn) { m_iterateFunc = std::move(fn); }
+		void setResetCallback(ResetFunc fn) { m_resetFunc = std::move(fn); }
+
+	private:
+		void updateStepSizeLabel(double multiplier)
+		{
+			m_labelStepSize->setText(
+				QString::number(multiplier * m_baseStdDev, 'f', 3));
+		}
+
+		void runIterations()
+		{
+			if (!m_iterateFunc)
+				return;
+
+			m_btnRun->setEnabled(false);
+			m_btnReset->setEnabled(false);
+			m_btnApply->setEnabled(false);
+			m_spinIterations->setEnabled(false);
+			m_spinMultiplier->setEnabled(false);
+
+			const int    maxIter = m_spinIterations->value();
+			const double multiplier = m_spinMultiplier->value();
+
+			for (int iter = 1; iter <= maxIter; ++iter)
+			{
+				const double threshold =
+					m_baseThreshold
+					+ static_cast<double>(iter) * multiplier * m_baseStdDev;
+
+				const auto islands = m_iterateFunc(threshold);
+
+				if (islands.empty())
+				{
+					qDebug("IterationProgressDialog: iter=%d — no islands; stopping.", iter);
+					break;
+				}
+
+				// Total segmented volume from island voxel counts.
+				double totalVoxels = 0.0;
+				for (const auto& isl : islands)
+					totalVoxels += static_cast<double>(isl.voxelCount);
+				const double volumeMm3 = totalVoxels * m_voxelVolMm3;
+				const double volumeMm3x1k = volumeMm3 * 1000.0;
+
+				// Chart plots the same (threshold, volume×10³) pair shown in the table.
+				m_series->append(threshold, volumeMm3x1k);
+				m_currentPoint->clear();
+				m_currentPoint->append(threshold, volumeMm3x1k);
+
+				// Qt5: remove-and-re-add forces axis range recalculation.
+				// Use removeSeries() (not removeAllSeries()) — the latter deletes the series!
+				m_chart->removeSeries(m_series);
+				m_chart->removeSeries(m_currentPoint);
+				m_chart->addSeries(m_series);
+				m_chart->addSeries(m_currentPoint);
+				m_chart->createDefaultAxes();
+				rebuildAxes();
+
+				// Append one row to the iteration history table.
+				appendIterationRow(iter, threshold, volumeMm3x1k,
+					static_cast<int>(islands.size()));
+
+				QCoreApplication::processEvents();
+			}
+
+			m_btnRun->setEnabled(true);
+			m_btnReset->setEnabled(true);
+			m_btnApply->setEnabled(
+				m_selectionGroup->checkedButton() != nullptr);
+			m_spinIterations->setEnabled(true);
+			m_spinMultiplier->setEnabled(true);
+		}
+
+		// Appends one row to the iteration history table and registers its
+		// checkbox with the exclusive selection group.
+		// volumeMm3x1k is already scaled ×10³ to match the chart and table header.
+		void appendIterationRow(int iter, double threshold, double volumeMm3x1k,
+			int islandCount)
+		{
+			const int row = m_iterationTable->rowCount();
+			m_iterationTable->insertRow(row);
+
+			// Store the threshold so Apply Selection can retrieve it by row id.
+			m_iterationThresholds.push_back(threshold);
+
+			// Volume ×10³ to 3 significant figures — matches the chart Y axis exactly.
+			const QString volStr = QString::number(volumeMm3x1k, 'g', 3);
+
+			auto makeItem = [](const QString& text) -> QTableWidgetItem*
+				{
+					auto* item = new QTableWidgetItem(text);
+					item->setTextAlignment(Qt::AlignCenter);
+					return item;
+				};
+
+			m_iterationTable->setItem(row, 0, makeItem(QString::number(iter)));
+			m_iterationTable->setItem(row, 1,
+				makeItem(QString::number(threshold, 'f', 2)));
+			m_iterationTable->setItem(row, 2, makeItem(volStr));
+			m_iterationTable->setItem(row, 3,
+				makeItem(QString::number(islandCount)));
+
+			// Centred checkbox in col 4 registered with the exclusive group.
+			auto* chkWidget = new QWidget(m_iterationTable);
+			auto* chk = new QCheckBox(chkWidget);
+
+			// Use row as the button id so Apply Selection can map id → threshold.
+			m_selectionGroup->addButton(chk, row);
+
+			auto* chkLayout = new QHBoxLayout(chkWidget);
+			chkLayout->addWidget(chk);
+			chkLayout->setAlignment(Qt::AlignCenter);
+			chkLayout->setContentsMargins(0, 0, 0, 0);
+
+			m_iterationTable->setCellWidget(row, 4, chkWidget);
+			m_iterationTable->scrollToBottom();
+		}
+
+		// Clears all accumulated iteration data and restores the baseline view.
+		void resetState()
+		{
+			// Remove all buttons from the exclusive group before clearing the table
+			// so QButtonGroup does not hold dangling pointers to deleted widgets.
+			const auto buttons = m_selectionGroup->buttons();
+			for (auto* btn : buttons)
+				m_selectionGroup->removeButton(btn);
+
+			m_iterationThresholds.clear();
+			m_iterationTable->setRowCount(0);
+			m_btnApply->setEnabled(false);
+
+			// Clear chart data and reset axis ranges.
+			m_series->clear();
+			m_currentPoint->clear();
+			m_chart->removeSeries(m_series);
+			m_chart->removeSeries(m_currentPoint);
+			m_chart->addSeries(m_series);
+			m_chart->addSeries(m_currentPoint);
+			m_chart->createDefaultAxes();
+			rebuildAxes();
+
+			if (m_resetFunc)
+				m_resetFunc();
+
+			qDebug("IterationProgressDialog: state reset to baseline.");
+		}
+
+		// Re-runs segmentation at the selected iteration's threshold and
+		// updates the 3D view through the iterate callback.
+		void applySelection()
+		{
+			if (!m_iterateFunc)
+				return;
+
+			QAbstractButton* checked = m_selectionGroup->checkedButton();
+			if (!checked)
+				return;
+
+			const int id = m_selectionGroup->id(checked);
+			if (id < 0 || id >= static_cast<int>(m_iterationThresholds.size()))
+				return;
+
+			const double threshold =
+				m_iterationThresholds[static_cast<std::size_t>(id)];
+
+			qDebug("IterationProgressDialog: applying selection — "
+				   "row=%d  threshold=%.4f", id, threshold);
+
+			m_btnRun->setEnabled(false);
+			m_btnReset->setEnabled(false);
+			m_btnApply->setEnabled(false);
+
+			m_iterateFunc(threshold);
+
+			m_btnRun->setEnabled(true);
+			m_btnReset->setEnabled(true);
+			m_btnApply->setEnabled(true);
+		}
+
+		void rebuildAxes()
+		{
+			if (auto* ax = qobject_cast<QValueAxis*>(
+				m_chart->axes(Qt::Horizontal).value(0)))
+				ax->setTitleText(tr("Threshold"));
+			if (auto* ay = qobject_cast<QValueAxis*>(
+				m_chart->axes(Qt::Vertical).value(0)))
+				ay->setTitleText(tr("Volume (\u00D710\u00B3 mm\u00B3)"));
+		}
+
+		double          m_baseThreshold;
+		double          m_baseStdDev;
+		double          m_voxelVolMm3;
+
+		QSpinBox* m_spinIterations = nullptr;
+		QDoubleSpinBox* m_spinMultiplier = nullptr;
+		QLabel* m_labelStepSize = nullptr;
+		QPushButton* m_btnRun = nullptr;
+		QPushButton* m_btnReset = nullptr;
+		QPushButton* m_btnApply = nullptr;
+
+		QTableWidget* m_iterationTable = nullptr;
+		QButtonGroup* m_selectionGroup = nullptr;
+		QLineSeries* m_series = nullptr;
+		QScatterSeries* m_currentPoint = nullptr;
+		QChart* m_chart = nullptr;
+
+		IterateFunc              m_iterateFunc;
+		ResetFunc                m_resetFunc;
+		std::vector<double>      m_iterationThresholds;
+	};
+
+} // anonymous namespace
+
 
 // ---------------------------------------------------------------------------
 // PrototypeMainWindow
@@ -120,16 +526,6 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 		"(available after 8 or more Reslice operations)"));
 	ui->toolBar->addAction(m_actClean);
 	connect(m_actClean, &QAction::triggered, this, &PrototypeMainWindow::onClean);
-
-	// "Outline" toggle toolbar button: shows/hides the VolumeView bounding-box outline actor.
-	// The action is checkable so it renders in a depressed state while the outline is visible
-	// and returns to the normal raised state when unchecked.
-	m_actOutline = new QAction(tr("Outline"), this);
-	m_actOutline->setToolTip(tr("Toggle the volume bounding-box outline"));
-	m_actOutline->setCheckable(true);
-	m_actOutline->setChecked(false); // outline is hidden by default (matches VolumeView default)
-	ui->toolBar->addAction(m_actOutline);
-	connect(m_actOutline, &QAction::toggled, this, &PrototypeMainWindow::onOutlineToggled);
 
 	// "Export Reslice" toolbar button: reslice -> landmark -> threshold crop -> NIfTI export.
 	m_actExportReslice = new QAction(tr("Export Reslice"), this);
@@ -552,16 +948,6 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	ui->volumeView->setImageData(image);
 	ui->volumeView->updateData();
 
-	// The outline actor is hidden by VolumeView on every updateData() call;
-	// keep the toolbar toggle button in sync with that reset.
-	if (m_actOutline)
-	{
-		// Block the toggled() signal while we programmatically reset the checked
-		// state so onOutlineToggled() is not re-entered for this housekeeping change.
-		const QSignalBlocker blocker(m_actOutline);
-		m_actOutline->setChecked(false);
-	}
-
 	// Determine window/level from the image and the cached sidecar threshold.
 	// level  = threshold (falls back to scalar range midpoint if not present)
 	// window = 2 x overall standard deviation (from computeScalarThresholdStats)
@@ -606,6 +992,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	const double window = 2.0 * m_imageStats.value(QStringLiteral("stdDev")).toDouble(1.0);
 
 	ui->volumeView->setColorWindowLevel(window, level);
+	syncSliceView(image, window, level);
 
 	// ------------------------------------------------------------------
 	// PCA overlay: only when a finite threshold is available
@@ -1156,6 +1543,18 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 // Threshold + seeded BFS flood-fill ? island surface actors
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Threshold + seeded BFS flood-fill → island surface actors
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// onRegions
+//
+// Runs an initial BFS segmentation at the baseline threshold, displays the
+// result, then opens the non-modal IterationProgressDialog so the user can
+// iterate autonomously.  onRegions() returns as soon as the dialog is shown;
+// the iteration loop runs inside the dialog when the user clicks Run.
+// ---------------------------------------------------------------------------
 void PrototypeMainWindow::onRegions()
 {
 	// ------------------------------------------------------------------
@@ -1166,13 +1565,11 @@ void PrototypeMainWindow::onRegions()
 		qWarning("onRegions: no resliced image available; run Reslice first.");
 		return;
 	}
-
 	if (m_landmarkResult.isEmpty())
 	{
 		qWarning("onRegions: no landmark points available; run Landmark first.");
 		return;
 	}
-
 	if (!std::isfinite(m_threshold))
 	{
 		qWarning("onRegions: threshold is not finite; cannot segment.");
@@ -1180,30 +1577,22 @@ void PrototypeMainWindow::onRegions()
 	}
 
 	// ------------------------------------------------------------------
-	// Collect the 6 landmark world-space seed points from m_landmarkPoints.
-	// Each of the 3 axes contributes one positive and one negative seed.
+	// Collect the 6 landmark world-space seed points.
+	// Captured by value in the iterate callback so they remain valid after
+	// onRegions() returns.
 	// ------------------------------------------------------------------
 	std::vector<std::array<double, 3>> seeds;
 	seeds.reserve(6);
-
 	for (int i = 0; i < 3; ++i)
-	{
 		for (int d = 0; d < 2; ++d)
 		{
-			const double* pt = m_landmarkPoints[static_cast<std::size_t>(i)]
+			const double* pt =
+				m_landmarkPoints[static_cast<std::size_t>(i)]
 				[static_cast<std::size_t>(d)].data();
 			seeds.push_back({ pt[0], pt[1], pt[2] });
 		}
-	}
 
-	qDebug("onRegions: running seeded BFS with %zu seeds, threshold=%.4f",
-		   seeds.size(), m_threshold);
-
-	// ------------------------------------------------------------------
-	// Progress callback
-	// ------------------------------------------------------------------
-	showProgressStart();
-	const auto regionProgress = [this](int percent)
+	const auto makeProgress = [this](int percent)
 		{
 			showProgressValue(percent);
 			m_progressBar->update();
@@ -1211,30 +1600,96 @@ void PrototypeMainWindow::onRegions()
 		};
 
 	// ------------------------------------------------------------------
-	// Run segmentation
+	// Step 1: initial region grow at baseline threshold
 	// ------------------------------------------------------------------
-	vtkSmartPointer<vtkImageData> labelImage;
+	showProgressStart();
+	qDebug("onRegions: initial region grow  threshold=%.4f", m_threshold);
 
-	const std::vector<PrototypeHelpers::BoneIsland> islands =
+	vtkSmartPointer<vtkImageData> labelImage;
+	std::vector<PrototypeHelpers::BoneIsland> islands =
 		PrototypeHelpers::segmentBoneIslands(
-			m_reslicedImage,
-			m_threshold,
-			seeds,
-			labelImage,
-			regionProgress);
+			m_reslicedImage, m_threshold, seeds, labelImage, makeProgress);
 
 	showProgressEnd();
 
 	if (islands.empty())
 	{
-		qWarning("onRegions: no bone islands were found.");
+		qWarning("onRegions: no bone islands found at baseline threshold.");
 		return;
 	}
 
+	// ------------------------------------------------------------------
+	// Step 2: display initial result; hide the volume ray-cast so the
+	// island surface actors are unobscured.
+	// ------------------------------------------------------------------
 	applyIslandSegmentationResult(islands, labelImage);
-
-	// Segmentation completed - advance to Segmented: no step buttons enabled.
+	ui->volumeView->hideAllContent();
 	setWorkflowStep(WorkflowStep::Segmented);
+
+	// ------------------------------------------------------------------
+	// Step 3: compute baseline stats to populate the iteration dialog.
+	// ------------------------------------------------------------------
+	const PrototypeHelpers::RegionStats baseStats =
+		PrototypeHelpers::computeRegionStats(m_reslicedImage, labelImage);
+	const double baseVolume =
+		PrototypeHelpers::computeRegionVolumeMm3(labelImage);
+
+	qDebug("onRegions: baseline region stats — mean=%d  stdDev=%d  volume=%.3f x 10^3 mm^3",
+		   int(baseStats.mean), int(baseStats.stdDev), baseVolume * 1000);
+
+	// ------------------------------------------------------------------
+	// Step 4: open the non-modal iteration dialog.
+	//
+	// The dialog is heap-allocated and parented to this window so Qt
+	// manages its lifetime.  WA_DeleteOnClose frees it when the user
+	// closes it.  seeds is captured by value so it remains valid after
+	// onRegions() returns.
+	// ------------------------------------------------------------------
+	auto* progressDlg = new IterationProgressDialog(
+		m_threshold,
+		baseStats.mean,
+		baseStats.stdDev,
+		baseVolume,
+		m_reslicedImage->GetSpacing(),
+		this);
+
+	progressDlg->setIterateCallback(
+		[this, seeds](double threshold) -> std::vector<PrototypeHelpers::BoneIsland>
+		{
+			const auto progress = [this](int pct)
+				{
+					showProgressValue(pct);
+					m_progressBar->update();
+					QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+				};
+
+			showProgressStart();
+			vtkSmartPointer<vtkImageData> iterLabel;
+			auto iterIslands = PrototypeHelpers::segmentBoneIslands(
+				m_reslicedImage, threshold, seeds, iterLabel, progress);
+			showProgressEnd();
+
+			if (!iterIslands.empty())
+				applyIslandSegmentationResult(iterIslands, iterLabel);
+
+			return iterIslands;
+		});
+
+	// Capture baseline islands and labelImage by value — onRegions() returns
+	// before the dialog's Reset button can be clicked, so stack locals must
+	// be copied into the closure.
+	progressDlg->setResetCallback(
+		[this, islands, labelImage]()
+		{
+			applyIslandSegmentationResult(islands, labelImage);
+		});
+
+	progressDlg->setAttribute(Qt::WA_DeleteOnClose);
+	progressDlg->show();
+
+	// onRegions() returns here.  The iteration loop runs inside progressDlg
+	// when the user clicks Run.  The dialog and its callbacks remain valid
+	// for the lifetime of this PrototypeMainWindow (its Qt parent).
 }
 
 // ---------------------------------------------------------------------------
@@ -1362,7 +1817,7 @@ void PrototypeMainWindow::onRegionsGraphCut()
 		m_threshold);
 
 	// ------------------------------------------------------------------
-	// Debug visualisation - add seed point cloud actors to the renderer.
+	// Debug visualisation: add seed point cloud actors to the renderer.
 	// Green = foreground seeds, orange = background seeds.
 	// Actors are tracked in m_graphCutSeedActors so onRestart() can
 	// remove them when the workflow is reset.
@@ -1678,15 +2133,13 @@ void PrototypeMainWindow::onClean()
 
 	islandBB.Inflate(dMin);
 
-	// Step 4 - map world BB to voxel extent in cleanedImage and run vtkExtractVOI
-	// [progress 95 ? 100]
+	// Step 4 - map world BB corners to continuous voxel indices and round to nearest integer.
+	// vtkExtractVOI::SetVOI takes absolute extent indices (not dimension-relative),
+	// so we clamp to the image's actual extent [ext[0],ext[1]] x [ext[2],ext[3]] x [ext[4],ext[5]].
 	showProgressValue(95);
 	m_progressBar->update();
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	// Map world BB corners to continuous voxel indices and round to nearest integer.
-	// vtkExtractVOI::SetVOI takes absolute extent indices (not dimension-relative),
-	// so we clamp to the image's actual extent [ext[0],ext[1]] x [ext[2],ext[3]] x [ext[4],ext[5]].
 	double voxelIdxMin[3];
 	double voxelIdxMax[3];
 
@@ -1756,6 +2209,7 @@ void PrototypeMainWindow::onClean()
 	const double window = 2.0 * m_imageStats.value(QStringLiteral("stdDev")).toDouble(1.0);
 
 	ui->volumeView->setColorWindowLevel(window, level);
+	syncSliceView(m_reslicedImage, window, level);
 
 	ui->volumeView->renderer()->ResetCamera();
 	ui->volumeView->renderer()->ResetCameraClippingRange();
@@ -1821,18 +2275,6 @@ void PrototypeMainWindow::loadFromSidecarAsync(const QString& sidecarPath)
 	{
 		loadFromSidecar(sidecarPath);
 	});
-}
-
-// ---------------------------------------------------------------------------
-// onOutlineToggled - forward the checked state to VolumeView::setOutlineVisible
-// ---------------------------------------------------------------------------
-
-void PrototypeMainWindow::onOutlineToggled(bool checked)
-{
-	if (!ui || !ui->volumeView)
-		return;
-
-	ui->volumeView->setOutlineVisible(checked);
 }
 
 // ---------------------------------------------------------------------------
@@ -2083,6 +2525,28 @@ void PrototypeMainWindow::onExportReslice()
 }
 
 // ---------------------------------------------------------------------------
+// syncSliceView
+//
+// Pushes the current image and window/level to the companion SliceView so it
+// always shows an XY slice of whatever volume the VolumeView is displaying.
+// Called from setImage() and onClean() — any path that changes m_image.
+// ---------------------------------------------------------------------------
+
+void PrototypeMainWindow::syncSliceView(vtkImageData* image, double window, double level)
+{
+	if (!ui || !ui->sliceView || !ui->volumeView)
+		return;
+
+	ui->sliceView->setImageData(image);
+	ui->sliceView->updateData();
+
+	if (image)
+	{
+		ui->sliceView->setWindowLevelNative(window, level);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // alignCameraToMediumAxis
 //
 // Realigns the VolumeView camera so that:
@@ -2156,4 +2620,29 @@ void PrototypeMainWindow::alignCameraToMediumAxis()
 		viewUp[0], viewUp[1], viewUp[2],
 		c[0], c[1], c[2],
 		dist);
+}
+
+// ---------------------------------------------------------------------------
+// applyIslandRetentionFilter
+//
+// Shows actors whose island label is in retainedLabels and hides all others.
+// The m_islands vector order matches m_islandActors order (both built in
+// applyIslandSegmentationResult), so they are iterated together by index.
+// ---------------------------------------------------------------------------
+void PrototypeMainWindow::applyIslandRetentionFilter(const QSet<int>& retainedLabels)
+{
+	for (std::size_t i = 0; i < m_islandActors.size() && i < m_islands.size(); ++i)
+	{
+		if (!m_islandActors[i])
+			continue;
+
+		const bool retain = retainedLabels.contains(m_islands[i].label);
+		m_islandActors[i]->SetVisibility(retain ? 1 : 0);
+
+		qDebug("applyIslandRetentionFilter: island label=%d  retain=%s",
+			   m_islands[i].label, retain ? "yes" : "no");
+	}
+
+	if (ui && ui->volumeView)
+		ui->volumeView->render();
 }

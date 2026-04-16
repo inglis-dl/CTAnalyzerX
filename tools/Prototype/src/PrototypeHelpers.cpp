@@ -30,12 +30,11 @@
 #include <itkImage.h>
 #include <itkVTKImageToImageFilter.h>
 #include <itkImageToVTKImageFilter.h>
-//#include <itkCurvatureFlowImageFilter.h>
 #include <itkBinaryThresholdImageFilter.h>
-//#include <itkCastImageFilter.h>
 #include <itkConnectedComponentImageFilter.h>
 #include <itkRelabelComponentImageFilter.h>
-#include "GraphCut.h"                          // selects GridCut or Kolmogorov backend
+
+#include "GraphCut.h" // selects GridCut or Kolmogorov backend
 
 #include <QDebug>
 #include <QFile>
@@ -1260,16 +1259,16 @@ namespace PrototypeHelpers
 	//   Pos / Neg = positive / negative eigenvector direction
 	//
 	// centroidSpos, centroidSneg, centroidMpos, centroidMneg, centroidLneg
-	//   ? used as foreground seeds (5 of 6 segments).
+	//   used as foreground seeds (5 of 6 segments).
 	//
-	// centroidLpos ? EXCLUDED from foreground seeds.
+	// centroidLpos EXCLUDED from foreground seeds.
 	//   The Lpos tip is on the side adjacent to a neighbouring bone.
 	//   Including this segment risks seeding through a touch-point and
 	//   pulling the adjacent bone into the foreground label.
 	//
 	// Background rays: one threshold-gated outward ray per selected landmark.
-	//   Spos, Sneg, Mpos, Mneg, Lneg ? 5 background rays.
-	//   Lpos ? no background ray (same reason as above).
+	//   Spos, Sneg, Mpos, Mneg, Lneg 5 background rays.
+	//   Lpos no background ray (same reason as above).
 	//
 	// All background rays skip the first 10 voxels past the landmark surface
 	// before beginning the threshold gate (cortex-skip buffer).
@@ -1892,8 +1891,8 @@ namespace PrototypeHelpers
 	}
 
 	// -----------------------------------------------------------------------
-// Graph-cut seed image visualiser
-// -----------------------------------------------------------------------
+	// Graph-cut seed image visualiser
+	// -----------------------------------------------------------------------
 
 	vtkSmartPointer<vtkActor> makeSeedImageActor(
 		vtkImageData* seedImage,
@@ -1956,6 +1955,73 @@ namespace PrototypeHelpers
 		actor->GetProperty()->SetLighting(false);  // flat colour, unaffected by lights
 
 		return actor;
+	}
+
+	// -----------------------------------------------------------------------
+	// Region statistics helpers
+	// -----------------------------------------------------------------------
+
+	RegionStats computeRegionStats(vtkImageData* reslicedImage,
+								   vtkImageData* labelImage)
+	{
+		if (!reslicedImage || !labelImage)
+			return {};
+
+		vtkDataArray* scalars = reslicedImage->GetPointData()->GetScalars();
+		vtkDataArray* labels = labelImage->GetPointData()->GetScalars();
+		if (!scalars || !labels)
+			return {};
+
+		const vtkIdType n = reslicedImage->GetNumberOfPoints();
+
+		// Pass 1: mean
+		double    sum = 0.0;
+		vtkIdType count = 0;
+		for (vtkIdType i = 0; i < n; ++i)
+		{
+			if (labels->GetTuple1(i) > 0.0)
+			{
+				sum += scalars->GetTuple1(i);
+				++count;
+			}
+		}
+		if (count == 0)
+			return {};
+
+		const double mean = sum / static_cast<double>(count);
+
+		// Pass 2: variance (population)
+		double sq = 0.0;
+		for (vtkIdType i = 0; i < n; ++i)
+		{
+			if (labels->GetTuple1(i) > 0.0)
+			{
+				const double d = scalars->GetTuple1(i) - mean;
+				sq += d * d;
+			}
+		}
+
+		return { mean, std::sqrt(sq / static_cast<double>(count)) };
+	}
+
+	double computeRegionVolumeMm3(vtkImageData* labelImage)
+	{
+		if (!labelImage)
+			return 0.0;
+
+		const double* sp = labelImage->GetSpacing();
+		const double  voxelVol = sp[0] * sp[1] * sp[2];
+
+		vtkDataArray* labels = labelImage->GetPointData()->GetScalars();
+		if (!labels)
+			return 0.0;
+
+		vtkIdType count = 0;
+		const vtkIdType n = labelImage->GetNumberOfPoints();
+		for (vtkIdType i = 0; i < n; ++i)
+			if (labels->GetTuple1(i) > 0.0) ++count;
+
+		return static_cast<double>(count) * voxelVol;
 	}
 
 } // namespace PrototypeHelpers

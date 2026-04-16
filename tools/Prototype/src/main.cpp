@@ -25,8 +25,8 @@ int main(int argc, char* argv[])
 	// after SetInstance() takes its own reference, preventing a vtkDebugLeaks
 	// "1 instance still around" report at shutdown.
 	{
-		auto win = vtkSmartPointer<VtkQtOutputWindow>::New();
-		vtkOutputWindow::SetInstance(win);
+		//auto win = vtkSmartPointer<VtkQtOutputWindow>::New();
+		//vtkOutputWindow::SetInstance(win);
 	}
 
 #ifdef _WIN32
