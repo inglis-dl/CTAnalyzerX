@@ -212,18 +212,34 @@ namespace {
 			m_series = new QLineSeries(this);
 			m_series->setName(tr("Volume"));
 
-			m_currentPoint = new QScatterSeries(this);
-			m_currentPoint->setName(tr("Current"));
-			m_currentPoint->setMarkerSize(10.0);
-			m_currentPoint->setColor(Qt::red);
+			m_seriesPoints = new QScatterSeries(this);
+			m_seriesPoints->setName(tr("Points"));
+			m_seriesPoints->setMarkerSize(10.0);
+			m_seriesPoints->setColor(Qt::red);
+			m_seriesPoints->setMarkerShape(QScatterSeries::MarkerShapeCircle);
+			m_seriesPoints->setBorderColor(Qt::black);
+
+			m_axisX = new QValueAxis(this);
+			m_axisX->setTitleText(tr("Threshold"));
+			m_axisX->setRange(0.0, 1.0);
+
+			m_axisY = new QValueAxis(this);
+			m_axisY->setTitleText(tr("Volume (\u00D710\u00B3 mm\u00B3)"));
+			m_axisY->setRange(0.0, 1.0);
 
 			m_chart = new QChart;
 			m_chart->addSeries(m_series);
-			m_chart->addSeries(m_currentPoint);
+			m_chart->addSeries(m_seriesPoints);
 			m_chart->setTitle(tr("Threshold vs. Region Volume"));
 			m_chart->legend()->setVisible(true);
-			m_chart->createDefaultAxes();
-			rebuildAxes();
+
+			m_chart->addAxis(m_axisX, Qt::AlignBottom);
+			m_chart->addAxis(m_axisY, Qt::AlignLeft);
+
+			m_series->attachAxis(m_axisX);
+			m_series->attachAxis(m_axisY);
+			m_seriesPoints->attachAxis(m_axisX);
+			m_seriesPoints->attachAxis(m_axisY);
 
 			auto* chartView = new QChartView(m_chart, this);
 			chartView->setRenderHint(QPainter::Antialiasing);
@@ -284,20 +300,24 @@ namespace {
 				const double volumeMm3 = totalVoxels * m_voxelVolMm3;
 				const double volumeMm3x1k = volumeMm3 * 1000.0;
 
-				// Chart plots the same (threshold, volume×10³) pair shown in the table.
 				m_series->append(threshold, volumeMm3x1k);
-				m_currentPoint->clear();
-				m_currentPoint->append(threshold, volumeMm3x1k);
+				m_seriesPoints->append(threshold, volumeMm3x1k);
 
-				// Qt5: remove-and-re-add forces axis range recalculation.
-				// Use removeSeries() (not removeAllSeries()) — the latter deletes the series!
-				m_chart->removeSeries(m_series);
-				m_chart->removeSeries(m_currentPoint);
-				m_chart->addSeries(m_series);
-				m_chart->addSeries(m_currentPoint);
-				m_chart->createDefaultAxes();
-				rebuildAxes();
+				// Track data extents and update the persistent axes in-place.
+				// This avoids removing/re-adding series (which recreates axes
+				// and causes ghost tick labels on every iteration).
+				m_dataMinX = std::min(m_dataMinX, threshold);
+				m_dataMaxX = std::max(m_dataMaxX, threshold);
+				m_dataMinY = std::min(m_dataMinY, volumeMm3x1k);
+				m_dataMaxY = std::max(m_dataMaxY, volumeMm3x1k);
 
+				const double rangeX = m_dataMaxX - m_dataMinX;
+				const double rangeY = m_dataMaxY - m_dataMinY;
+				const double padX = (rangeX > 0.0) ? 0.05 * rangeX : std::max(1.0, std::abs(m_dataMinX) * 0.05);
+				const double padY = (rangeY > 0.0) ? 0.05 * rangeY : std::max(1.0, std::abs(m_dataMinY) * 0.05);
+
+				m_axisX->setRange(m_dataMinX - padX, m_dataMaxX + padX);
+				m_axisY->setRange(std::max(0.0, m_dataMinY - padY), m_dataMaxY + padY);
 				// Append one row to the iteration history table.
 				appendIterationRow(iter, threshold, volumeMm3x1k,
 					static_cast<int>(islands.size()));
@@ -371,15 +391,17 @@ namespace {
 			m_iterationTable->setRowCount(0);
 			m_btnApply->setEnabled(false);
 
-			// Clear chart data and reset axis ranges.
+			// Clear chart data and reset axis ranges to initial placeholders.
 			m_series->clear();
-			m_currentPoint->clear();
-			m_chart->removeSeries(m_series);
-			m_chart->removeSeries(m_currentPoint);
-			m_chart->addSeries(m_series);
-			m_chart->addSeries(m_currentPoint);
-			m_chart->createDefaultAxes();
-			rebuildAxes();
+			m_seriesPoints->clear();
+
+			m_dataMinX = std::numeric_limits<double>::max();
+			m_dataMaxX = std::numeric_limits<double>::lowest();
+			m_dataMinY = std::numeric_limits<double>::max();
+			m_dataMaxY = std::numeric_limits<double>::lowest();
+
+			m_axisX->setRange(0.0, 1.0);
+			m_axisY->setRange(0.0, 1.0);
 
 			if (m_resetFunc)
 				m_resetFunc();
@@ -419,16 +441,6 @@ namespace {
 			m_btnApply->setEnabled(true);
 		}
 
-		void rebuildAxes()
-		{
-			if (auto* ax = qobject_cast<QValueAxis*>(
-				m_chart->axes(Qt::Horizontal).value(0)))
-				ax->setTitleText(tr("Threshold"));
-			if (auto* ay = qobject_cast<QValueAxis*>(
-				m_chart->axes(Qt::Vertical).value(0)))
-				ay->setTitleText(tr("Volume (\u00D710\u00B3 mm\u00B3)"));
-		}
-
 		double          m_baseThreshold;
 		double          m_baseStdDev;
 		double          m_voxelVolMm3;
@@ -443,8 +455,15 @@ namespace {
 		QTableWidget* m_iterationTable = nullptr;
 		QButtonGroup* m_selectionGroup = nullptr;
 		QLineSeries* m_series = nullptr;
-		QScatterSeries* m_currentPoint = nullptr;
+		QScatterSeries* m_seriesPoints = nullptr;
 		QChart* m_chart = nullptr;
+		QValueAxis* m_axisX = nullptr;
+		QValueAxis* m_axisY = nullptr;
+
+		double m_dataMinX = std::numeric_limits<double>::max();
+		double m_dataMaxX = std::numeric_limits<double>::lowest();
+		double m_dataMinY = std::numeric_limits<double>::max();
+		double m_dataMaxY = std::numeric_limits<double>::lowest();
 
 		IterateFunc              m_iterateFunc;
 		ResetFunc                m_resetFunc;
