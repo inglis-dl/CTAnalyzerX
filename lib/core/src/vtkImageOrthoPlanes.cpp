@@ -404,6 +404,8 @@ void vtkImageOrthoPlanes::Update()
 		{
 			vtkMath::UninitializeBounds(this->m_bounds);
 		}
+		this->Modified();
+
 		return;
 	}
 
@@ -436,6 +438,8 @@ void vtkImageOrthoPlanes::Update()
 	{
 		vtkMath::UninitializeBounds(this->m_bounds);
 	}
+
+	this->Modified();
 }
 
 int vtkImageOrthoPlanes::RenderOpaqueGeometry(vtkViewport* viewport)

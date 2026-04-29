@@ -30,13 +30,14 @@
 #include <vtkCommand.h>
 #include <vtkEventQtSlotConnect.h>
 #include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkInteractorStyleImage.h>
 #include <vtkImageData.h>
-#include <vtkInformation.h>
+#include "vtkImageOrthoPlanes.h"
 #include <vtkImageProperty.h>
 #include <vtkImageShiftScale.h>
 #include <vtkImageSlice.h>
 #include <vtkImageSliceMapper.h>
+#include <vtkInformation.h>
+#include <vtkInteractorStyleImage.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkStreamingDemandDrivenPipeline.h>
@@ -604,6 +605,25 @@ void SliceView::updateSlice() {
 	if (!m_imageData) return;
 
 	m_sliceMapper->SetSliceNumber(m_currentSlice);
+
+	// Push the new slice index to the linked ortho-plane for the axis that
+	// matches this view's orientation, preserving the other two axes unchanged.
+	if (m_linkedOrthoPlanes)
+	{
+		int cur[3] = { 0, 0, 0 };
+		m_linkedOrthoPlanes->GetSliceNumbers(cur);
+
+		switch (m_viewOrientation)
+		{
+			case VIEW_ORIENTATION_YZ: cur[0] = m_currentSlice; break; // X-normal plane
+			case VIEW_ORIENTATION_XZ: cur[1] = m_currentSlice; break; // Y-normal plane
+			case VIEW_ORIENTATION_XY:
+			default:                  cur[2] = m_currentSlice; break; // Z-normal plane
+		}
+
+		m_linkedOrthoPlanes->SetSliceNumbers(cur[0], cur[1], cur[2]);
+		m_linkedOrthoPlanes->Update();
+	}
 
 	int u = 0, v = 1, w = m_viewOrientation;
 	switch (w)
@@ -1266,4 +1286,9 @@ void SliceView::setOutlineColor(const QColor& color)
 vtkImageSlicePointPlacer* SliceView::pointPlacer() const
 {
 	return m_pointPlacer;
+}
+
+void SliceView::setOrthoPlanes(vtkSmartPointer<vtkImageOrthoPlanes> planes)
+{
+	m_linkedOrthoPlanes = planes;
 }

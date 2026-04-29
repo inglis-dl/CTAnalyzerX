@@ -5,16 +5,17 @@
 #include "VolumeView.h"
 #include "LandmarkHelper.h"
 
-#include <QPushButton>
-#include <QSlider>
-#include <QLineEdit>
-#include <QLabel>
 #include <QIntValidator>
 #include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QSlider>
 
-#include <vtkSmartPointer.h>
-#include <vtkPolyData.h>
+#include <vtkImageData.h>
 #include <vtkPoints.h>
+#include <vtkPolyData.h>
+#include <vtkSmartPointer.h>
 #include <vtkVertexGlyphFilter.h>
 
 LandmarkWidget::LandmarkWidget(QWidget* parent)

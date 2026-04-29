@@ -1,28 +1,28 @@
-#ifndef SLICEVIEW_H
-#define SLICEVIEW_H
+#pragma once
 
 #include "ImageFrameWidget.h"
 
 #include <QFrame>
 
-#include <vtkSmartPointer.h>
+#include <vtkGenericOpenGLRenderWindow.h>
+#include <vtkImageActor.h>
 #include <vtkImageData.h>
+#include <vtkImageProperty.h>
+#include <vtkImageSliceMapper.h>
+#include <vtkInteractorStyleImage.h>
+#include <vtkSmartPointer.h>
 #include <vtkRenderer.h>
 #include <vtkRenderWindow.h>
-#include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkInteractorStyleImage.h>
-#include <vtkImageActor.h>
-#include <vtkImageSliceMapper.h>
-#include <vtkImageProperty.h>
 
-class vtkEventQtSlotConnect;
-class vtkObject; // forward declare for slot
-class QLineEdit;
 class QLabel;
-class vtkImageSlicePointPlacer;
-class vtkSliceOutlineSource;
-class vtkPolyDataMapper;
+class QLineEdit;
 class vtkActor;
+class vtkEventQtSlotConnect;
+class vtkImageOrthoPlanes;
+class vtkImageSlicePointPlacer;
+class vtkObject;
+class vtkPolyDataMapper;
+class vtkSliceOutlineSource;
 
 namespace Ui { class SliceView; }
 
@@ -64,6 +64,11 @@ public:
 	QColor outlineColor() const { return m_outlineColor; }
 
 	vtkImageSlicePointPlacer* pointPlacer() const;
+
+	// Register a vtkImageOrthoPlanes instance owned by the companion VolumeView.
+	// When set, every slice change automatically repositions the ortho plane that
+	// corresponds to this view's current orientation.  Pass nullptr to detach.
+	void setOrthoPlanes(vtkSmartPointer<vtkImageOrthoPlanes> planes);
 
 public slots:
 	void updateData() override;
@@ -113,7 +118,6 @@ private:
 	vtkSmartPointer<vtkImageSlice> m_imageSlice;
 	vtkSmartPointer<vtkImageProperty> m_imageProperty;
 	vtkSmartPointer<vtkEventQtSlotConnect> m_qvtkConnection;
-
 	vtkSmartPointer<vtkImageSlicePointPlacer> m_pointPlacer;
 
 	vtkSmartPointer<vtkSliceOutlineSource> m_outlineSource;
@@ -131,6 +135,8 @@ private:
 
 	// Build a bottom bar: [minLabel] [slider] [maxLabel] [lineEdit]
 	void buildSliderBar(QWidget* rootContent);
+
+	vtkSmartPointer<vtkImageOrthoPlanes> m_linkedOrthoPlanes;
 
 	double m_windowLevelInitial[2];
 	int m_windowLevelStartPosition[2];
@@ -163,5 +169,3 @@ private slots:
 	void onEditorEditingFinished();
 	void onEditorReturnPressed();
 };
-
-#endif // SLICEVIEW_H

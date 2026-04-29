@@ -423,17 +423,14 @@ VolumeView* LightboxWidget::getVolumeView() const { return ui.volumeView; }
 
 void LightboxWidget::connectSliceSynchronization()
 {
-	if (!ui.YZView || !ui.XZView || !ui.XYView || !ui.volumeView) return;
+	if (!ui.volumeView) return;
 
-	connect(ui.YZView, &SliceView::sliceChanged, this, [this](int index) {
-		if (ui.volumeView) ui.volumeView->updateSlicePlanes(index, ui.XZView->getSliceIndex(), ui.XYView->getSliceIndex());
-	});
-	connect(ui.XZView, &SliceView::sliceChanged, this, [this](int index) {
-		if (ui.volumeView) ui.volumeView->updateSlicePlanes(ui.YZView->getSliceIndex(), index, ui.XYView->getSliceIndex());
-	});
-	connect(ui.XYView, &SliceView::sliceChanged, this, [this](int index) {
-		if (ui.volumeView) ui.volumeView->updateSlicePlanes(ui.YZView->getSliceIndex(), ui.XZView->getSliceIndex(), index);
-	});
+	if(ui.YZView)
+		ui.YZView->setOrthoPlanes(ui.volumeView->orthoPlanes());
+	if(ui.XYView)
+		ui.XYView->setOrthoPlanes(ui.volumeView->orthoPlanes());
+	if(ui.XZView)
+		ui.XZView->setOrthoPlanes(ui.volumeView->orthoPlanes());
 }
 
 void LightboxWidget::connectSelectionCoordination()

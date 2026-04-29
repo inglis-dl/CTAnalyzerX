@@ -32,14 +32,14 @@
  * @sa vtkImageSlice vtkImageSliceMapper vtkImageProperty vtkPropAssembly
  */
 
-class vtkImageSliceMapper;
-class vtkImageSlice;
-class vtkImageProperty;
-class vtkPolyData;
 class vtkActor;
-class vtkPropAssembly;
 class vtkAlgorithmOutput;
 class vtkImageData;
+class vtkImageProperty;
+class vtkImageSlice;
+class vtkImageSliceMapper;
+class vtkPolyData;
+class vtkPropAssembly;
 class vtkViewport;
 class vtkWindow;
 

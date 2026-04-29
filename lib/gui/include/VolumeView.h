@@ -62,6 +62,8 @@ public:
 
 	vtkPiecewiseFunction* actualScalarOpacity() const;
 
+	vtkSmartPointer<vtkImageOrthoPlanes> orthoPlanes() const;
+
 signals:
 	void orthoPlanesVisibleChanged(bool visible);
 
@@ -105,6 +107,8 @@ private slots:
 	void onInteractorChar(vtkObject* caller, unsigned long eventId, void* clientData, void* callData, vtkCommand* command);
 
 	void onCameraModified(vtkObject* caller);
+
+	void onOrthoPlanesModified(vtkObject* caller);
 
 private:
 	Ui::VolumeView* ui = nullptr;

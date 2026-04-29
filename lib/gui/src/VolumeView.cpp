@@ -115,6 +115,10 @@ VolumeView::VolumeView(QWidget* parent)
 		m_renderer->AddViewProp(m_orthoPlanes);
 	}
 
+	// Re-render whenever the ortho planes are repositioned (e.g. by a linked SliceView).
+	m_qvtk->Connect(m_orthoPlanes, vtkCommand::ModifiedEvent,
+		this, SLOT(onOrthoPlanesModified(vtkObject*)), nullptr);
+
 	// at end of createSliceOutlineActors(), after XY/XZ/YZ props are prepared
 	vtkActor* ax = m_orthoPlanes->GetOutlineActorX(); // X: YZ plane
 	vtkActor* ay = m_orthoPlanes->GetOutlineActorY(); // Y: XZ plane
@@ -1329,4 +1333,15 @@ void VolumeView::setOutlineColor(const QColor& color)
 	}
 	// If visible, refresh rendering to show change immediately
 	if (m_outlineVisible) render();
+}
+
+vtkSmartPointer<vtkImageOrthoPlanes> VolumeView::orthoPlanes() const
+{
+	return m_orthoPlanes;
+}
+
+void VolumeView::onOrthoPlanesModified(vtkObject* /*caller*/)
+{
+	if (m_orthoPlanesVisible && m_imageInitialized)
+		render();
 }

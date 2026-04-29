@@ -562,6 +562,9 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	m_vtkConnections->Connect(
 		m_imageLoader, vtkCommand::ProgressEvent,
 		this, SLOT(onVtkProgressEvent()));
+
+	ui->sliceView->setInterpolationToNearest();
+	ui->sliceView->setOrthoPlanes(ui->volumeView->orthoPlanes());
 }
 
 PrototypeMainWindow::~PrototypeMainWindow()
