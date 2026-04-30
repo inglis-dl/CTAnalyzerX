@@ -106,6 +106,7 @@ target_link_libraries(CTAXPrototype
     # Header-only INTERFACE target - propagates both include roots and the
     # GRIDCUT_LIBRARY_AVAILABLE compile definition when GridCut was found.
     ImageGraphCut3DSegmentation::ImageGraphCut3DSegmentation
+    Qt5::Concurrent
 )
 
 # Register the new VTK modules with the autoinit system so VTK's

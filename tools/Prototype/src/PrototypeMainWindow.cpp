@@ -50,6 +50,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLegendMarker>
 #include <QLineSeries>
 #include <QMessageBox>
 #include <QPushButton>
@@ -70,6 +71,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#define PARALLEL_ISLANDS 1  // set to 0 to disable concurrent iteration of islands
 
 QT_CHARTS_USE_NAMESPACE   // expands to: using namespace QtCharts; (Qt5 only)
 
@@ -128,13 +131,30 @@ namespace {
 				new QLabel(QString::number(regionMean, 'f', 2), this));
 			setupForm->addRow(tr("Region std deviation:"),
 				new QLabel(QString::number(regionStdDev, 'f', 2), this));
-			setupForm->addRow(tr("Region volume (mm\u00B3):"),
-				new QLabel(QString::number(regionVolumeMm3, 'f', 1), this));
+			setupForm->addRow(tr("Region volume (\u00D710\u00B3 mm\u00B3):"),
+				new QLabel(QString::number(regionVolumeMm3 * 1000.0, 'f', 1), this));
 
 			m_spinIterations = new QSpinBox(this);
 			m_spinIterations->setRange(1, 100);
-			m_spinIterations->setValue(10);
-			setupForm->addRow(tr("Iterations:"), m_spinIterations);
+			m_spinIterations->setValue(20);
+			setupForm->addRow(tr("Max Iterations:"), m_spinIterations);
+
+			m_spinTargetIslands = new QSpinBox(this);
+			m_spinTargetIslands->setRange(2, 255);
+			m_spinTargetIslands->setValue(2);
+			setupForm->addRow(tr("Target Islands:"), m_spinTargetIslands);
+
+			// Volume threshold: displayed in the same ×10³ mm³ units as the
+			// iteration table.  Initial value 1.0 represents 0.001 mm³ × 1000.
+			// The run stops when the absolute volume change between the last
+			// two appended rows falls at or below this value.
+			m_spinVolumeThreshold = new QDoubleSpinBox(this);
+			m_spinVolumeThreshold->setRange(0.0, 999999.0);
+			m_spinVolumeThreshold->setSingleStep(0.1);
+			m_spinVolumeThreshold->setDecimals(3);
+			m_spinVolumeThreshold->setValue(1.0);
+			setupForm->addRow(tr("Volume threshold (\u00D710\u00B3 mm\u00B3):"),
+				m_spinVolumeThreshold);
 
 			m_spinMultiplier = new QDoubleSpinBox(this);
 			m_spinMultiplier->setRange(0.01, 10.0);
@@ -149,10 +169,69 @@ namespace {
 			updateStepSizeLabel(m_spinMultiplier->value());
 			setupForm->addRow(tr("Threshold step:"), m_labelStepSize);
 
+			// Live read-only label: baseline + iterations × step
+			m_labelFinalThreshold = new QLabel(this);
+			m_labelFinalThreshold->setTextInteractionFlags(Qt::NoTextInteraction);
+			updateFinalThresholdLabel(m_spinIterations->value(), m_spinMultiplier->value());
+			setupForm->addRow(tr("Final threshold:"), m_labelFinalThreshold);
+
+			// Start threshold: default (baseline) or user-supplied override.
+			// The spinbox is only active when the Override checkbox is checked.
+			m_chkCustomStart = new QCheckBox(tr("Override"), this);
+
+			m_spinCustomStart = new QDoubleSpinBox(this);
+			m_spinCustomStart->setDecimals(2);
+			m_spinCustomStart->setRange(-99999.0, 99999.0);
+			m_spinCustomStart->setSingleStep(1.0);
+			m_spinCustomStart->setValue(baselineThreshold);
+			m_spinCustomStart->setEnabled(false);
+
+			auto* startRow = new QHBoxLayout;
+			startRow->setContentsMargins(0, 0, 0, 0);
+			startRow->addWidget(m_chkCustomStart);
+			startRow->addWidget(m_spinCustomStart, 1);
+			auto* startRowWidget = new QWidget(this);
+			startRowWidget->setLayout(startRow);
+			setupForm->addRow(tr("Start threshold:"), startRowWidget);
+
+			connect(m_chkCustomStart, &QCheckBox::toggled, this,
+				[this](bool checked)
+				{
+					m_spinCustomStart->setEnabled(checked);
+					updateFinalThresholdLabel(
+						m_spinIterations->value(), m_spinMultiplier->value());
+				});
+
+			connect(m_spinCustomStart,
+				QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+				this,
+				[this](double)
+				{
+					if (m_chkCustomStart->isChecked())
+						updateFinalThresholdLabel(
+							m_spinIterations->value(), m_spinMultiplier->value());
+				});
+
+			// Recompute whenever either spin changes
+			connect(m_spinIterations,
+				QOverload<int>::of(&QSpinBox::valueChanged),
+				this,
+				[this](int)
+				{
+					updateFinalThresholdLabel(
+						m_spinIterations->value(),
+						m_spinMultiplier->value());
+				});
+
 			connect(m_spinMultiplier,
 				QOverload<double>::of(&QDoubleSpinBox::valueChanged),
 				this,
-				[this](double v) { updateStepSizeLabel(v); });
+				[this](double)
+				{
+					updateFinalThresholdLabel(
+						m_spinIterations->value(),
+						m_spinMultiplier->value());
+				});
 
 			auto* setupBox = new QGroupBox(tr("Setup"), this);
 			setupBox->setLayout(setupForm);
@@ -165,11 +244,22 @@ namespace {
 			connect(m_btnReset, &QPushButton::clicked, this,
 				[this] { resetState(); });
 
-			// Apply Selection is enabled only when a row checkbox is checked.
 			m_btnApply = new QPushButton(tr("Apply Selection"), this);
 			m_btnApply->setEnabled(false);
 			connect(m_btnApply, &QPushButton::clicked, this,
 				[this] { applySelection(); });
+
+			// Refine: enabled when >=2 rows are spanned by the table selection.
+			// Sets start threshold = min selected threshold and back-computes the
+			// multiplier so that iterations x step = max selected threshold - start.
+			m_btnRefine = new QPushButton(tr("Refine from Selection"), this);
+			m_btnRefine->setEnabled(false);
+			m_btnRefine->setToolTip(
+				tr("Set the start threshold to the lowest selected threshold and compute\n"
+				"a step multiplier so that iterations \u00D7 step spans to the highest\n"
+				"selected threshold."));
+			connect(m_btnRefine, &QPushButton::clicked, this,
+				[this] { applyRefinement(); });
 
 			auto* leftLayout = new QVBoxLayout;
 			leftLayout->addWidget(setupBox);
@@ -177,6 +267,7 @@ namespace {
 			leftLayout->addWidget(m_btnRun);
 			leftLayout->addWidget(m_btnReset);
 			leftLayout->addWidget(m_btnApply);
+			leftLayout->addWidget(m_btnRefine);
 			leftLayout->addStretch();
 
 			// ── Right panel: iteration history table (top) ───────────────────
@@ -185,7 +276,9 @@ namespace {
 			m_iterationTable = new QTableWidget(0, 5, this);
 			m_iterationTable->setHorizontalHeaderLabels(
 				{ tr("#"), tr("Threshold"), tr("Volume (\u00D710\u00B3 mm\u00B3)"), tr("Islands"), tr("Select") });
-			m_iterationTable->setSelectionMode(QAbstractItemView::NoSelection);
+			// ExtendedSelection: click selects a row; Ctrl+click / Shift+click adds to or ranges the selection.
+			m_iterationTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+			m_iterationTable->setSelectionBehavior(QAbstractItemView::SelectRows);
 			m_iterationTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
 			m_iterationTable->verticalHeader()->setVisible(false);
 			m_iterationTable->horizontalHeader()->setSectionResizeMode(
@@ -241,6 +334,34 @@ namespace {
 			m_seriesPoints->attachAxis(m_axisX);
 			m_seriesPoints->attachAxis(m_axisY);
 
+			// Vertical bracket lines drawn from the x-axis to the data marker
+			// at the first and last selected row.  Amber dashed, hidden from legend.
+			const QPen bracketPen(QColor(255, 165, 0), 2, Qt::DashLine);
+
+			m_bracketLeft = new QLineSeries(this);
+			m_bracketLeft->setPen(bracketPen);
+			m_bracketLeft->setName(tr("Selection"));
+
+			m_bracketRight = new QLineSeries(this);
+			m_bracketRight->setPen(bracketPen);
+			m_bracketRight->setName(QString());
+
+			m_chart->addSeries(m_bracketLeft);
+			m_chart->addSeries(m_bracketRight);
+			m_bracketLeft->attachAxis(m_axisX);
+			m_bracketLeft->attachAxis(m_axisY);
+			m_bracketRight->attachAxis(m_axisX);
+			m_bracketRight->attachAxis(m_axisY);
+
+			// Hide the duplicate right-bracket entry from the chart legend.
+			const auto rightMarkers = m_chart->legend()->markers(m_bracketRight);
+			if (!rightMarkers.isEmpty())
+				rightMarkers.first()->setVisible(false);
+
+			// Update bracket lines and row highlights whenever table selection changes.
+			connect(m_iterationTable, &QTableWidget::itemSelectionChanged,
+				this, [this]() { updateSelectionBrackets(); });
+
 			auto* chartView = new QChartView(m_chart, this);
 			chartView->setRenderHint(QPainter::Antialiasing);
 
@@ -259,10 +380,185 @@ namespace {
 		void setResetCallback(ResetFunc fn) { m_resetFunc = std::move(fn); }
 
 	private:
+		// Returns the active starting threshold: custom value when override is
+		// checked, the original baseline threshold otherwise.
+		double effectiveStartThreshold() const
+		{
+			return (m_chkCustomStart && m_chkCustomStart->isChecked())
+				? m_spinCustomStart->value()
+				: m_baseThreshold;
+		}
+
 		void updateStepSizeLabel(double multiplier)
 		{
 			m_labelStepSize->setText(
 				QString::number(multiplier * m_baseStdDev, 'f', 3));
+		}
+
+		void updateFinalThresholdLabel(int iterations, double multiplier)
+		{
+			const double finalThreshold =
+				effectiveStartThreshold()
+				+ static_cast<double>(iterations) * multiplier * m_baseStdDev;
+			m_labelFinalThreshold->setText(
+				QString::number(finalThreshold, 'f', 2));
+		}
+
+		// Populate the start threshold and multiplier spin boxes from the current
+		// table selection so that the next Run will iterate from the minimum
+		// selected threshold to the maximum selected threshold.
+		void applyRefinement()
+		{
+			const QList<QTableWidgetSelectionRange> ranges =
+				m_iterationTable->selectedRanges();
+			if (ranges.isEmpty() || m_iterationThresholds.empty())
+				return;
+
+			int minRow = std::numeric_limits<int>::max();
+			int maxRow = std::numeric_limits<int>::min();
+			for (const auto& range : ranges)
+			{
+				minRow = std::min(minRow, range.topRow());
+				maxRow = std::max(maxRow, range.bottomRow());
+			}
+
+			const int nData = static_cast<int>(m_iterationThresholds.size());
+			if (minRow >= maxRow || minRow < 0 || maxRow >= nData)
+				return;
+
+			const double threshMin = m_iterationThresholds[static_cast<std::size_t>(minRow)];
+			const double threshMax = m_iterationThresholds[static_cast<std::size_t>(maxRow)];
+			const int    iters = m_spinIterations->value();
+
+			// Override the start threshold with the selection minimum.
+			m_chkCustomStart->setChecked(true);
+			m_spinCustomStart->setValue(threshMin);
+
+			// Back-compute the multiplier:
+			//   iters × multiplier × stdDev = threshMax - threshMin
+			//   multiplier = (threshMax - threshMin) / (iters × stdDev)
+			if (iters > 0 && m_baseStdDev > 0.0)
+			{
+				const double newMultiplier =
+					(threshMax - threshMin)
+					/ (static_cast<double>(iters) * m_baseStdDev);
+
+				// QDoubleSpinBox::setValue() silently clamps to [minimum, maximum].
+				// The refined multiplier may be far outside the default [0.01, 10.0]
+				// range (e.g. very small for a tight bracket, large for a small stdDev).
+				// Expand the range symmetrically before setting the value so the
+				// assigned value is exact.  The range is only ever widened so
+				// subsequent manual edits retain full freedom.
+				const double safeMin = std::min(m_spinMultiplier->minimum(),
+											   std::max(1e-7, newMultiplier));
+				const double safeMax = std::max(m_spinMultiplier->maximum(),
+											   newMultiplier);
+				m_spinMultiplier->setRange(safeMin, safeMax);
+
+				m_spinMultiplier->setRange(safeMin, safeMax);
+
+				// Compute the required decimal precision from the magnitude of
+				// newMultiplier using log base-10:
+				//   decimals = -floor(log10(v)) + 2
+				// This gives 2 significant digits after the leading digit:
+				//   v = 0.1   -> decimals = 1 + 2 = 3   ("0.100")
+				//   v = 0.01  -> decimals = 2 + 2 = 4   ("0.0100")
+				//   v = 0.001 -> decimals = 3 + 2 = 5   ("0.00100")
+				// Clamped to [3, 9] so values >= 0.1 always show at least 3 places
+				// and extremely small values are capped at 9.
+				const int decimals = (newMultiplier > 0.0)
+					? std::clamp(
+						static_cast<int>(-std::floor(std::log10(newMultiplier))) + 2,
+						3, 9)
+					: 3;
+				m_spinMultiplier->setDecimals(decimals);
+
+				m_spinMultiplier->setValue(newMultiplier);
+			}
+
+			updateStepSizeLabel(m_spinMultiplier->value());
+			updateFinalThresholdLabel(iters, m_spinMultiplier->value());
+		}
+
+		// Called whenever the table selection changes.
+		// - Clears all row highlights then re-applies them across the contiguous
+		//   range from the topmost to the bottommost selected row.
+		// - Draws a vertical dashed bracket from the x-axis to the data marker
+		//   at the minimum and maximum threshold of the selected range.
+		void updateSelectionBrackets()
+		{
+			m_bracketLeft->clear();
+			m_bracketRight->clear();
+
+			// Remove all existing row background highlights (columns 0-3 only;
+			// column 4 hosts a QWidget for the checkbox and has no QTableWidgetItem).
+			const int nRows = m_iterationTable->rowCount();
+			for (int row = 0; row < nRows; ++row)
+			{
+				for (int col = 0; col < 4; ++col)
+				{
+					auto* item = m_iterationTable->item(row, col);
+					if (item)
+						item->setBackground(QBrush());
+				}
+			}
+
+			const QList<QTableWidgetSelectionRange> ranges =
+				m_iterationTable->selectedRanges();
+
+			if (ranges.isEmpty() || m_iterationThresholds.empty())
+			{
+				m_btnRefine->setEnabled(false);
+				return;
+			}
+
+			// Determine the overall span: topmost and bottommost selected row.
+			int minRow = std::numeric_limits<int>::max();
+			int maxRow = std::numeric_limits<int>::min();
+			for (const auto& range : ranges)
+			{
+				minRow = std::min(minRow, range.topRow());
+				maxRow = std::max(maxRow, range.bottomRow());
+			}
+
+			if (minRow > maxRow || minRow < 0 || maxRow >= nRows)
+				return;
+
+			// Highlight every row in the span, not just the explicitly selected ones.
+			const QColor highlightColor(255, 245, 157); // light amber
+			for (int row = minRow; row <= maxRow; ++row)
+			{
+				for (int col = 0; col < 4; ++col)
+				{
+					auto* item = m_iterationTable->item(row, col);
+					if (item)
+						item->setBackground(QBrush(highlightColor));
+				}
+			}
+
+			// Draw bracket lines from the axis y-minimum up to each data marker.
+			const double yMin = m_axisY->min();
+			const int    nData = static_cast<int>(m_iterationThresholds.size());
+
+			if (minRow < nData)
+			{
+				const double xL = m_iterationThresholds[static_cast<std::size_t>(minRow)];
+				const double yL = m_iterationVolumes[static_cast<std::size_t>(minRow)];
+				m_bracketLeft->append(xL, yMin);
+				m_bracketLeft->append(xL, yL);
+			}
+
+			// Right bracket only when the selection covers more than one row.
+			if (maxRow != minRow && maxRow < nData)
+			{
+				const double xR = m_iterationThresholds[static_cast<std::size_t>(maxRow)];
+				const double yR = m_iterationVolumes[static_cast<std::size_t>(maxRow)];
+				m_bracketRight->append(xR, yMin);
+				m_bracketRight->append(xR, yR);
+			}
+
+			// Refine requires at least two distinct rows to define a range.
+			m_btnRefine->setEnabled(maxRow > minRow && maxRow < nData);
 		}
 
 		void runIterations()
@@ -270,20 +566,52 @@ namespace {
 			if (!m_iterateFunc)
 				return;
 
+			// When a custom start threshold is active (e.g. set via Refine from
+			// Selection) perform a clean reset before running so the table, chart
+			// and 3D view all start from a known baseline state.  The three
+			// user-configured parameters are captured before the reset and
+			// restored immediately afterwards so the run proceeds with the
+			// refined settings intact.
+			if (m_chkCustomStart->isChecked())
+			{
+				const double savedStart = m_spinCustomStart->value();
+				const int    savedIterations = m_spinIterations->value();
+				const double savedMultiplier = m_spinMultiplier->value();
+
+				resetState(); // clears table, chart, 3D view; unchecks override
+
+				m_chkCustomStart->setChecked(true);
+				m_spinCustomStart->setValue(savedStart);
+				m_spinIterations->setValue(savedIterations);
+				m_spinMultiplier->setValue(savedMultiplier);
+
+				updateStepSizeLabel(savedMultiplier);
+				updateFinalThresholdLabel(savedIterations, savedMultiplier);
+			}
+
 			m_btnRun->setEnabled(false);
 			m_btnReset->setEnabled(false);
 			m_btnApply->setEnabled(false);
 			m_spinIterations->setEnabled(false);
-			m_spinMultiplier->setEnabled(false);
+			m_spinTargetIslands->setEnabled(false);
+			m_spinVolumeThreshold->setEnabled(false);
 
 			const int    maxIter = m_spinIterations->value();
 			const double multiplier = m_spinMultiplier->value();
+			const double startThreshold = effectiveStartThreshold();
+			const int maxIslands = m_spinTargetIslands->value();
+			const double volumeThreshold = m_spinVolumeThreshold->value();
+			// Tracks whether the loop exited via the target-islands criterion
+			// and which row first reached that count.  Used by the post-loop
+			// convergence check.
+			bool targetReached = false;
+			int  targetRowM = -1;
 
 			for (int iter = 1; iter <= maxIter; ++iter)
 			{
 				const double threshold =
-					m_baseThreshold
-					+ static_cast<double>(iter) * multiplier * m_baseStdDev;
+					startThreshold
+					+ static_cast<double>(iter - 1) * multiplier * m_baseStdDev;
 
 				const auto islands = m_iterateFunc(threshold);
 
@@ -323,6 +651,94 @@ namespace {
 					static_cast<int>(islands.size()));
 
 				QCoreApplication::processEvents();
+
+				// Stop as soon as the segmentation produces the desired number of islands.
+				if (static_cast<int>(islands.size()) >= maxIslands)
+				{
+					qDebug("IterationProgressDialog: iter=%d — target island count %d reached (%zu islands); stopping.",
+						iter, maxIslands, islands.size());
+
+					targetReached = true;
+					targetRowM = m_iterationTable->rowCount() - 1;
+
+					// Auto-select the two bracketing rows so Refine from Selection
+					// is immediately primed with the correct parameters:
+					//   row M   = this row (first to reach target island count)  -> TM
+					//   row N   = M - 1  (last row below target count)          -> TN
+					//   K = (TM - TN) / (maxIterations x stdDev)
+					const int rowM = targetRowM;
+					const int rowN = rowM - 1;
+
+					m_iterationTable->clearSelection();
+
+					if (rowN >= 0)
+					{
+						// Select the contiguous range [N, M] across all columns.
+						m_iterationTable->setRangeSelected(
+							QTableWidgetSelectionRange(
+							rowN, 0, rowM, m_iterationTable->columnCount() - 1),
+							true);
+					}
+					else if (rowM >= 0)
+					{
+						// Only one row exists; select it alone.
+						m_iterationTable->setRangeSelected(
+							QTableWidgetSelectionRange(
+							rowM, 0, rowM, m_iterationTable->columnCount() - 1),
+							true);
+					}
+
+					// Scroll so the selection is visible.
+					if (auto* item = m_iterationTable->item(rowM, 0))
+						m_iterationTable->scrollToItem(item);
+
+					break;
+				}
+			}
+
+			// Post-loop convergence check.
+			// Only evaluated when the loop stopped because the target island
+			// count was reached AND there are at least two rows to compare.
+			if (targetReached
+				&& targetRowM >= 1
+				&& targetRowM < static_cast<int>(m_iterationVolumes.size()))
+			{
+				const int    rowM = targetRowM;
+				const int    rowN = rowM - 1;
+				const double volChange = std::abs(
+					m_iterationVolumes[static_cast<std::size_t>(rowM)]
+					- m_iterationVolumes[static_cast<std::size_t>(rowN)]);
+
+				if (volChange <= m_spinVolumeThreshold->value())
+				{
+					// Volume change is below the threshold: refinement would not
+					// meaningfully improve the result.  Override the selection to
+					// the final row only so the user can immediately apply it.
+					m_iterationTable->clearSelection();
+					m_iterationTable->setRangeSelected(
+						QTableWidgetSelectionRange(
+						rowM, 0, rowM, m_iterationTable->columnCount() - 1),
+						true);
+
+					if (auto* item = m_iterationTable->item(rowM, 0))
+						m_iterationTable->scrollToItem(item);
+
+					m_btnRefine->setEnabled(false);
+
+					QMessageBox::warning(
+						this,
+						tr("Volume Convergence \u2014 Refinement Not Required"),
+						tr("The volume change between the two bracketing rows is "
+						"<b>%1 \u00D710\u00B3 mm\u00B3</b>, which is at or below "
+						"the volume threshold of <b>%2 \u00D710\u00B3 mm\u00B3</b>.<br><br>"
+						"Further refinement is unlikely to improve the result.<br><br>"
+						"Row <b>%3</b> (threshold&nbsp;%4) has been selected automatically."
+						"<br>Click <i>Apply Selection</i> to finalise.")
+							.arg(volChange, 0, 'f', 4)
+							.arg(m_spinVolumeThreshold->value(), 0, 'f', 4)
+							.arg(rowM + 1)
+							.arg(m_iterationThresholds[static_cast<std::size_t>(rowM)], 0, 'f', 2));
+				}
 			}
 
 			m_btnRun->setEnabled(true);
@@ -331,6 +747,8 @@ namespace {
 				m_selectionGroup->checkedButton() != nullptr);
 			m_spinIterations->setEnabled(true);
 			m_spinMultiplier->setEnabled(true);
+			m_spinTargetIslands->setEnabled(true);
+			m_spinVolumeThreshold->setEnabled(true);
 		}
 
 		// Appends one row to the iteration history table and registers its
@@ -342,8 +760,9 @@ namespace {
 			const int row = m_iterationTable->rowCount();
 			m_iterationTable->insertRow(row);
 
-			// Store the threshold so Apply Selection can retrieve it by row id.
+			// Store threshold and volume so updateSelectionBrackets() can look them up by row.
 			m_iterationThresholds.push_back(threshold);
+			m_iterationVolumes.push_back(volumeMm3x1k);
 
 			// Volume ×10³ to 3 significant figures — matches the chart Y axis exactly.
 			const QString volStr = QString::number(volumeMm3x1k, 'g', 3);
@@ -388,12 +807,24 @@ namespace {
 				m_selectionGroup->removeButton(btn);
 
 			m_iterationThresholds.clear();
+			m_iterationVolumes.clear();
 			m_iterationTable->setRowCount(0);
 			m_btnApply->setEnabled(false);
+			m_btnRefine->setEnabled(false);
 
-			// Clear chart data and reset axis ranges to initial placeholders.
+			m_chkCustomStart->setChecked(false);
+			m_spinCustomStart->setValue(m_baseThreshold);
+
+			// Restore the multiplier spin to its default range and precision
+			// in case a previous Refine widened them.
+			m_spinMultiplier->setDecimals(3);
+			m_spinMultiplier->setRange(0.001, 10.0);
+			m_spinMultiplier->setValue(0.1);
+
 			m_series->clear();
 			m_seriesPoints->clear();
+			m_bracketLeft->clear();
+			m_bracketRight->clear();
 
 			m_dataMinX = std::numeric_limits<double>::max();
 			m_dataMaxX = std::numeric_limits<double>::lowest();
@@ -446,16 +877,24 @@ namespace {
 		double          m_voxelVolMm3;
 
 		QSpinBox* m_spinIterations = nullptr;
+		QSpinBox* m_spinTargetIslands = nullptr;
 		QDoubleSpinBox* m_spinMultiplier = nullptr;
+		QDoubleSpinBox* m_spinVolumeThreshold = nullptr;
 		QLabel* m_labelStepSize = nullptr;
+		QLabel* m_labelFinalThreshold = nullptr;
+		QCheckBox* m_chkCustomStart = nullptr;
+		QDoubleSpinBox* m_spinCustomStart = nullptr;
 		QPushButton* m_btnRun = nullptr;
 		QPushButton* m_btnReset = nullptr;
 		QPushButton* m_btnApply = nullptr;
+		QPushButton* m_btnRefine = nullptr;
 
 		QTableWidget* m_iterationTable = nullptr;
 		QButtonGroup* m_selectionGroup = nullptr;
 		QLineSeries* m_series = nullptr;
 		QScatterSeries* m_seriesPoints = nullptr;
+		QLineSeries* m_bracketLeft = nullptr;
+		QLineSeries* m_bracketRight = nullptr;
 		QChart* m_chart = nullptr;
 		QValueAxis* m_axisX = nullptr;
 		QValueAxis* m_axisY = nullptr;
@@ -468,6 +907,7 @@ namespace {
 		IterateFunc              m_iterateFunc;
 		ResetFunc                m_resetFunc;
 		std::vector<double>      m_iterationThresholds;
+		std::vector<double>      m_iterationVolumes;
 	};
 
 } // anonymous namespace
@@ -1566,10 +2006,6 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Threshold + seeded BFS flood-fill → island surface actors
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // onRegions
 //
 // Runs an initial BFS segmentation at the baseline threshold, displays the
@@ -1628,9 +2064,16 @@ void PrototypeMainWindow::onRegions()
 	qDebug("onRegions: initial region grow  threshold=%.4f", m_threshold);
 
 	vtkSmartPointer<vtkImageData> labelImage;
+
+#ifdef PARALLEL_ISLANDS
+	std::vector<PrototypeHelpers::BoneIsland> islands =
+		PrototypeHelpers::segmentBoneIslandsParallel(
+			m_reslicedImage, m_threshold, seeds, labelImage, makeProgress);
+#else
 	std::vector<PrototypeHelpers::BoneIsland> islands =
 		PrototypeHelpers::segmentBoneIslands(
 			m_reslicedImage, m_threshold, seeds, labelImage, makeProgress);
+#endif
 
 	showProgressEnd();
 
@@ -1685,10 +2128,24 @@ void PrototypeMainWindow::onRegions()
 					QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 				};
 
+			// Move each seed inward along its eigen-axis toward the centroid to
+			// the nearest voxel that satisfies the current (higher) threshold.
+			// The original landmark sphere positions are not modified.
+			const std::vector<std::array<double, 3>> adjustedSeeds =
+				PrototypeHelpers::computeInwardAdjustedSeeds(
+					m_reslicedImage, threshold, seeds, m_pca);
+
 			showProgressStart();
 			vtkSmartPointer<vtkImageData> iterLabel;
+
+#ifdef PARALLEL_ISLANDS
+			auto iterIslands = PrototypeHelpers::segmentBoneIslandsParallel(
+				m_reslicedImage, threshold, adjustedSeeds, iterLabel, progress);
+#else
 			auto iterIslands = PrototypeHelpers::segmentBoneIslands(
-				m_reslicedImage, threshold, seeds, iterLabel, progress);
+				m_reslicedImage, threshold, adjustedSeeds, iterLabel, progress);
+#endif
+
 			showProgressEnd();
 
 			if (!iterIslands.empty())

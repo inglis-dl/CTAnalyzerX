@@ -99,7 +99,7 @@ endif()
 # ========================
 # Find Qt AFTER VTK
 # ========================
-set(qt_components Core Gui Widgets Charts)
+set(qt_components Core Gui Widgets Charts Concurrent)
 
 find_package(Qt${VTK_QT_VERSION}
     CONFIG

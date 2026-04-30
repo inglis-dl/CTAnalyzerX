@@ -1,4 +1,4 @@
-#include "PrototypeHelpers.h"
+﻿#include "PrototypeHelpers.h"
 
 #include <vtkActor.h>
 #include <vtkCellArray.h>
@@ -43,6 +43,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
+#include <QtConcurrent/QtConcurrent>
 
 #include <algorithm>
 #include <array>
@@ -52,6 +53,7 @@
 #include <queue>
 #include <stdexcept>
 #include <vector>
+#include <atomic>
 
 namespace PrototypeHelpers
 {
@@ -798,6 +800,641 @@ namespace PrototypeHelpers
 		if (progressCb) progressCb(100);
 
 		return islands;
+	}
+
+	// -----------------------------------------------------------------------
+// Bone island segmentation — parallel (QtConcurrent)
+//
+// Identical output contract to segmentBoneIslands().  Three parallel
+// passes replace the three serial O(N) loops, and the per-seed BFS tasks
+// run concurrently.  A union-find merge pass after the BFS collapses any
+// seeds that land on the same physical bone into a single BoneIsland,
+// preserving the same island count and label semantics as the serial version.
+//
+// Pass breakdown
+// ──────────────
+//  1. Binary mask        QtConcurrent::blockingMap   O(N) fully data-parallel
+//  2. Per-seed BFS       QtConcurrent::run           one task per seed,
+//                                                    QAtomicInteger CAS ownership
+//  3. Union-find merge   serial O(N) adjacency scan  collapses same-bone seeds
+//  4. Output pack        QtConcurrent::blockingMap   O(N) fully data-parallel
+// -----------------------------------------------------------------------
+	std::vector<BoneIsland> segmentBoneIslandsParallel(
+		vtkImageData* reslicedImage,
+		double                                     threshold,
+		const std::vector<std::array<double, 3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>& outLabelImage,
+		const std::function<void(int)>& progressCb)
+	{
+		if (!reslicedImage || seedsWorld.empty())
+			return {};
+
+		const double* origin = reslicedImage->GetOrigin();
+		const double* spacing = reslicedImage->GetSpacing();
+		const int* dims = reslicedImage->GetDimensions();
+		vtkDataArray* scalars = reslicedImage->GetPointData()->GetScalars();
+
+		if (!scalars)
+		{
+			qWarning("segmentBoneIslandsParallel: resliced image has no scalar data.");
+			return {};
+		}
+
+		if (progressCb) progressCb(0);
+
+		const vtkIdType NX = dims[0];
+		const vtkIdType NY = dims[1];
+		const vtkIdType NZ = dims[2];
+		const vtkIdType totalVoxels = NX * NY * NZ;
+		const int       nVox = static_cast<int>(totalVoxels);
+
+		// Flat-index helper — captured by value into every lambda so that
+		// NX/NY are not referenced through a dangling stack frame once tasks
+		// are running on worker threads.
+		const auto flatIdx =
+			[NX, NY](vtkIdType x, vtkIdType y, vtkIdType z) -> vtkIdType
+			{
+				return z * NY * NX + y * NX + x;
+			};
+
+		// 26-connected neighbourhood offsets
+		constexpr int offsets[26][3] = {
+			{-1,-1,-1},{-1,-1, 0},{-1,-1, 1},
+			{-1, 0,-1},{-1, 0, 0},{-1, 0, 1},
+			{-1, 1,-1},{-1, 1, 0},{-1, 1, 1},
+			{ 0,-1,-1},{ 0,-1, 0},{ 0,-1, 1},
+			{ 0, 0,-1},           { 0, 0, 1},
+			{ 0, 1,-1},{ 0, 1, 0},{ 0, 1, 1},
+			{ 1,-1,-1},{ 1,-1, 0},{ 1,-1, 1},
+			{ 1, 0,-1},{ 1, 0, 0},{ 1, 0, 1},
+			{ 1, 1,-1},{ 1, 1, 0},{ 1, 1, 1},
+		};
+
+		// ── 1. Parallel binary mask ───────────────────────────────────────
+		// GetTuple1() is a pure indexed read on VTK's contiguous scalar buffer
+		// and is safe to call concurrently from multiple threads.
+		std::vector<quint8> binary(static_cast<std::size_t>(nVox), 0u);
+
+		{
+			QVector<int> idx(nVox);
+			std::iota(idx.begin(), idx.end(), 0);
+
+			QtConcurrent::blockingMap(idx,
+				[&](int i)
+				{
+					if (scalars->GetTuple1(i) >= threshold)
+						binary[static_cast<std::size_t>(i)] = 1u;
+				});
+		}
+
+		if (progressCb) progressCb(10);
+
+		// ── 2. Seed setup — must run on calling thread ────────────────────
+		// TransformPhysicalPointToContinuousIndex is not thread-safe; resolve
+		// all seed voxel coordinates here before any async tasks are launched.
+		struct SeedSetup
+		{
+			int    voxel[3] = { 0, 0, 0 };
+			double world[3] = { 0.0, 0.0, 0.0 };
+			quint8 label = 0u;   // 1-based unique label per valid seed
+			bool   valid = false;
+		};
+
+		const int nSeeds = static_cast<int>(seedsWorld.size());
+		std::vector<SeedSetup> setups(static_cast<std::size_t>(nSeeds));
+
+		quint8 nextLabel = 1u;
+		for (int s = 0; s < nSeeds; ++s)
+		{
+			SeedSetup& ss = setups[static_cast<std::size_t>(s)];
+			ss.world[0] = seedsWorld[static_cast<std::size_t>(s)][0];
+			ss.world[1] = seedsWorld[static_cast<std::size_t>(s)][1];
+			ss.world[2] = seedsWorld[static_cast<std::size_t>(s)][2];
+
+			double cont[3] = {};
+			reslicedImage->TransformPhysicalPointToContinuousIndex(ss.world, cont);
+			ss.voxel[0] = static_cast<int>(std::lround(cont[0]));
+			ss.voxel[1] = static_cast<int>(std::lround(cont[1]));
+			ss.voxel[2] = static_cast<int>(std::lround(cont[2]));
+
+			if (ss.voxel[0] < 0 || ss.voxel[0] >= dims[0] ||
+				ss.voxel[1] < 0 || ss.voxel[1] >= dims[1] ||
+				ss.voxel[2] < 0 || ss.voxel[2] >= dims[2])
+			{
+				qWarning("segmentBoneIslandsParallel: seed %d is outside image extent; skipped.", s);
+				continue;
+			}
+
+			const vtkIdType sf = flatIdx(ss.voxel[0], ss.voxel[1], ss.voxel[2]);
+			if (binary[static_cast<std::size_t>(sf)] == 0u)
+			{
+				qWarning("segmentBoneIslandsParallel: seed %d voxel (%d,%d,%d) "
+					"is below threshold; skipped.",
+					s, ss.voxel[0], ss.voxel[1], ss.voxel[2]);
+				continue;
+			}
+
+			ss.label = nextLabel++;
+			ss.valid = true;
+		}
+
+		// ── 3. Atomic label map ───────────────────────────────────────────
+		// QAtomicInteger<quint8> default-constructs to 0.
+		// testAndSetOrdered(0, label) is the Qt equivalent of
+		// compare_exchange_strong: returns true and writes label only when the
+		// current value is 0 (voxel unclaimed).
+		auto labelMap =
+			std::make_unique<QAtomicInteger<quint8>[]>(
+				static_cast<std::size_t>(nVox));
+
+		for (int i = 0; i < nVox; ++i)
+			labelMap[i].storeRelaxed(0u);
+
+		// ── 4. Concurrent per-seed BFS ────────────────────────────────────
+		// Each task grows from its own seed voxel.  Voxel ownership is
+		// decided by CAS: the first thread to claim a voxel enqueues it into
+		// its own BFS queue; all others skip it.  Seeds on the same physical
+		// bone will each win their own starting voxel and grow until they
+		// collide — the union-find pass (step 5) re-unites them.
+		struct BfsResult
+		{
+			int       seedIndex = -1;
+			quint8    label = 0u;
+			vtkIdType voxelCount = 0;
+			int       bbMin[3] = {};
+			int       bbMax[3] = {};
+			bool      valid = false;
+		};
+
+		// Raw pointer captured by value — the unique_ptr owner outlives all
+		// futures because .result() is called before this function returns.
+		QAtomicInteger<quint8>* lmRaw = labelMap.get();
+		const quint8* binRaw = binary.data();
+
+		QVector<QFuture<BfsResult>> futures;
+		futures.reserve(nSeeds);
+
+		for (int s = 0; s < nSeeds; ++s)
+		{
+			// Copy by value: the lambda must not hold a reference into setups
+			// since this loop may continue modifying it while tasks run.
+			const SeedSetup ss = setups[static_cast<std::size_t>(s)];
+
+			if (!ss.valid)
+			{
+				futures.append(QtConcurrent::run(
+					[s]() -> BfsResult { return BfsResult{ s, 0u, 0, {}, {}, false }; }));
+				continue;
+			}
+
+			futures.append(QtConcurrent::run(
+				[s, ss, NX, NY, NZ, lmRaw, binRaw, flatIdx, &offsets]() -> BfsResult
+				{
+					BfsResult result;
+					result.seedIndex = s;
+					result.label = ss.label;
+					result.bbMin[0] = ss.voxel[0];
+					result.bbMin[1] = ss.voxel[1];
+					result.bbMin[2] = ss.voxel[2];
+					result.bbMax[0] = ss.voxel[0];
+					result.bbMax[1] = ss.voxel[1];
+					result.bbMax[2] = ss.voxel[2];
+
+					const vtkIdType seedFlat =
+						flatIdx(ss.voxel[0], ss.voxel[1], ss.voxel[2]);
+
+					// Claim seed voxel; abort if another task already owns it.
+					if (!lmRaw[seedFlat].testAndSetOrdered(0u, ss.label))
+						return result;  // valid remains false
+
+					std::queue<std::array<vtkIdType, 3>> bfsQueue;
+					bfsQueue.push({ ss.voxel[0], ss.voxel[1], ss.voxel[2] });
+					result.valid = true;
+
+					while (!bfsQueue.empty())
+					{
+						const auto cur = bfsQueue.front();
+						bfsQueue.pop();
+
+						const vtkIdType cx = cur[0];
+						const vtkIdType cy = cur[1];
+						const vtkIdType cz = cur[2];
+
+						++result.voxelCount;
+
+						result.bbMin[0] = std::min(result.bbMin[0], static_cast<int>(cx));
+						result.bbMin[1] = std::min(result.bbMin[1], static_cast<int>(cy));
+						result.bbMin[2] = std::min(result.bbMin[2], static_cast<int>(cz));
+						result.bbMax[0] = std::max(result.bbMax[0], static_cast<int>(cx));
+						result.bbMax[1] = std::max(result.bbMax[1], static_cast<int>(cy));
+						result.bbMax[2] = std::max(result.bbMax[2], static_cast<int>(cz));
+
+						for (const auto& off : offsets)
+						{
+							const vtkIdType nx_ = cx + off[0];
+							const vtkIdType ny_ = cy + off[1];
+							const vtkIdType nz_ = cz + off[2];
+
+							if (nx_ < 0 || nx_ >= NX ||
+								ny_ < 0 || ny_ >= NY ||
+								nz_ < 0 || nz_ >= NZ)
+								continue;
+
+							const vtkIdType   nFlat = flatIdx(nx_, ny_, nz_);
+							const std::size_t nFlatSz = static_cast<std::size_t>(nFlat);
+
+							if (binRaw[nFlatSz] == 0u)
+								continue;
+
+							// CAS: enqueue only if this task wins ownership.
+							if (lmRaw[nFlat].testAndSetOrdered(0u, ss.label))
+								bfsQueue.push({ nx_, ny_, nz_ });
+						}
+					}
+
+					return result;
+				}));
+		}
+
+		// Collect all BFS results — .result() blocks until each task is done.
+		std::vector<BfsResult> bfsResults;
+		bfsResults.reserve(static_cast<std::size_t>(nSeeds));
+
+		for (int s = 0; s < nSeeds; ++s)
+		{
+			bfsResults.push_back(futures[s].result());
+
+			if (progressCb)
+			{
+				const int pct = 10 + static_cast<int>(
+					50.0 * (s + 1) / static_cast<double>(nSeeds));
+				progressCb(pct);
+			}
+		}
+
+		if (progressCb) progressCb(60);
+
+		// ── 5. Union-find merge ───────────────────────────────────────────
+		// Seeds that landed on the same physical bone each grew a fragment with
+		// a distinct label.  The fragments share 26-connected boundaries in the
+		// label map.  A single O(N) adjacency scan detects all such boundaries;
+		// union-find with path compression merges the sets so every fragment of
+		// the same bone resolves to one canonical root label.
+		//
+		// Labels are 1-based (1 … nSeeds).  Index 0 in parent[] is unused.
+		const int maxLabel = nSeeds + 1;
+		std::vector<int> parent(static_cast<std::size_t>(maxLabel));
+		std::iota(parent.begin(), parent.end(), 0);
+
+		// find() with path compression — not thread-safe but only called serially.
+		std::function<int(int)> find = [&](int x) -> int
+			{
+				if (parent[static_cast<std::size_t>(x)] != x)
+					parent[static_cast<std::size_t>(x)] =
+					find(parent[static_cast<std::size_t>(x)]);
+				return parent[static_cast<std::size_t>(x)];
+			};
+
+		const auto unite = [&](int a, int b)
+			{
+				a = find(a);
+				b = find(b);
+				if (a != b)
+					parent[static_cast<std::size_t>(a)] = b;
+			};
+
+		// 6-connected adjacency scan — sufficient to detect boundaries between
+		// 26-connected BFS regions (any two touching regions share at least one
+		// 6-connected face voxel pair).
+		constexpr int adj6[6][3] = {
+			{ 1,0,0},{-1,0,0},
+			{ 0,1,0},{ 0,-1,0},
+			{ 0,0,1},{ 0,0,-1}
+		};
+
+		for (vtkIdType z = 0; z < NZ; ++z)
+			for (vtkIdType y = 0; y < NY; ++y)
+				for (vtkIdType x = 0; x < NX; ++x)
+				{
+					const auto aLbl = static_cast<int>(
+						labelMap[static_cast<std::size_t>(flatIdx(x, y, z))].loadRelaxed());
+					if (aLbl == 0) continue;
+
+					for (const auto& d : adj6)
+					{
+						const vtkIdType nx_ = x + d[0];
+						const vtkIdType ny_ = y + d[1];
+						const vtkIdType nz_ = z + d[2];
+
+						if (nx_ < 0 || nx_ >= NX ||
+							ny_ < 0 || ny_ >= NY ||
+							nz_ < 0 || nz_ >= NZ)
+							continue;
+
+						const auto bLbl = static_cast<int>(
+							labelMap[static_cast<std::size_t>(
+							flatIdx(nx_, ny_, nz_))].loadRelaxed());
+
+						if (bLbl != 0 && bLbl != aLbl)
+							unite(aLbl, bLbl);
+					}
+				}
+
+		if (progressCb) progressCb(75);
+
+		// ── 6. Build canonical BoneIsland records ─────────────────────────
+		// Group BfsResults by their canonical root label.  Merge voxelCount
+		// and expand bounding boxes across all fragments that share a root.
+		// The seed chosen for a merged island is the one with the most voxels
+		// (most representative starting point).
+
+		// canonical root label → index into mergedResults
+		std::unordered_map<int, std::size_t> rootToIdx;
+		rootToIdx.reserve(static_cast<std::size_t>(nSeeds));
+
+		struct MergedResult
+		{
+			int       canonicalRoot = 0;
+			quint8    label = 0u;  // final 1-based output label
+			vtkIdType voxelCount = 0;
+			int       bbMin[3] = {};
+			int       bbMax[3] = {};
+			int       seedIndex = -1;  // seed with the most voxels
+			vtkIdType seedVoxelCount = 0;  // voxelCount of the representative seed
+		};
+
+		std::vector<MergedResult> mergedResults;
+		mergedResults.reserve(static_cast<std::size_t>(nSeeds));
+
+		for (int s = 0; s < nSeeds; ++s)
+		{
+			const BfsResult& r = bfsResults[static_cast<std::size_t>(s)];
+			if (!r.valid || r.voxelCount == 0)
+				continue;
+
+			const int root = find(static_cast<int>(r.label));
+
+			auto it = rootToIdx.find(root);
+			if (it == rootToIdx.end())
+			{
+				// First fragment for this root — create a new merged entry.
+				MergedResult mr;
+				mr.canonicalRoot = root;
+				mr.voxelCount = r.voxelCount;
+				mr.bbMin[0] = r.bbMin[0]; mr.bbMin[1] = r.bbMin[1]; mr.bbMin[2] = r.bbMin[2];
+				mr.bbMax[0] = r.bbMax[0]; mr.bbMax[1] = r.bbMax[1]; mr.bbMax[2] = r.bbMax[2];
+				mr.seedIndex = s;
+				mr.seedVoxelCount = r.voxelCount;
+				rootToIdx[root] = mergedResults.size();
+				mergedResults.push_back(mr);
+			}
+			else
+			{
+				// Additional fragment — accumulate into existing entry.
+				MergedResult& mr = mergedResults[it->second];
+				mr.voxelCount += r.voxelCount;
+				mr.bbMin[0] = std::min(mr.bbMin[0], r.bbMin[0]);
+				mr.bbMin[1] = std::min(mr.bbMin[1], r.bbMin[1]);
+				mr.bbMin[2] = std::min(mr.bbMin[2], r.bbMin[2]);
+				mr.bbMax[0] = std::max(mr.bbMax[0], r.bbMax[0]);
+				mr.bbMax[1] = std::max(mr.bbMax[1], r.bbMax[1]);
+				mr.bbMax[2] = std::max(mr.bbMax[2], r.bbMax[2]);
+
+				// Promote to representative seed if this fragment is larger.
+				if (r.voxelCount > mr.seedVoxelCount)
+				{
+					mr.seedIndex = s;
+					mr.seedVoxelCount = r.voxelCount;
+				}
+			}
+		}
+
+		// Assign final 1-based output labels in order of merged entry index.
+		for (std::size_t m = 0; m < mergedResults.size(); ++m)
+			mergedResults[m].label = static_cast<quint8>(m + 1u);
+
+		// Build remapping table: BFS label → final output label.
+		// All fragments under the same root get the same final label.
+		std::vector<quint8> labelRemap(static_cast<std::size_t>(maxLabel), 0u);
+		for (const MergedResult& mr : mergedResults)
+		{
+			// Walk every BfsResult whose root matches this merged entry and remap.
+			for (int s = 0; s < nSeeds; ++s)
+			{
+				const BfsResult& r = bfsResults[static_cast<std::size_t>(s)];
+				if (!r.valid || r.voxelCount == 0)
+					continue;
+				if (find(static_cast<int>(r.label)) == mr.canonicalRoot)
+					labelRemap[static_cast<std::size_t>(r.label)] = mr.label;
+			}
+		}
+
+		if (progressCb) progressCb(80);
+
+		// ── 7. Parallel output pack with remapping ────────────────────────
+		// Remap every atomic label in labelMap to the final merged label and
+		// write it directly into the output vtkImageData scalar buffer.
+		outLabelImage = vtkSmartPointer<vtkImageData>::New();
+		outLabelImage->SetDimensions(dims);
+		outLabelImage->SetSpacing(spacing);
+		outLabelImage->SetOrigin(origin);
+		outLabelImage->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+
+		auto* outPtr = static_cast<quint8*>(outLabelImage->GetScalarPointer());
+
+		{
+			QVector<int> idx(nVox);
+			std::iota(idx.begin(), idx.end(), 0);
+
+			const QAtomicInteger<quint8>* lmConst = labelMap.get();
+			const quint8* remapConst = labelRemap.data();
+
+			QtConcurrent::blockingMap(idx,
+				[lmConst, remapConst, outPtr](int i)
+				{
+					const quint8 raw = lmConst[i].loadRelaxed();
+					outPtr[i] = (raw == 0u)
+						? 0u
+						: remapConst[static_cast<std::size_t>(raw)];
+				});
+		}
+
+		if (progressCb) progressCb(90);
+
+		// ── 8. Finalise BoneIsland records ───────────────────────────────
+		auto packVec3 = [](const double v[3]) -> QJsonArray
+			{
+				return QJsonArray{ v[0], v[1], v[2] };
+			};
+
+		std::vector<BoneIsland> islands;
+		islands.reserve(mergedResults.size());
+
+		for (const MergedResult& mr : mergedResults)
+		{
+			const SeedSetup& ss = setups[static_cast<std::size_t>(mr.seedIndex)];
+
+			double bbIdxMin[3] = {
+				static_cast<double>(mr.bbMin[0]),
+				static_cast<double>(mr.bbMin[1]),
+				static_cast<double>(mr.bbMin[2])
+			};
+			double bbIdxMax[3] = {
+				static_cast<double>(mr.bbMax[0]),
+				static_cast<double>(mr.bbMax[1]),
+				static_cast<double>(mr.bbMax[2])
+			};
+			double bbWorldMin[3] = {}, bbWorldMax[3] = {};
+			reslicedImage->TransformContinuousIndexToPhysicalPoint(bbIdxMin, bbWorldMin);
+			reslicedImage->TransformContinuousIndexToPhysicalPoint(bbIdxMax, bbWorldMax);
+
+			QJsonObject islandJson;
+			islandJson[QStringLiteral("label")] = static_cast<int>(mr.label);
+			islandJson[QStringLiteral("voxelCount")] = static_cast<qint64>(mr.voxelCount);
+			islandJson[QStringLiteral("seedWorld")] = packVec3(ss.world);
+			islandJson[QStringLiteral("bbMin")] = packVec3(bbWorldMin);
+			islandJson[QStringLiteral("bbMax")] = packVec3(bbWorldMax);
+
+			qDebug("segmentBoneIslandsParallel: merged island label=%d  "
+				"%lld voxels  BB [%d,%d,%d]-[%d,%d,%d]",
+				static_cast<int>(mr.label),
+				static_cast<long long>(mr.voxelCount),
+				mr.bbMin[0], mr.bbMin[1], mr.bbMin[2],
+				mr.bbMax[0], mr.bbMax[1], mr.bbMax[2]);
+
+			BoneIsland island;
+			island.label = static_cast<int>(mr.label);
+			island.voxelCount = mr.voxelCount;
+			island.seedWorld[0] = ss.world[0];
+			island.seedWorld[1] = ss.world[1];
+			island.seedWorld[2] = ss.world[2];
+			island.seedVoxel[0] = ss.voxel[0];
+			island.seedVoxel[1] = ss.voxel[1];
+			island.seedVoxel[2] = ss.voxel[2];
+			island.json = islandJson;
+
+			islands.push_back(island);
+		}
+
+		if (progressCb) progressCb(100);
+
+		return islands;
+	}
+
+	// -----------------------------------------------------------------------
+	// Inward seed adjustment for iterative region growing
+	//
+	// At higher thresholds the original landmark surface tips may fall below
+	// the threshold criterion, causing the BFS to find no island.  This helper
+	// walks each seed one voxel-step at a time toward the PCA centroid along
+	// its known eigen-axis direction and returns the position of the first
+	// voxel whose scalar value satisfies scalar >= threshold.
+	//
+	// Step size is half the smallest voxel spacing so no voxel is skipped.
+	// -----------------------------------------------------------------------
+	std::vector<std::array<double, 3>> computeInwardAdjustedSeeds(
+		vtkImageData* image,
+		double                                     threshold,
+		const std::vector<std::array<double, 3>>& originalSeedsWorld,
+		const PcaResult& pca)
+	{
+		// Start with a copy — any seed that cannot be adjusted is returned unchanged.
+		std::vector<std::array<double, 3>> adjusted = originalSeedsWorld;
+
+		if (!image || originalSeedsWorld.empty() || !pca.valid)
+			return adjusted;
+
+		vtkDataArray* scalars = image->GetPointData()->GetScalars();
+		if (!scalars)
+			return adjusted;
+
+		const double* spacing = image->GetSpacing();
+		const int* dims = image->GetDimensions();
+
+		// Sub-voxel step: half the smallest dimension spacing.
+		const double stepSize = 0.5 * std::min({ spacing[0], spacing[1], spacing[2] });
+
+		const int nSeeds = static_cast<int>(originalSeedsWorld.size());
+
+		for (int s = 0; s < nSeeds; ++s)
+		{
+			// Determine which eigen axis and which tip this seed represents.
+			// Seeds are packed as: axis=s/2, tip=s%2 (0=positive, 1=negative).
+			const int    axis = s / 2;
+			const int    tip = s % 2;
+
+			// Inward direction toward the centroid:
+			//   positive tip sits at  centroid + R*axes[axis]  -> inward = -axes[axis]
+			//   negative tip sits at  centroid - R*axes[axis]  -> inward = +axes[axis]
+			const double sign = (tip == 0) ? -1.0 : +1.0;
+			const double inward[3] = {
+				sign * pca.axes[axis][0],
+				sign * pca.axes[axis][1],
+				sign * pca.axes[axis][2]
+			};
+
+			const auto& sw = originalSeedsWorld[static_cast<std::size_t>(s)];
+
+			// Maximum walk distance: from the seed to the centroid.
+			const double dx = pca.centroid[0] - sw[0];
+			const double dy = pca.centroid[1] - sw[1];
+			const double dz = pca.centroid[2] - sw[2];
+			const double distToCentroid = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+			if (distToCentroid < stepSize)
+				continue; // seed is essentially at the centroid; leave unchanged
+
+			const int maxSteps = static_cast<int>(std::ceil(distToCentroid / stepSize));
+			bool      found = false;
+
+			for (int step = 0; step <= maxSteps; ++step)
+			{
+				const double t = static_cast<double>(step) * stepSize;
+				const double pos[3] = {
+					sw[0] + t * inward[0],
+					sw[1] + t * inward[1],
+					sw[2] + t * inward[2]
+				};
+
+				// Map world position to nearest voxel index.
+				double contIdx[3] = { 0.0, 0.0, 0.0 };
+				image->TransformPhysicalPointToContinuousIndex(pos, contIdx);
+
+				const int ix = static_cast<int>(std::lround(contIdx[0]));
+				const int iy = static_cast<int>(std::lround(contIdx[1]));
+				const int iz = static_cast<int>(std::lround(contIdx[2]));
+
+				if (ix < 0 || ix >= dims[0] ||
+					iy < 0 || iy >= dims[1] ||
+					iz < 0 || iz >= dims[2])
+					continue;
+
+				const vtkIdType flat =
+					static_cast<vtkIdType>(iz) * dims[1] * dims[0]
+					+ static_cast<vtkIdType>(iy) * dims[0]
+					+ static_cast<vtkIdType>(ix);
+
+				if (scalars->GetTuple1(flat) >= threshold)
+				{
+					adjusted[static_cast<std::size_t>(s)] = { pos[0], pos[1], pos[2] };
+					qDebug("computeInwardAdjustedSeeds: seed %d adjusted after %d steps "
+						   "(%.2f, %.2f, %.2f) -> (%.2f, %.2f, %.2f)",
+						   s, step,
+						   sw[0], sw[1], sw[2],
+						   pos[0], pos[1], pos[2]);
+					found = true;
+					break;
+				}
+			}
+
+			if (!found)
+			{
+				qDebug("computeInwardAdjustedSeeds: seed %d — no qualifying voxel found "
+					   "along inward walk; original position retained.", s);
+			}
+		}
+
+		return adjusted;
 	}
 
 	// -----------------------------------------------------------------------
@@ -1571,17 +2208,17 @@ namespace PrototypeHelpers
 	}
 
 	// -----------------------------------------------------------------------
-    // Bone island segmentation - ITK ImageGridCutFilter (graph cut)
-    // -----------------------------------------------------------------------
+	// Bone island segmentation - ITK ImageGridCutFilter (graph cut)
+	// -----------------------------------------------------------------------
 	// For a typical Scanco .isq or DICOM bone CT crop (voxel size ~0.05-0.1 mm):
-    //
-    //   sigma           = 200.0  - 600.0
-    //     Start at 300. Increase if the interior fragments; decrease if it leaks.
-    //
-    //   minIslandVoxels = 100    - 500
-    //     A 1 mm^3 cube at 0.05 mm voxel spacing = 8000 voxels.
-    //     50 is safe for removing noise; raise to 500+ if many small spurious
-    //     fragments survive after tuning sigma.
+	//
+	//   sigma           = 200.0  - 600.0
+	//     Start at 300. Increase if the interior fragments; decrease if it leaks.
+	//
+	//   minIslandVoxels = 100    - 500
+	//     A 1 mm^3 cube at 0.05 mm voxel spacing = 8000 voxels.
+	//     50 is safe for removing noise; raise to 500+ if many small spurious
+	//     fragments survive after tuning sigma.
 
 	std::vector<BoneIsland> segmentBoneIslandsGraphCut(
 		vtkImageData* reslicedImage,
