@@ -12,14 +12,15 @@
 
 #include "PrototypeHelpers.h"
 
+class ImageLoader;
+
+class QAction;
+
 class vtkActor;
+class vtkBillboardTextActor3D;
+class vtkEventQtSlotConnect;
 class vtkImageData;
 class vtkMatrix4x4;
-class vtkScalarBarActor;
-class ImageLoader;
-class vtkEventQtSlotConnect;
-class QAction;
-class vtkBillboardTextActor3D;
 
 namespace Ui { class MainWindow; }
 
@@ -54,15 +55,15 @@ private slots:
 	// Triggered by the "Regions" toolbar button.
 	// Thresholds the resliced volume, runs a seeded 26-connected BFS flood-fill
 	// from each landmark point, colours each island surface by voxel count using
-	// a cool-to-warm transfer function, and shows a scalar bar when nIslands > 1.
+	// a cool-to-warm transfer function.
 	void onRegions();
 
 	// Triggered by the "Graph Cut" toolbar button.
 	// Builds foreground seed paths (centroid -> 5 landmark tips) and background
 	// seed rays (outward from the same 5 tips, threshold-gated), then runs
 	// ITK ImageGridCutFilter (GridCut multi-threaded solver) to segment bone
-	// islands.  Results are displayed using the same colour/scalar-bar logic
-	// as onRegions() and onRegionsAlt().
+	// islands.  Results are displayed using the same colour logic
+	// as onRegions().
 	void onRegionsGraphCut();
 
 	// Triggered by the "Clean" toolbar button.
@@ -151,13 +152,10 @@ private:
 	vtkSmartPointer<vtkImageData> m_reslicedImage;
 	vtkSmartPointer<vtkImageData> m_labelImage;
 	vtkSmartPointer<vtkImageData> m_orphanMaskImage;
+	vtkSmartPointer<vtkMatrix4x4> m_lastResliceAxes;
 
 	std::vector<PrototypeHelpers::BoneIsland> m_islands;
-
 	std::vector<vtkSmartPointer<vtkActor>> m_islandActors;
-
-	vtkSmartPointer<vtkScalarBarActor> m_islandScalarBar;
-
 	std::vector<vtkSmartPointer<vtkActor>> m_graphCutSeedActors;
 
 	QJsonObject m_originalPcaJson;
@@ -185,4 +183,16 @@ private:
 
 	// Hides island surface actors whose labels are not in retainedLabels.
 	void applyIslandRetentionFilter(const QSet<int>& retainedLabels);
+
+	// Applies the inverse of the PCA reslice transform to map modified voxels
+	// from the cleaned resliced image back into original image coordinate space.
+	//
+	// A voxel is considered modified when it was originally above-threshold
+	// (bone) in m_originalImage but is now below-threshold in m_reslicedImage
+	// (replaced with background noise by onClean()).
+	//
+	// Returns a deep copy of m_originalImage with those voxels replaced by
+	// the corresponding noise values from the inverse-mapped resliced image.
+	// Returns nullptr when pre-conditions are not satisfied.
+	vtkSmartPointer<vtkImageData> applyInverseResliceToOriginal() const;
 };

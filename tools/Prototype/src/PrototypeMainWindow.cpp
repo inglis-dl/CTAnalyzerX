@@ -19,14 +19,15 @@
 #include <vtkImageData.h>
 #include <vtkImageReslice.h>
 #include <vtkMath.h>
+#include <vtkMatrix3x3.h>
 #include <vtkMatrix4x4.h>
 #include <vtkNIFTIImageWriter.h>
 #include <vtkPointData.h>
 #include <vtkRenderer.h>
 #include <vtkRenderWindow.h>
-#include <vtkScalarBarActor.h>
 #include <vtkSmartPointer.h>
 #include <vtkTextProperty.h>
+#include <vtkTransform.h>
 
 #include <QAction>
 #include <QButtonGroup>
@@ -68,7 +69,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <random>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -288,6 +288,7 @@ namespace {
 			std::vector<PrototypeHelpers::BoneIsland>(double threshold)
 		>;
 		using ResetFunc = std::function<void()>;
+		using OrphanFunc = std::function<void()>;
 
 		explicit IterationProgressDialog(
 			double baselineThreshold,
@@ -559,6 +560,7 @@ namespace {
 
 		void setIterateCallback(IterateFunc fn) { m_iterateFunc = std::move(fn); }
 		void setResetCallback(ResetFunc fn) { m_resetFunc = std::move(fn); }
+		void setOrphanCallback(OrphanFunc fn) { m_orphanFunc = std::move(fn); }
 
 	private:
 		// Returns the active starting threshold: custom value when override is
@@ -925,6 +927,16 @@ namespace {
 				}
 			}
 
+			// Re-identify orphan islands against the final iteration state so
+			// that any island split off during region growth — not connected to
+			// a landmark seed — is captured in the orphan mask and will be
+			// cleaned by onClean() without needing to be explicitly selected.
+			if (m_orphanFunc)
+			{
+				qDebug("IterationProgressDialog: running orphan identification after iterations.");
+				m_orphanFunc();
+			}
+
 			m_btnRun->setEnabled(true);
 			m_btnReset->setEnabled(true);
 			m_btnApply->setEnabled(
@@ -1189,6 +1201,7 @@ namespace {
 
 		IterateFunc              m_iterateFunc;
 		ResetFunc                m_resetFunc;
+		OrphanFunc               m_orphanFunc;
 		std::vector<double>      m_iterationThresholds;
 		std::vector<double>      m_iterationVolumes;
 	};
@@ -1303,10 +1316,10 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	connect(ui->sliceView, &SliceView::cursorDataChanged, this,
 	[this](const QString& text)
 	{
-	if (text.isEmpty())
-		statusBar()->clearMessage();
-	else
-		statusBar()->showMessage(text);
+		if (text.isEmpty())
+			statusBar()->clearMessage();
+		else
+			statusBar()->showMessage(text);
 	});
 
 	// ── Orphan mask toggle ────────────────────────────────────────────────────
@@ -1388,14 +1401,15 @@ void PrototypeMainWindow::setWorkflowStep(WorkflowStep step)
 	m_actInitialize->setEnabled(atIdle);
 	m_actRegions->setEnabled(atLandmarked);
 	m_actRegionsGraphCut->setEnabled(atLandmarked);
-
-	// Clean is available after initial segmentation and remains available
-	// after cleaning so the user can iteratively remove additional islands.
 	m_actClean->setEnabled(atSegmented || atCleaned);
 
-	m_actExportReslice->setEnabled(m_image != nullptr && std::isfinite(m_threshold));
+	// Export is only meaningful once onClean() has produced a cleaned
+	// resliced image that can be projected back into original image space.
+	m_actExportReslice->setEnabled(atCleaned);
+
 	m_actRestart->setEnabled(true);
 }
+
 // ---------------------------------------------------------------------------
 // Progress slots
 // ---------------------------------------------------------------------------
@@ -1519,13 +1533,6 @@ void PrototypeMainWindow::clearIslandActors()
 		if (a) ren->RemoveActor(a);
 	}
 	m_islandActors.clear();
-
-	// Remove the scalar bar when it exists
-	if (m_islandScalarBar)
-	{
-		ren->RemoveActor(m_islandScalarBar);
-		m_islandScalarBar = nullptr;
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1868,7 +1875,6 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	alignCameraToMediumAxis();
 }
 
-
 // ---------------------------------------------------------------------------
 // File open slot - lets the user pick a project sidecar JSON at any time
 // ---------------------------------------------------------------------------
@@ -2174,6 +2180,9 @@ void PrototypeMainWindow::onReslice()
 	const int* outDims = resliced->GetDimensions();
 	qDebug("onReslice: output dimensions: %d x %d x %d", outDims[0], outDims[1], outDims[2]);
 
+	m_lastResliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
+	m_lastResliceAxes->DeepCopy(resliceAxes);
+
 	m_reslicedImage = vtkSmartPointer<vtkImageData>::New();
 	m_reslicedImage->DeepCopy(resliced);
 
@@ -2279,25 +2288,6 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 		islandJson[QStringLiteral("colorG")] = rgb[1];
 		islandJson[QStringLiteral("colorB")] = rgb[2];
 		regionsArray.append(islandJson);
-	}
-
-	// ------------------------------------------------------------------
-	// Scalar bar - only when there are at least 2 distinct islands so the
-	// colour scale has meaningful variation to display
-	// ------------------------------------------------------------------
-	if (nIslands > 1 && ren)
-	{
-		m_islandScalarBar = PrototypeHelpers::makeIslandScalarBar(
-			colorTF,
-			minVoxels,
-			maxVoxels);
-
-		ren->AddActor(m_islandScalarBar);
-
-		qDebug("applyIslandSegmentationResult: scalar bar added (%d islands, range %lld-%lld voxels).",
-			   nIslands,
-			   static_cast<long long>(minVoxels),
-			   static_cast<long long>(maxVoxels));
 	}
 
 	// ------------------------------------------------------------------
@@ -2474,6 +2464,37 @@ void PrototypeMainWindow::onRegions()
 			applyIslandSegmentationResult(islands, labelImage);
 		});
 
+	progressDlg->setOrphanCallback(
+	[this, seeds]()
+	{
+		if (!m_reslicedImage || !std::isfinite(m_threshold))
+		{
+			qWarning("onRegions orphan callback: pre-conditions not met; skipping.");
+			return;
+		}
+
+		const auto progress = [this](int pct)
+			{
+				showProgressValue(pct);
+				m_progressBar->update();
+				QCoreApplication::processEvents(
+					QEventLoop::ExcludeUserInputEvents, 10);
+			};
+
+		showProgressStart();
+		m_orphanMaskImage = nullptr;
+		PrototypeHelpers::identifyOrphanIslands(
+			m_reslicedImage, m_threshold, seeds,
+			m_orphanMaskImage, progress);
+		showProgressEnd();
+
+		if (m_actToggleOrphanMask)
+			m_actToggleOrphanMask->setEnabled(m_orphanMaskImage != nullptr);
+
+		qDebug("onRegions orphan callback: orphan mask %s after iterations.",
+			m_orphanMaskImage ? "updated" : "unavailable");
+	});
+
 	progressDlg->setAttribute(Qt::WA_DeleteOnClose);
 	progressDlg->show();
 
@@ -2612,8 +2633,8 @@ void PrototypeMainWindow::onRegionsGraphCut()
 //     onInitialize step 3) to produce the final removal mask.
 //     Orphan voxels are foreground regions unreachable from any landmark
 //     seed; they are always removed regardless of island selection.
-//  5. Replace every removal-mask voxel in m_reslicedImage with a random
-//     draw from the background noise distribution.
+//  5. Replace every removal-mask voxel in m_reslicedImage with mean
+//     background value.
 //  6. Hide the removed island surface actors and refresh both views.
 //
 // The retained island plays no part: its voxels are absent from both the
@@ -2773,13 +2794,6 @@ void PrototypeMainWindow::onClean()
 			   "(run Initialize to enable orphan removal).");
 	}
 
-	// ------------------------------------------------------------------
-	// Step 4: replace every finalMask voxel with background noise
-	// ------------------------------------------------------------------
-	std::mt19937_64 rng{ std::random_device{}() };
-	std::uniform_real_distribution<double> noiseDist(
-		-noiseHalfWidth, noiseHalfWidth);
-
 	vtkIdType replacedIsland = 0;
 	vtkIdType replacedOrphan = 0;
 
@@ -2793,9 +2807,7 @@ void PrototypeMainWindow::onClean()
 		if (!inDilated && !inOrphan)
 			continue;
 
-		const double noiseVal = std::clamp(
-			bgMean + noiseDist(rng), scalarMin, scalarMax);
-		reslicedScalars->SetTuple1(i, noiseVal);
+		reslicedScalars->SetTuple1(i, bgMean);
 
 		if (inDilated) ++replacedIsland;
 		else           ++replacedOrphan;
@@ -2871,6 +2883,7 @@ void PrototypeMainWindow::onRestart()
 	clearIslandActors();
 	m_labelImage = nullptr;
 	m_reslicedImage = nullptr;
+	m_lastResliceAxes = nullptr;
 	m_islands.clear();
 	m_reslicedPcaJson = QJsonObject{};
 	m_landmarkResult = QJsonObject{};
@@ -2919,252 +2932,82 @@ void PrototypeMainWindow::loadFromSidecarAsync(const QString& sidecarPath)
 }
 
 // ---------------------------------------------------------------------------
-// Export Reslice slot
+// onExportReslice
 //
-// Pipeline:
-//   1. onReslice()   - PCA-aligned reslice of the current volume.
-//   2. onLandmark()  - Locate surface landmark points on the resliced volume.
-//   3. Threshold     - Identify bone voxels (scalar > m_threshold).
-//   4. Padded BB     - Build a bounding box over bone voxels, inflated by
-//                      dMin = 0.5 * shortest inter-landmark paired distance.
-//   5. vtkExtractVOI - Crop to the padded bounding box.
-//   6. NIfTI export  - Write the cropped volume to an auto-generated path:
-//                        <sidecar_dir>/<crop_basename>_reslice_export.nii
+// Projects the cleaned resliced image back into the original image coordinate
+// space via applyInverseResliceToOriginal() and writes the result as a NIfTI
+// file alongside the source sidecar.
 //
-// Pre-conditions:
-//   - A valid PCA result (m_pca.valid) and cached image (m_image) must exist.
-//   - m_threshold must be finite.
+// The action is only enabled once the workflow has reached WorkflowStep::Cleaned
+// so all pre-conditions are guaranteed by the time the user can trigger it.
+//
+// Output file: <sidecar_dir>/<crop_basename>_cleaned_original.nii
 // ---------------------------------------------------------------------------
-
 void PrototypeMainWindow::onExportReslice()
 {
-	// ------------------------------------------------------------------
-	// Pre-conditions
-	// ------------------------------------------------------------------
-	if (!m_pca.valid || !m_image)
+	// Guard — all pre-conditions should already be satisfied because the action
+	// is only enabled at WorkflowStep::Cleaned, but validate defensively.
+	if (!m_reslicedImage || !m_originalImage ||
+		!m_pca.valid || !std::isfinite(m_threshold))
 	{
-		QMessageBox::warning(this, tr("Export Reslice"),
-			tr("Load an image with a valid PCA result before exporting."));
+		QMessageBox::warning(this, tr("Export Cleaned Image"),
+			tr("The export requires a completed Clean step.\n"
+			"Run Initialize → Regions (or Graph Cut) → Clean first."));
 		return;
 	}
 
-	if (!std::isfinite(m_threshold))
-	{
-		QMessageBox::warning(this, tr("Export Reslice"),
-			tr("A finite threshold is required to perform the export.\n"
-			"Open a project sidecar that contains a threshold value."));
-		return;
-	}
-
-	// ------------------------------------------------------------------
-	// Step 1: Reslice
-	// ------------------------------------------------------------------
-	onReslice();
-
-	if (!m_reslicedImage)
-	{
-		QMessageBox::critical(this, tr("Export Reslice"),
-			tr("Reslice step failed; export aborted."));
-		return;
-	}
-
-	// ------------------------------------------------------------------
-	// Step 2: Landmark
-	// ------------------------------------------------------------------
-	onLandmark();
-
-	// m_landmarkPoints is populated by onLandmark(); validate it.
-	{
-		bool hasPoints = false;
-		for (int ax = 0; ax < 3; ++ax)
-			for (int d = 0; d < 2; ++d)
-				if (m_landmarkPoints[static_cast<std::size_t>(ax)]
-					[static_cast<std::size_t>(d)][0] != 0.0 ||
-					m_landmarkPoints[static_cast<std::size_t>(ax)]
-					[static_cast<std::size_t>(d)][1] != 0.0 ||
-					m_landmarkPoints[static_cast<std::size_t>(ax)]
-					[static_cast<std::size_t>(d)][2] != 0.0)
-				{
-					hasPoints = true;
-					break;
-				}
-
-		if (!hasPoints)
-		{
-			QMessageBox::critical(this, tr("Export Reslice"),
-				tr("Landmark step did not produce valid surface points; export aborted."));
-			return;
-		}
-	}
-
-	// ------------------------------------------------------------------
-	// Step 3: Build a bone-voxel bounding box from the resliced image.
-	//
-	// Iterate every voxel in m_reslicedImage; accumulate world-space
-	// positions of all voxels with scalar > m_threshold.
-	// ------------------------------------------------------------------
 	showProgressStart();
 	showProgressValue(5);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	vtkDataArray* scalars = m_reslicedImage->GetPointData()->GetScalars();
-	if (!scalars)
-	{
-		QMessageBox::critical(this, tr("Export Reslice"),
-			tr("Resliced image has no scalar data; export aborted."));
-		showProgressEnd();
-		return;
-	}
+	// Project cleaned resliced voxels back into original image space.
+	const auto result = applyInverseResliceToOriginal();
 
-	const double* origin = m_reslicedImage->GetOrigin();
-	const double* spacing = m_reslicedImage->GetSpacing();
-	const int* dims = m_reslicedImage->GetDimensions();
-
-	vtkBoundingBox boneBB;
-	const vtkIdType totalVoxels =
-		static_cast<vtkIdType>(dims[0]) * dims[1] * dims[2];
-
-	for (vtkIdType idx = 0; idx < totalVoxels; ++idx)
-	{
-		if ((idx & 0xFFFF) == 0)
-		{
-			const int pct = static_cast<int>(
-				std::clamp(static_cast<double>(idx) /
-				static_cast<double>(totalVoxels), 0.0, 1.0) * 40.0) + 5;
-			showProgressValue(pct);
-			m_progressBar->update();
-			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-		}
-
-		if (scalars->GetTuple1(idx) <= m_threshold)
-			continue;
-
-		// Flat index -> (i, j, k)
-		const vtkIdType i = idx % dims[0];
-		const vtkIdType j = (idx / dims[0]) % dims[1];
-		const vtkIdType k = idx / (static_cast<vtkIdType>(dims[0]) * dims[1]);
-
-		const double wx = origin[0] + i * spacing[0];
-		const double wy = origin[1] + j * spacing[1];
-		const double wz = origin[2] + k * spacing[2];
-
-		boneBB.AddPoint(wx, wy, wz);
-	}
-
-	if (!boneBB.IsValid())
-	{
-		QMessageBox::critical(this, tr("Export Reslice"),
-			tr("No above-threshold (bone) voxels found in the resliced volume; "
-			"export aborted."));
-		showProgressEnd();
-		return;
-	}
-
-	// ------------------------------------------------------------------
-	// Step 4: Compute dMin = 0.5 * shortest paired landmark distance,
-	//         then inflate the bounding box uniformly.
-	// ------------------------------------------------------------------
-	double minPairedDist = std::numeric_limits<double>::max();
-	for (int ax = 0; ax < 3; ++ax)
-	{
-		const double* lPos = m_landmarkPoints[static_cast<std::size_t>(ax)][0].data();
-		const double* lNeg = m_landmarkPoints[static_cast<std::size_t>(ax)][1].data();
-		const double dx = lPos[0] - lNeg[0];
-		const double dy = lPos[1] - lNeg[1];
-		const double dz = lPos[2] - lNeg[2];
-		minPairedDist = std::min(minPairedDist, std::sqrt(dx * dx + dy * dy + dz * dz));
-	}
-
-	const double dMin = 0.5 * minPairedDist;
-	boneBB.Inflate(dMin);
-
-	qDebug("onExportReslice: bone BB inflated by dMin=%.4f", dMin);
-
-	// ------------------------------------------------------------------
-	// Step 5: Map world BB to voxel extent and run vtkExtractVOI
-	// ------------------------------------------------------------------
-	showProgressValue(50);
-	m_progressBar->update();
+	showProgressValue(90);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	double worldMin[3], worldMax[3];
-	boneBB.GetMinPoint(worldMin);
-	boneBB.GetMaxPoint(worldMax);
-
-	double voxelIdxMin[3], voxelIdxMax[3];
-	m_reslicedImage->TransformPhysicalPointToContinuousIndex(worldMin, voxelIdxMin);
-	m_reslicedImage->TransformPhysicalPointToContinuousIndex(worldMax, voxelIdxMax);
-
-	int extent[6];
-	m_reslicedImage->GetExtent(extent);
-
-	const int voiXMin = std::clamp(static_cast<int>(std::lround(voxelIdxMin[0])), extent[0], extent[1]);
-	const int voiXMax = std::clamp(static_cast<int>(std::lround(voxelIdxMax[0])), extent[0], extent[1]);
-	const int voiYMin = std::clamp(static_cast<int>(std::lround(voxelIdxMin[1])), extent[2], extent[3]);
-	const int voiYMax = std::clamp(static_cast<int>(std::lround(voxelIdxMax[1])), extent[2], extent[3]);
-	const int voiZMin = std::clamp(static_cast<int>(std::lround(voxelIdxMin[2])), extent[4], extent[5]);
-	const int voiZMax = std::clamp(static_cast<int>(std::lround(voxelIdxMax[2])), extent[4], extent[5]);
-
-	qDebug("onExportReslice: VOI extent  x=[%d,%d]  y=[%d,%d]  z=[%d,%d]",
-		voiXMin, voiXMax, voiYMin, voiYMax, voiZMin, voiZMax);
-
-	auto extractVOI = vtkSmartPointer<vtkExtractVOI>::New();
-	extractVOI->SetInputData(m_reslicedImage);
-	extractVOI->SetVOI(voiXMin, voiXMax, voiYMin, voiYMax, voiZMin, voiZMax);
-	extractVOI->SetSampleRate(1, 1, 1);
-	extractVOI->Update();
-
-	vtkImageData* cropped = extractVOI->GetOutput();
-	if (!cropped || cropped->GetNumberOfPoints() == 0)
+	if (!result)
 	{
-		QMessageBox::critical(this, tr("Export Reslice"),
-			tr("VOI crop produced an empty volume; export aborted."));
+		QMessageBox::critical(this, tr("Export Cleaned Image"),
+			tr("Inverse reslice failed; export aborted."));
 		showProgressEnd();
 		return;
 	}
 
-	const int* croppedDims = cropped->GetDimensions();
-	qDebug("onExportReslice: cropped dims: %d x %d x %d",
-		croppedDims[0], croppedDims[1], croppedDims[2]);
-
-	// ------------------------------------------------------------------
-	// Step 6: Auto-generate output path and write NIfTI
-	//
-	// Pattern: <sidecar_dir>/<crop_basename>_reslice_export.nii
-	// Fallback (no sidecar): <temp_dir>/reslice_export.nii
-	// ------------------------------------------------------------------
-	showProgressValue(80);
-	m_progressBar->update();
-	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-
+	// ── Generate output path ──────────────────────────────────────────────────
+	// Pattern: <sidecar_dir>/<crop_basename>_cleaned_original.nii
+	// Fallback: <temp_dir>/cleaned_original.nii
 	QString outputPath;
 	if (!m_sidecarPath.isEmpty() && !m_cropPath.isEmpty())
 	{
 		const QString cropBase = QFileInfo(m_cropPath).completeBaseName();
 		const QString sidecarDir = QFileInfo(m_sidecarPath).absolutePath();
-		outputPath = QDir(sidecarDir).filePath(cropBase + QStringLiteral("_reslice_export.nii"));
+		outputPath = QDir(sidecarDir).filePath(
+			cropBase + QStringLiteral("_cleaned_original.nii"));
 	}
 	else
 	{
-		outputPath = QDir::temp().filePath(QStringLiteral("reslice_export.nii"));
+		outputPath = QDir::temp().filePath(
+			QStringLiteral("cleaned_original.nii"));
 	}
 
+	// ── Write NIfTI ───────────────────────────────────────────────────────────
 	auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
-	writer->SetInputData(cropped);
+	writer->SetInputData(result);
 	writer->SetFileName(outputPath.toUtf8().constData());
 	writer->Write();
 
 	showProgressEnd();
 
-	qDebug("onExportReslice: wrote NIfTI to '%s'", qUtf8Printable(outputPath));
+	qDebug("onExportReslice: cleaned original written to '%s'.",
+		qUtf8Printable(outputPath));
 
 	statusBar()->showMessage(
-		tr("Export Reslice: saved to %1").arg(outputPath), 6000);
+		tr("Cleaned original image saved to: %1").arg(outputPath), 8000);
 
-	QMessageBox::information(this, tr("Export Reslice"),
-		tr("Resliced and cropped volume saved to:\n%1").arg(outputPath));
+	QMessageBox::information(this, tr("Export Cleaned Image"),
+		tr("Cleaned original image saved to:\n%1").arg(outputPath));
 }
-
 // ---------------------------------------------------------------------------
 // syncSliceView
 //
@@ -3363,4 +3206,300 @@ void PrototypeMainWindow::onInitialize()
 		m_actToggleOrphanMask->setEnabled(m_orphanMaskImage != nullptr);
 
 	qDebug("onInitialize: complete — workflow is now Landmarked.");
+}
+
+/*
+vtkSmartPointer<vtkImageData>
+PrototypeMainWindow::applyInverseResliceToOriginal() const
+{
+	if (!m_reslicedImage || !m_originalImage ||
+		!m_pca.valid || !std::isfinite(m_threshold))
+	{
+		qWarning("applyInverseResliceToOriginal: pre-conditions not met.");
+		return nullptr;
+	}
+
+	const int* origDims = m_originalImage->GetDimensions();
+	const int* reslDims = m_reslicedImage->GetDimensions();
+
+	vtkDataArray* origScalars = m_originalImage->GetPointData()->GetScalars();
+	vtkDataArray* reslScalars = m_reslicedImage->GetPointData()->GetScalars();
+
+	if (!origScalars || !reslScalars)
+	{
+		qWarning("applyInverseResliceToOriginal: scalar arrays missing.");
+		return nullptr;
+	}
+
+	// Deep-copy of original image — output with selectively replaced voxels.
+	auto output = vtkSmartPointer<vtkImageData>::New();
+	output->DeepCopy(m_originalImage);
+	vtkDataArray* outScalars = output->GetPointData()->GetScalars();
+
+	vtkIdType replaced = 0;
+	vtkIdType outOfRange = 0;
+
+	int extent[6];
+	m_originalImage->GetExtent(extent);
+
+	int resliceExtent[6];
+	m_reslicedImage->GetExtent(resliceExtent);
+
+	for (int k = extent[4]; k <= extent[5]; ++k)
+		for (int j = extent[2]; j <= extent[3]; ++j)
+			for (int i = extent[0]; i <= extent[1]; ++i)
+			{
+				double value = m_originalImage->GetScalarComponentAsDouble(i, j, k, 0);
+
+				// Skip background voxels — onClean() never touched them.
+				if (value < m_threshold)
+					continue;
+
+				// ── 1. Original voxel index → physical world point ───────────────────
+				// Both images share the same physical world space so this point is
+				// directly usable as input to the resliced image's index transform.
+				const double contIdx[3] = {
+					static_cast<double>(i),
+					static_cast<double>(j),
+					static_cast<double>(k)
+				};
+
+				double physPt[3] = {};
+				m_originalImage->TransformContinuousIndexToPhysicalPoint(contIdx, physPt);
+
+				// ── 2. Physical world point → continuous index in resliced image ─────
+				double reslContIdx[3] = {};
+				m_reslicedImage->TransformPhysicalPointToContinuousIndex(physPt, reslContIdx);
+
+				// ── 3. Round to nearest voxel and bounds-check ───────────────────────
+				const int ri = static_cast<int>(std::lround(reslContIdx[0]));
+				const int rj = static_cast<int>(std::lround(reslContIdx[1]));
+				const int rk = static_cast<int>(std::lround(reslContIdx[2]));
+
+				if (ri < resliceExtent[0] || ri > resliceExtent[1] ||
+					rj < resliceExtent[2] || rj > resliceExtent[3] ||
+					rk < resliceExtent[4] || rk > resliceExtent[5])
+				{
+					++outOfRange;
+					continue;
+				}
+
+				// ── 4. Lookup cleaned resliced scalar ────────────────────────────────
+				const double reslVal = m_reslicedImage->GetScalarComponentAsDouble(ri, rj, rk, 0);
+
+				// ── 5. Replace if the resliced voxel was cleaned (noise < threshold) ─
+				if (reslVal < m_threshold)
+				{
+					int ijk[3] = { i, j, k };
+					vtkIdType outputId = output->ComputePointId(ijk);
+
+					outScalars->SetTuple1(outputId, reslVal);
+					++replaced;
+				}
+			}
+
+	outScalars->Modified();
+	output->Modified();
+
+	qDebug("applyInverseResliceToOriginal: "
+		   "%lld voxel(s) replaced  %lld out-of-reslice-range.",
+		static_cast<long long>(replaced),
+		static_cast<long long>(outOfRange));
+
+	return output;
+}
+*/
+
+vtkSmartPointer<vtkImageData>
+PrototypeMainWindow::applyInverseResliceToOriginal() const
+{
+	if (!m_reslicedImage || !m_originalImage ||
+		!m_lastResliceAxes || !std::isfinite(m_threshold))
+	{
+		qWarning("applyInverseResliceToOriginal: pre-conditions not met "
+				 "(need reslicedImage, originalImage, lastResliceAxes and finite threshold).");
+		return nullptr;
+	}
+
+	const int* origDims = m_originalImage->GetDimensions();
+	const int* reslDims = m_reslicedImage->GetDimensions();
+
+	vtkDataArray* origScalars = m_originalImage->GetPointData()->GetScalars();
+	vtkDataArray* reslScalars = m_reslicedImage->GetPointData()->GetScalars();
+	if (!origScalars || !reslScalars)
+	{
+		qWarning("applyInverseResliceToOriginal: scalar arrays missing.");
+		return nullptr;
+	}
+
+	// ── Build IndexMatrix⁻¹ from vtkImageReslice::GetIndexMatrix() math ──────
+	//
+	// Forward IndexMatrix (built by onReslice()'s vtkImageReslice internally):
+	//   IndexMatrix = inMatrix_orig × m_lastResliceAxes × outMatrix_resl
+	//
+	//   outMatrix_resl : resliced_index → resliced_physical
+	//   m_lastResliceAxes : resliced_physical → original_physical
+	//   inMatrix_orig  : original_physical → original_index
+	//
+	// We need the inverse:
+	//   IndexMatrix⁻¹ = reslInMatrix × invResliceAxes × origOutMatrix
+	//
+	// Both matrices are built using the exact same element formulas from
+	// GetIndexMatrix() in vtkImageReslice.cxx, applied to each image's
+	// actual geometry (direction, spacing, origin) post-DeepCopy.
+
+	auto buildOutMatrix = [](vtkImageData* img) -> vtkSmartPointer<vtkMatrix4x4>
+		{
+			const double* sp = img->GetSpacing();
+			const double* org = img->GetOrigin();
+			double dir[9];
+			auto* dm = img->GetDirectionMatrix();
+			for (int i = 0; i < 3; ++i)
+				for (int j = 0; j < 3; ++j)
+					dir[3 * i + j] = dm->GetElement(i, j);
+
+			auto mat = vtkSmartPointer<vtkMatrix4x4>::New();
+			mat->Zero();
+			for (int i = 0; i < 3; ++i)
+			{
+				for (int j = 0; j < 3; ++j)
+					mat->SetElement(i, j, dir[3 * i + j] * sp[j]);
+				mat->SetElement(i, 3, org[i]);
+			}
+			mat->SetElement(3, 3, 1.0);
+			return mat;
+		};
+
+	auto buildInMatrix = [](vtkImageData* img) -> vtkSmartPointer<vtkMatrix4x4>
+		{
+			const double* sp = img->GetSpacing();
+			const double* org = img->GetOrigin();
+			double dir[9], invDir[9];
+			auto* dm = img->GetDirectionMatrix();
+			for (int i = 0; i < 3; ++i)
+				for (int j = 0; j < 3; ++j)
+					dir[3 * i + j] = dm->GetElement(i, j);
+			vtkMatrix3x3::Invert(dir, invDir);
+
+			auto mat = vtkSmartPointer<vtkMatrix4x4>::New();
+			mat->Zero();
+			for (int i = 0; i < 3; ++i)
+			{
+				double t = 0.0;
+				for (int j = 0; j < 3; ++j)
+				{
+					mat->SetElement(i, j, invDir[3 * i + j] / sp[i]);
+					t -= invDir[3 * i + j] * org[j] / sp[i];
+				}
+				mat->SetElement(i, 3, t);
+			}
+			mat->SetElement(3, 3, 1.0);
+			return mat;
+		};
+
+	// origOutMatrix: original_index → original_physical
+	const auto origOutMatrix = buildOutMatrix(m_originalImage);
+
+	// invResliceAxes: original_physical → resliced_physical
+	// Use m_lastResliceAxes — the matrix captured BEFORE setImage() overwrote
+	// m_pca with the resliced-image PCA.  Rebuilding from m_pca here would use
+	// the RESLICED image's PCA, not the axes that were actually applied.
+	auto invResliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
+	vtkMatrix4x4::Invert(m_lastResliceAxes, invResliceAxes);
+
+	// reslInMatrix: resliced_physical → resliced_index
+	const auto reslInMatrix = buildInMatrix(m_reslicedImage);
+
+	// newIndexMatrix = reslInMatrix × invResliceAxes × origOutMatrix
+	// Concatenation order mirrors GetIndexMatrix():
+	//   SetMatrix(axes) → PreMultiply+Concatenate(out) → PostMultiply+Concatenate(in)
+	auto xform = vtkSmartPointer<vtkTransform>::New();
+	xform->SetMatrix(invResliceAxes);
+	xform->PreMultiply();
+	xform->Concatenate(origOutMatrix);
+	xform->PostMultiply();
+	xform->Concatenate(reslInMatrix);
+
+	auto newIndexMatrix = vtkSmartPointer<vtkMatrix4x4>::New();
+	xform->GetMatrix(newIndexMatrix);
+
+	qDebug("applyInverseResliceToOriginal: newIndexMatrix (origIdx → reslicedContIdx):");
+	for (int r = 0; r < 4; ++r)
+	{
+		qDebug("  [ %10.5f  %10.5f  %10.5f  %10.5f ]",
+			newIndexMatrix->GetElement(r, 0), newIndexMatrix->GetElement(r, 1),
+			newIndexMatrix->GetElement(r, 2), newIndexMatrix->GetElement(r, 3));
+	}
+
+	// ── Deep-copy original; selectively overwrite cleaned bone voxels ─────────
+	auto output = vtkSmartPointer<vtkImageData>::New();
+	output->DeepCopy(m_originalImage);
+	vtkDataArray* outScalars = output->GetPointData()->GetScalars();
+
+	const int rNX = reslDims[0];
+	const int rNY = reslDims[1];
+	const int rNZ = reslDims[2];
+
+	vtkIdType replaced = 0;
+	vtkIdType outOfRange = 0;
+
+	double origIdx[4] = { 0.0, 0.0, 0.0, 1.0 };
+	double reslContIdx[4] = {};
+
+	for (int k = 0; k < origDims[2]; ++k)
+	{
+		origIdx[2] = static_cast<double>(k);
+		for (int j = 0; j < origDims[1]; ++j)
+		{
+			origIdx[1] = static_cast<double>(j);
+			for (int i = 0; i < origDims[0]; ++i)
+			{
+				const vtkIdType origFlat =
+					static_cast<vtkIdType>(k) * origDims[1] * origDims[0]
+					+ static_cast<vtkIdType>(j) * origDims[0]
+					+ i;
+
+				if (origScalars->GetTuple1(origFlat) < m_threshold)
+					continue;
+
+				origIdx[0] = static_cast<double>(i);
+				newIndexMatrix->MultiplyPoint(origIdx, reslContIdx);
+
+				const int ri = static_cast<int>(std::lround(reslContIdx[0]));
+				const int rj = static_cast<int>(std::lround(reslContIdx[1]));
+				const int rk = static_cast<int>(std::lround(reslContIdx[2]));
+
+				if (ri < 0 || ri >= rNX ||
+					rj < 0 || rj >= rNY ||
+					rk < 0 || rk >= rNZ)
+				{
+					++outOfRange;
+					continue;
+				}
+
+				const vtkIdType reslFlat =
+					static_cast<vtkIdType>(rk) * rNY * rNX
+					+ static_cast<vtkIdType>(rj) * rNX
+					+ ri;
+
+				const double reslVal = reslScalars->GetTuple1(reslFlat);
+
+				if (reslVal < m_threshold)
+				{
+					outScalars->SetTuple1(origFlat, reslVal);
+					++replaced;
+				}
+			}
+		}
+	}
+
+	outScalars->Modified();
+	output->Modified();
+
+	qDebug("applyInverseResliceToOriginal: "
+		   "%lld voxel(s) replaced  %lld out-of-reslice-range.",
+		static_cast<long long>(replaced),
+		static_cast<long long>(outOfRange));
+
+	return output;
 }

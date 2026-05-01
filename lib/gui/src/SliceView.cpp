@@ -1361,7 +1361,8 @@ void SliceView::onCursorMoved(vtkObject* /*caller*/)
 	}
 
 	double val = 0.0;
-	const bool hasScalar = (m_coordWidget->GetCursorData1(val) != VTK_DOUBLE_MAX);
+	const bool hasScalar = (m_coordWidget->GetCursorData1(val) != VTK_DOUBLE_MAX) &&-
+		val <= m_scalarRangeMax && val >= m_scalarRangeMin;
 
 	const QString text = hasScalar
 		? QStringLiteral("X:%1  Y:%2  Z:%3   Val: %4")
