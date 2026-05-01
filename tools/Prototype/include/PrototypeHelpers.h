@@ -92,11 +92,57 @@ namespace PrototypeHelpers
 	};
 
 	std::vector<BoneIsland> segmentBoneIslands(
-		vtkImageData*                            reslicedImage,
+		vtkImageData* reslicedImage,
 		double                                   threshold,
-		const std::vector<std::array<double,3>>& seedsWorld,
-		vtkSmartPointer<vtkImageData>&           outLabelImage,
-		const std::function<void(int)>&          progressCb = nullptr);
+		const std::vector<std::array<double, 3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>& outLabelImage,
+		const std::function<void(int)>& progressCb = nullptr);
+
+	// Parallel version of segmentBoneIslands.
+	// Identical signature and output contract; uses QtConcurrent for the
+	// binary mask and per-seed BFS, with a union-find merge pass to collapse
+	// seeds that landed on the same physical bone.
+	std::vector<BoneIsland> segmentBoneIslandsParallel(
+		vtkImageData* reslicedImage,
+		double                                     threshold,
+		const std::vector<std::array<double, 3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>& outLabelImage,
+		const std::function<void(int)>& progressCb = nullptr);
+
+	// Walk each seed inward toward the PCA centroid along its eigen-axis direction
+	// until the first voxel that satisfies scalar >= threshold is found.
+	// Seeds that already satisfy the threshold at their original position are
+	// returned unchanged.  Seeds for which no qualifying voxel is found before
+	// reaching the centroid are also returned unchanged as a safe fallback.
+	//
+	// seedsWorld layout (mirrors the 6-element vector built in onRegions):
+	//   s = 0,1  ->  axis 0  (positive tip, negative tip)
+	//   s = 2,3  ->  axis 1  (positive tip, negative tip)
+	//   s = 4,5  ->  axis 2  (positive tip, negative tip)
+	std::vector<std::array<double, 3>> computeInwardAdjustedSeeds(
+		vtkImageData* image,
+		double                                     threshold,
+		const std::vector<std::array<double, 3>>& originalSeedsWorld,
+		const PcaResult& pca);
+
+	// -----------------------------------------------------------------------
+	// Orphan island identification
+	//
+	// Performs an unseeded 26-connected BFS over all above-threshold voxels
+	// to label every connected foreground component.  Components that contain
+	// at least one seed world point are marked as seeded; all others are
+	// written as 1 into outOrphanMask (0 elsewhere).
+	//
+	// The result is cached in PrototypeMainWindow::m_orphanMaskImage after
+	// onInitialize() step 3 and consumed by onClean() to include orphan
+	// regions in the removal mask without a second threshold pass.
+	// -----------------------------------------------------------------------
+	void identifyOrphanIslands(
+		vtkImageData* reslicedImage,
+		double                                     threshold,
+		const std::vector<std::array<double, 3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>& outOrphanMask,
+		const std::function<void(int)>& progressCb = nullptr);
 
 	// -----------------------------------------------------------------------
 	// Bone island segmentation - VTK morphological pipeline

@@ -9,6 +9,7 @@ target_sources(CTAXCore
     src/vtkSliceOutlineSource.cpp
     src/vtkTransformRepresentation.cxx
     src/vtkTransformWidget.cxx
+	src/vtkImageCoordinateWidget.cxx
   PUBLIC
     include/ImageResliceHelper.h
     include/vtkImageOrthoPlanes.h
@@ -17,6 +18,7 @@ target_sources(CTAXCore
     include/vtkSliceOutlineSource.h
     include/vtkTransformRepresentation.h
     include/vtkTransformWidget.h
+	include/vtkImageCoordinateWidget.h
 )
 
 target_include_directories(CTAXCore

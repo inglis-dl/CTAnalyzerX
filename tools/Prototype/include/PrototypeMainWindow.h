@@ -50,20 +50,12 @@ private slots:
 	void showProgressStart();
 	void showProgressValue(int percent);
 	void showProgressEnd();
-	void onLandmark();
-	void onReslice();
 
 	// Triggered by the "Regions" toolbar button.
 	// Thresholds the resliced volume, runs a seeded 26-connected BFS flood-fill
 	// from each landmark point, colours each island surface by voxel count using
 	// a cool-to-warm transfer function, and shows a scalar bar when nIslands > 1.
 	void onRegions();
-
-	// Triggered by the "Regions Alt" toolbar button.
-	// Runs the morphological pipeline (Gaussian smooth -> erode -> dilate ->
-	// seeded vtkImageThresholdConnectivity) and displays the island surfaces
-	// using the same colour/scalar-bar logic as onRegions().
-	void onRegionsAlt();
 
 	// Triggered by the "Graph Cut" toolbar button.
 	// Builds foreground seed paths (centroid -> 5 landmark tips) and background
@@ -89,6 +81,8 @@ private slots:
 	// Open a json sidecar file and load the cropped image.
 	void onFileOpen();
 
+	void onInitialize();
+
 	void onExportReslice();
 
 private:
@@ -106,6 +100,8 @@ private:
 	};
 
 	void setWorkflowStep(WorkflowStep step);
+	void onLandmark();
+	void onReslice();
 
 	// -----------------------------------------------------------------------
 	// Private members
@@ -129,13 +125,12 @@ private:
 	QAction* m_actExportReslice = nullptr;
 
 	QAction* m_actFile            = nullptr;
-	QAction* m_actReslice         = nullptr;
-	QAction* m_actLandmark        = nullptr;
+	QAction* m_actInitialize      = nullptr;
 	QAction* m_actRegions         = nullptr;
-	QAction* m_actRegionsAlt      = nullptr;
 	QAction* m_actRegionsGraphCut = nullptr;
 	QAction* m_actClean           = nullptr;
 	QAction* m_actRestart         = nullptr;
+	QAction* m_actToggleOrphanMask = nullptr;
 
 	WorkflowStep m_workflowStep = WorkflowStep::Idle;
 
@@ -155,6 +150,7 @@ private:
 
 	vtkSmartPointer<vtkImageData> m_reslicedImage;
 	vtkSmartPointer<vtkImageData> m_labelImage;
+	vtkSmartPointer<vtkImageData> m_orphanMaskImage;
 
 	std::vector<PrototypeHelpers::BoneIsland> m_islands;
 

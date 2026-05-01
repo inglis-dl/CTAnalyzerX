@@ -18,6 +18,7 @@ class QLabel;
 class QLineEdit;
 class vtkActor;
 class vtkEventQtSlotConnect;
+class vtkImageCoordinateWidget;
 class vtkImageOrthoPlanes;
 class vtkImageSlicePointPlacer;
 class vtkObject;
@@ -84,6 +85,8 @@ signals:
 	void requestResetWindowLevel();
 	void outlineColorChanged(const QColor& color);
 
+	void cursorDataChanged(const QString& text);
+
 protected:
 	void resetCamera() override;
 	void rotateCamera(double degrees) override;
@@ -99,6 +102,7 @@ private:
 	void updateCamera();
 	void updateSlice();
 	void updateSliceRange();
+	void setupCoordinateWidget();
 
 	Ui::SliceView* ui = nullptr;
 	int m_currentSlice = 0;
@@ -125,6 +129,8 @@ private:
 	vtkSmartPointer<vtkActor>            m_outlineActor;
 	bool m_outlineVisible = false;
 	QColor m_outlineColor = QColor(255, 0, 0);
+
+	vtkSmartPointer<vtkImageCoordinateWidget> m_coordWidget;
 
 	bool m_requestedCroppingEnabled = false;
 	int  m_requestedCroppingRegion[6] = { 0, -1, 0, -1, 0, -1 };
@@ -168,4 +174,6 @@ private slots:
 	// Explicit editor handlers (replaced lambdas to improve diagnosability)
 	void onEditorEditingFinished();
 	void onEditorReturnPressed();
+
+	void onCursorMoved(vtkObject* caller);
 };

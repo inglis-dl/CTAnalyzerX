@@ -1,4 +1,4 @@
-#include "SliceView.h"
+﻿#include "SliceView.h"
 #include "ui_SliceView.h"
 #include "SunkenSliderStyle.h"
 #include "MenuButton.h"
@@ -30,6 +30,7 @@
 #include <vtkCommand.h>
 #include <vtkEventQtSlotConnect.h>
 #include <vtkGenericOpenGLRenderWindow.h>
+#include "vtkImageCoordinateWidget.h"
 #include <vtkImageData.h>
 #include "vtkImageOrthoPlanes.h"
 #include <vtkImageProperty.h>
@@ -132,6 +133,9 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	m_qvtkConnection->Connect(m_interactorStyle, vtkCommand::LeftButtonPressEvent,
 		this, SLOT(trapSpin(vtkObject*)));
 
+	m_coordWidget = vtkSmartPointer<vtkImageCoordinateWidget>::New();
+	m_coordWidget->SetCursoringModeToDiscrete();
+
 	m_windowLevelStartPosition[0] = 0;
 	m_windowLevelStartPosition[1] = 0;
 
@@ -227,6 +231,9 @@ void SliceView::createMenuAndActions()
 
 SliceView::~SliceView()
 {
+	if (m_coordWidget && m_coordWidget->GetEnabled())
+		m_coordWidget->Off();
+
 	delete ui;
 }
 
@@ -481,6 +488,8 @@ void SliceView::updateData()
 
 	// set the slice mapper slice
 	setSliceIndex(m_currentSlice);
+
+	setupCoordinateWidget();
 }
 
 void SliceView::updateCamera() {
@@ -1291,4 +1300,79 @@ vtkImageSlicePointPlacer* SliceView::pointPlacer() const
 void SliceView::setOrthoPlanes(vtkSmartPointer<vtkImageOrthoPlanes> planes)
 {
 	m_linkedOrthoPlanes = planes;
+}
+
+void SliceView::setupCoordinateWidget()
+{
+	if (!m_coordWidget)
+		return;
+
+	auto* iren = m_renderWindow ? m_renderWindow->GetInteractor() : nullptr;
+
+	if (m_imageData && m_renderer && iren)
+	{
+		// Always teardown first so reconfiguration on a new image is clean.
+		if (m_coordWidget->GetEnabled())
+			m_coordWidget->Off();
+
+		m_qvtkConnection->Disconnect(
+			m_coordWidget, vtkCommand::InteractionEvent);
+
+		m_coordWidget->RemoveAllProps();
+
+		m_coordWidget->SetDefaultRenderer(m_renderer);       // critical — fixes picking
+		m_coordWidget->SetInteractor(iren);
+		m_coordWidget->SetInputData(m_imageData);            // native, unscaled image
+		if (m_imageSlice)
+			m_coordWidget->AddViewProp(m_imageSlice);
+
+		m_qvtkConnection->Connect(
+			m_coordWidget, vtkCommand::InteractionEvent,
+			this, SLOT(onCursorMoved(vtkObject*)));
+
+		m_coordWidget->On();
+	}
+	else
+	{
+		if (m_coordWidget->GetEnabled())
+			m_coordWidget->Off();
+
+		m_coordWidget->RemoveAllProps();
+		m_coordWidget->SetInputData(nullptr);
+
+		m_qvtkConnection->Disconnect(
+			m_coordWidget, vtkCommand::InteractionEvent);
+
+		// Clear any stale readout in PrototypeMainWindow's status bar.
+		emit cursorDataChanged(QString());
+	}
+}
+
+void SliceView::onCursorMoved(vtkObject* /*caller*/)
+{
+	if (!m_coordWidget)
+		return;
+
+	double x = 0.0, y = 0.0, z = 0.0;
+	if (m_coordWidget->GetCursorPosition(x, y, z) == 0)
+	{
+		emit cursorDataChanged(QString());
+		return;
+	}
+
+	double val = 0.0;
+	const bool hasScalar = (m_coordWidget->GetCursorData1(val) != VTK_DOUBLE_MAX);
+
+	const QString text = hasScalar
+		? QStringLiteral("X:%1  Y:%2  Z:%3   Val: %4")
+		.arg(x, 9, 'f', 2)
+		.arg(y, 9, 'f', 2)
+		.arg(z, 9, 'f', 2)
+		.arg(val, 0, 'f', 1)
+		: QStringLiteral("X:%1  Y:%2  Z:%3")
+		.arg(x, 9, 'f', 2)
+		.arg(y, 9, 'f', 2)
+		.arg(z, 9, 'f', 2);
+
+	emit cursorDataChanged(text);
 }

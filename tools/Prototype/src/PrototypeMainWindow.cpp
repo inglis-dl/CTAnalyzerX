@@ -15,6 +15,7 @@
 #include <vtkDataArray.h>
 #include <vtkEventQtSlotConnect.h>
 #include <vtkExtractVOI.h>
+#include <vtkImageContinuousDilate3D.h>
 #include <vtkImageData.h>
 #include <vtkImageReslice.h>
 #include <vtkMath.h>
@@ -70,6 +71,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #define PARALLEL_ISLANDS 1  // set to 0 to disable concurrent iteration of islands
@@ -77,6 +79,185 @@
 QT_CHARTS_USE_NAMESPACE   // expands to: using namespace QtCharts; (Qt5 only)
 
 namespace {
+
+	// ---------------------------------------------------------------------------
+// IslandCleanDialog
+//
+// Modal dialog presented by onClean().  One row per segmented island shows:
+//   Col 0  Coloured swatch + "Island N" label, matched to the VolumeView
+//          legend via makeIslandColorTF.
+//   Col 1  Volume in ×10³ mm³.
+//   Col 2  Remove checkbox.
+//
+// Default selection: largest island unchecked (retained); all others checked.
+// A spin box controls the number of 3×3×3 dilation passes applied to the
+// binary island mask before its voxels are replaced with background noise.
+// ---------------------------------------------------------------------------
+	class IslandCleanDialog : public QDialog
+	{
+	public:
+		explicit IslandCleanDialog(
+			const std::vector<PrototypeHelpers::BoneIsland>& islands,
+			const double                                      voxelSpacing[3],
+			QWidget* parent = nullptr)
+			: QDialog(parent)
+		{
+			setWindowTitle(tr("Clean Islands"));
+			setMinimumWidth(480);
+
+			const double voxelVol =
+				voxelSpacing[0] * voxelSpacing[1] * voxelSpacing[2];
+
+			// Build the colour TF over the current island voxel-count range,
+			// matching the VolumeView scalar bar exactly.
+			vtkIdType minVox = islands[0].voxelCount;
+			vtkIdType maxVox = islands[0].voxelCount;
+			for (const auto& isl : islands)
+			{
+				minVox = std::min(minVox, isl.voxelCount);
+				maxVox = std::max(maxVox, isl.voxelCount);
+			}
+			auto colorTF = PrototypeHelpers::makeIslandColorTF(
+				static_cast<double>(minVox),
+				static_cast<double>(maxVox));
+
+			// Largest island is retained by default.
+			const int largestLabel =
+				std::max_element(islands.begin(), islands.end(),
+					[](const PrototypeHelpers::BoneIsland& a,
+				const PrototypeHelpers::BoneIsland& b)
+					{ return a.voxelCount < b.voxelCount; })->label;
+
+			// ── Island table ──────────────────────────────────────────────────
+			auto* table = new QTableWidget(
+				static_cast<int>(islands.size()), 3, this);
+			table->setHorizontalHeaderLabels(
+				{ tr("Island"),
+				  tr("Volume (\u00D710\u00B3 mm\u00B3)"),
+				  tr("Remove") });
+			table->setSelectionMode(QAbstractItemView::NoSelection);
+			table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+			table->verticalHeader()->setVisible(false);
+			table->horizontalHeader()->setSectionResizeMode(
+				0, QHeaderView::Fixed);
+			table->horizontalHeader()->setSectionResizeMode(
+				1, QHeaderView::Stretch);
+			table->horizontalHeader()->setSectionResizeMode(
+				2, QHeaderView::Fixed);
+			table->setColumnWidth(0, 90);
+			table->setColumnWidth(2, 72);
+
+			for (int row = 0; row < static_cast<int>(islands.size()); ++row)
+			{
+				const auto& isl = islands[static_cast<std::size_t>(row)];
+
+				// Sample the same TF used by the VolumeView legend.
+				double rgb[3] = { 1.0, 1.0, 1.0 };
+				colorTF->GetColor(static_cast<double>(isl.voxelCount), rgb);
+
+				const QColor bgColor(
+					static_cast<int>(rgb[0] * 255.0),
+					static_cast<int>(rgb[1] * 255.0),
+					static_cast<int>(rgb[2] * 255.0));
+
+				// Perceived luminance — choose black or white text.
+				const double lum =
+					0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+				const QColor fgColor = (lum > 0.5) ? Qt::black : Qt::white;
+
+				// Col 0: coloured swatch with island label text.
+				auto* swatchItem = new QTableWidgetItem(
+					tr("Island %1").arg(isl.label));
+				swatchItem->setTextAlignment(Qt::AlignCenter);
+				swatchItem->setBackground(QBrush(bgColor));
+				swatchItem->setForeground(QBrush(fgColor));
+				table->setItem(row, 0, swatchItem);
+
+				// Col 1: volume (right-aligned).
+				const double volMm3x1k =
+					static_cast<double>(isl.voxelCount) * voxelVol * 1000.0;
+				auto* volItem = new QTableWidgetItem(
+					QString::number(volMm3x1k, 'g', 4));
+				volItem->setTextAlignment(Qt::AlignVCenter | Qt::AlignRight);
+				table->setItem(row, 1, volItem);
+
+				// Col 2: Remove checkbox, centred in a cell widget.
+				auto* chkWidget = new QWidget(table);
+				auto* chk = new QCheckBox(chkWidget);
+				chk->setChecked(isl.label != largestLabel);
+
+				auto* chkLayout = new QHBoxLayout(chkWidget);
+				chkLayout->addWidget(chk);
+				chkLayout->setAlignment(Qt::AlignCenter);
+				chkLayout->setContentsMargins(0, 0, 0, 0);
+				table->setCellWidget(row, 2, chkWidget);
+
+				m_checkboxes.push_back({ isl.label, chk });
+			}
+
+			// ── Dilation passes control ────────────────────────────────────────
+			m_spinDilations = new QSpinBox(this);
+			m_spinDilations->setRange(1, 20);
+			m_spinDilations->setValue(1);
+			m_spinDilations->setToolTip(
+				tr("Number of 3\u00D73\u00D73 morphological dilation passes applied\n"
+				"to the island mask before voxels are replaced with noise.\n"
+				"Higher values widen the removed boundary around each island."));
+
+			auto* form = new QFormLayout;
+			// Orphan foreground checkbox — removes above-threshold voxels that
+			// are not connected to any landmark seed point (label == 0 in the
+			// segmentation output).
+			m_chkOrphans = new QCheckBox(
+				tr("Remove unlabeled foreground regions"), this);
+			m_chkOrphans->setChecked(true);
+			m_chkOrphans->setToolTip(
+				tr("Also replace above-threshold voxels that are not connected\n"
+				"to any landmark seed point (not part of any labeled island).\n"
+				"These are bone fragments or adjacent structures that lie\n"
+				"outside the seeded segmentation."));
+
+			form->addRow(tr("Dilation passes:"), m_spinDilations);
+			form->addRow(QString(), m_chkOrphans);
+
+			// ── Buttons ───────────────────────────────────────────────────────
+			auto* buttons = new QDialogButtonBox(
+				QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+			connect(buttons, &QDialogButtonBox::accepted,
+				this, &QDialog::accept);
+			connect(buttons, &QDialogButtonBox::rejected,
+				this, &QDialog::reject);
+
+			// ── Root layout ───────────────────────────────────────────────────
+			auto* root = new QVBoxLayout(this);
+			root->addWidget(table, 1);
+			root->addLayout(form);
+			root->addWidget(buttons);
+		}
+
+		// Returns the labels whose Remove checkbox is checked.
+		std::vector<int> labelsToRemove() const
+		{
+			std::vector<int> result;
+			for (const auto& [label, chk] : m_checkboxes)
+				if (chk && chk->isChecked())
+					result.push_back(label);
+			return result;
+		}
+
+		int dilationCount() const { return m_spinDilations->value(); }
+
+		bool removeOrphanForeground() const
+		{
+			return m_chkOrphans && m_chkOrphans->isChecked();
+		}
+
+	private:
+		QSpinBox* m_spinDilations = nullptr;
+		QCheckBox* m_chkOrphans = nullptr;
+		std::vector<std::pair<int, QCheckBox*>> m_checkboxes;
+	};
+
 
 	// ---------------------------------------------------------------------------
 	// IterationProgressDialog
@@ -601,6 +782,9 @@ namespace {
 			const double startThreshold = effectiveStartThreshold();
 			const int maxIslands = m_spinTargetIslands->value();
 			const double volumeThreshold = m_spinVolumeThreshold->value();
+
+			rebuildTableColumns(maxIslands);
+
 			// Tracks whether the loop exited via the target-islands criterion
 			// and which row first reached that count.  Used by the post-loop
 			// convergence check.
@@ -647,8 +831,7 @@ namespace {
 				m_axisX->setRange(m_dataMinX - padX, m_dataMaxX + padX);
 				m_axisY->setRange(std::max(0.0, m_dataMinY - padY), m_dataMaxY + padY);
 				// Append one row to the iteration history table.
-				appendIterationRow(iter, threshold, volumeMm3x1k,
-					static_cast<int>(islands.size()));
+				appendIterationRow(iter, threshold, volumeMm3x1k, islands);
 
 				QCoreApplication::processEvents();
 
@@ -712,18 +895,19 @@ namespace {
 				if (volChange <= m_spinVolumeThreshold->value())
 				{
 					// Volume change is below the threshold: refinement would not
-					// meaningfully improve the result.  Override the selection to
-					// the final row only so the user can immediately apply it.
+					// meaningfully improve the result.  Clear the table row
+					// selection entirely so the island cell colours remain visible,
+					// then check rowM's Select checkbox so Apply Selection is primed.
 					m_iterationTable->clearSelection();
-					m_iterationTable->setRangeSelected(
-						QTableWidgetSelectionRange(
-						rowM, 0, rowM, m_iterationTable->columnCount() - 1),
-						true);
+
+					if (auto* btn = m_selectionGroup->button(rowM))
+						btn->setChecked(true);
+
+					m_btnApply->setEnabled(true);
+					m_btnRefine->setEnabled(false);
 
 					if (auto* item = m_iterationTable->item(rowM, 0))
 						m_iterationTable->scrollToItem(item);
-
-					m_btnRefine->setEnabled(false);
 
 					QMessageBox::warning(
 						this,
@@ -751,20 +935,48 @@ namespace {
 			m_spinVolumeThreshold->setEnabled(true);
 		}
 
-		// Appends one row to the iteration history table and registers its
-		// checkbox with the exclusive selection group.
-		// volumeMm3x1k is already scaled ×10³ to match the chart and table header.
+		// Rebuilds the iteration table column headers to include islandCount
+		// per-island volume columns between Islands and Select.
+		// Call before any rows are appended for a new Run, and with 0 to reset.
+		void rebuildTableColumns(int islandCount)
+		{
+			m_islandColumnCount = islandCount;
+
+			const int totalCols = 5 + m_islandColumnCount;
+			m_iterationTable->setColumnCount(totalCols);
+
+			QStringList headers;
+			headers << tr("#")
+				<< tr("Threshold")
+				<< tr("Volume (\u00D710\u00B3 mm\u00B3)")
+				<< tr("Islands");
+
+			for (int i = 0; i < m_islandColumnCount; ++i)
+				headers << tr("Island %1 (\u00D710\u00B3 mm\u00B3)").arg(i + 1);
+
+			headers << tr("Select");
+			m_iterationTable->setHorizontalHeaderLabels(headers);
+
+			// Total volume column always stretches; island columns use interactive
+			// resize so the user can adjust; Select column is fixed.
+			m_iterationTable->horizontalHeader()->setSectionResizeMode(
+				2, QHeaderView::Stretch);
+			m_iterationTable->horizontalHeader()->setStretchLastSection(false);
+		}
+
+		// Appends one row to the iteration history table.
+		// islands: the raw BoneIsland result for this iteration — used to populate
+		// per-island volume cells and derive per-cell background colours from the
+		// same cool-to-warm TF used by the VolumeView legend.
 		void appendIterationRow(int iter, double threshold, double volumeMm3x1k,
-			int islandCount)
+			const std::vector<PrototypeHelpers::BoneIsland>& islands)
 		{
 			const int row = m_iterationTable->rowCount();
 			m_iterationTable->insertRow(row);
 
-			// Store threshold and volume so updateSelectionBrackets() can look them up by row.
 			m_iterationThresholds.push_back(threshold);
 			m_iterationVolumes.push_back(volumeMm3x1k);
 
-			// Volume ×10³ to 3 significant figures — matches the chart Y axis exactly.
 			const QString volStr = QString::number(volumeMm3x1k, 'g', 3);
 
 			auto makeItem = [](const QString& text) -> QTableWidgetItem*
@@ -779,13 +991,81 @@ namespace {
 				makeItem(QString::number(threshold, 'f', 2)));
 			m_iterationTable->setItem(row, 2, makeItem(volStr));
 			m_iterationTable->setItem(row, 3,
-				makeItem(QString::number(islandCount)));
+				makeItem(QString::number(static_cast<int>(islands.size()))));
 
-			// Centred checkbox in col 4 registered with the exclusive group.
+			// ── Per-island volume columns ─────────────────────────────────────
+			// Build the same cool-to-warm colour TF used by the VolumeView legend
+			// (makeIslandColorTF) so each island cell's background exactly matches
+			// the corresponding surface actor colour shown in the 3D view.
+			if (m_islandColumnCount > 0)
+			{
+				// Compute the voxel-count range for this row's islands so the TF
+				// maps consistently to the same scale as the VolumeView scalar bar.
+				vtkIdType minVox = islands.empty() ? 0 : islands[0].voxelCount;
+				vtkIdType maxVox = minVox;
+				for (const auto& isl : islands)
+				{
+					minVox = std::min(minVox, isl.voxelCount);
+					maxVox = std::max(maxVox, isl.voxelCount);
+				}
+
+				vtkSmartPointer<vtkColorTransferFunction> colorTF;
+				if (!islands.empty())
+					colorTF = PrototypeHelpers::makeIslandColorTF(
+						static_cast<double>(minVox),
+						static_cast<double>(maxVox));
+
+				for (int col = 0; col < m_islandColumnCount; ++col)
+				{
+					const int tableCol = 4 + col;
+
+					if (col < static_cast<int>(islands.size()))
+					{
+						const auto& isl =
+							islands[static_cast<std::size_t>(col)];
+
+						const double islVolMm3x1k =
+							static_cast<double>(isl.voxelCount)
+							* m_voxelVolMm3 * 1000.0;
+
+						// Sample the same TF used by the VolumeView legend.
+						double rgb[3] = { 1.0, 1.0, 1.0 };
+						colorTF->GetColor(
+							static_cast<double>(isl.voxelCount), rgb);
+
+						const QColor bgColor(
+							static_cast<int>(rgb[0] * 255.0),
+							static_cast<int>(rgb[1] * 255.0),
+							static_cast<int>(rgb[2] * 255.0));
+
+						// Perceived luminance — choose black or white text
+						// so it remains readable on any background hue.
+						const double lum =
+							0.299 * rgb[0]
+							+ 0.587 * rgb[1]
+							+ 0.114 * rgb[2];
+						const QColor fgColor =
+							(lum > 0.5) ? Qt::black : Qt::white;
+
+						auto* item = makeItem(
+							QString::number(islVolMm3x1k, 'g', 3));
+						item->setBackground(QBrush(bgColor));
+						item->setForeground(QBrush(fgColor));
+						m_iterationTable->setItem(row, tableCol, item);
+					}
+					else
+					{
+						// No island occupies this slot — empty cell, no colour.
+						m_iterationTable->setItem(row, tableCol, makeItem(QString()));
+					}
+				}
+			}
+
+			// ── Select checkbox — always the last column ──────────────────────
+			const int selectCol = 4 + m_islandColumnCount;
+
 			auto* chkWidget = new QWidget(m_iterationTable);
 			auto* chk = new QCheckBox(chkWidget);
-
-			// Use row as the button id so Apply Selection can map id → threshold.
 			m_selectionGroup->addButton(chk, row);
 
 			auto* chkLayout = new QHBoxLayout(chkWidget);
@@ -793,7 +1073,7 @@ namespace {
 			chkLayout->setAlignment(Qt::AlignCenter);
 			chkLayout->setContentsMargins(0, 0, 0, 0);
 
-			m_iterationTable->setCellWidget(row, 4, chkWidget);
+			m_iterationTable->setCellWidget(row, selectCol, chkWidget);
 			m_iterationTable->scrollToBottom();
 		}
 
@@ -809,6 +1089,8 @@ namespace {
 			m_iterationThresholds.clear();
 			m_iterationVolumes.clear();
 			m_iterationTable->setRowCount(0);
+			rebuildTableColumns(0);
+
 			m_btnApply->setEnabled(false);
 			m_btnRefine->setEnabled(false);
 
@@ -875,6 +1157,7 @@ namespace {
 		double          m_baseThreshold;
 		double          m_baseStdDev;
 		double          m_voxelVolMm3;
+		int m_islandColumnCount = 0;
 
 		QSpinBox* m_spinIterations = nullptr;
 		QSpinBox* m_spinTargetIslands = nullptr;
@@ -939,35 +1222,27 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	// "File" toolbar button - always enabled.
 	// Opens a QFileDialog to select a project sidecar JSON.
 	// This is the primary entry point when no path is given on the command line.
+	// "File" toolbar button — always enabled.
 	m_actFile = new QAction(tr("File"), this);
 	m_actFile->setToolTip(tr("Open a project sidecar JSON file"));
 	ui->toolBar->addAction(m_actFile);
 	connect(m_actFile, &QAction::triggered, this, &PrototypeMainWindow::onFileOpen);
 
-	// "Reslice" toolbar button: reslice the volume aligned to the PCA axes
-	m_actReslice = new QAction(tr("Reslice"), this);
-	m_actReslice->setToolTip(tr("Reslice the volume aligned to the PCA principal axes"));
-	ui->toolBar->addAction(m_actReslice);
-	connect(m_actReslice, &QAction::triggered, this, &PrototypeMainWindow::onReslice);
-
-	// "Landmark" toolbar button: searches along each PCA axis for surface transitions
-	m_actLandmark = new QAction(tr("Landmark"), this);
-	m_actLandmark->setToolTip(tr("Find surface landmark points along the PCA axes"));
-	ui->toolBar->addAction(m_actLandmark);
-	connect(m_actLandmark, &QAction::triggered, this, &PrototypeMainWindow::onLandmark);
+	// "Initialize" toolbar button — runs Reslice then Landmark in one step.
+	// Replaces the separate Reslice and Landmark buttons so the user reaches
+	// the Landmarked state (Regions enabled) with a single click.
+	m_actInitialize = new QAction(tr("Initialize"), this);
+	m_actInitialize->setToolTip(
+		tr("PCA-reslice the volume then locate surface landmark points (Reslice + Landmark)"));
+	ui->toolBar->addAction(m_actInitialize);
+	connect(m_actInitialize, &QAction::triggered,
+		this, &PrototypeMainWindow::onInitialize);
 
 	// "Regions" toolbar button: threshold + seeded BFS island segmentation
 	m_actRegions = new QAction(tr("Regions"), this);
 	m_actRegions->setToolTip(tr("Segment bone islands from the resliced volume using landmark seeds"));
 	ui->toolBar->addAction(m_actRegions);
 	connect(m_actRegions, &QAction::triggered, this, &PrototypeMainWindow::onRegions);
-
-	// "Regions Alt" toolbar button: morphological pipeline (smooth -> erode -> dilate -> connectivity)
-	m_actRegionsAlt = new QAction(tr("Regions Alt"), this);
-	m_actRegionsAlt->setToolTip(tr("Segment bone islands using the morphological pipeline "
-		"(Gaussian smooth -> erode -> dilate -> seeded connectivity)"));
-	ui->toolBar->addAction(m_actRegionsAlt);
-	connect(m_actRegionsAlt, &QAction::triggered, this, &PrototypeMainWindow::onRegionsAlt);
 
 	// "Graph Cut" toolbar button: ITK ImageGridCutFilter (multi-threaded GridCut solver)
 	m_actRegionsGraphCut = new QAction(tr("Graph Cut"), this);
@@ -1024,6 +1299,61 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 
 	ui->sliceView->setInterpolationToNearest();
 	ui->sliceView->setOrthoPlanes(ui->volumeView->orthoPlanes());
+
+	connect(ui->sliceView, &SliceView::cursorDataChanged, this,
+	[this](const QString& text)
+	{
+	if (text.isEmpty())
+		statusBar()->clearMessage();
+	else
+		statusBar()->showMessage(text);
+	});
+
+	// ── Orphan mask toggle ────────────────────────────────────────────────────
+// Placed in the SliceView's right-aligned header area beside the expand
+// button.  Disabled until onInitialize() step 3 produces a valid orphan
+// mask; consumed and disabled again by onClean().
+	m_actToggleOrphanMask = new QAction(tr("Mask"), this);
+	m_actToggleOrphanMask->setCheckable(true);
+	m_actToggleOrphanMask->setChecked(false);
+	m_actToggleOrphanMask->setEnabled(false);
+	m_actToggleOrphanMask->setToolTip(
+		tr("Toggle between the resliced image and the orphan mask.\n"
+		"White voxels are foreground regions not connected to any\n"
+		"landmark seed point — these will be removed by Clean."));
+	ui->sliceView->addHeaderAction(m_actToggleOrphanMask);
+
+	connect(m_actToggleOrphanMask, &QAction::toggled,
+		this, [this](bool checked)
+		{
+			if (!ui || !ui->sliceView)
+				return;
+
+			if (checked && m_orphanMaskImage)
+			{
+				// Orphan mask is VTK_UNSIGNED_CHAR 0/1.
+				// window=1, level=0.5 maps 0→black, 1→white.
+				ui->sliceView->setImageData(m_orphanMaskImage);
+				ui->sliceView->updateData();
+				ui->sliceView->setWindowLevelNative(1.0, 0.5);
+			}
+			else
+			{
+				// Restore the resliced image with its current WL parameters.
+				vtkImageData* primary =
+					m_reslicedImage ? m_reslicedImage.Get() : m_image;
+
+				const double level = std::isfinite(m_threshold)
+					? m_threshold : 0.0;
+				const double window = 2.0 * m_imageStats
+					.value(QStringLiteral("stdDev")).toDouble(1.0);
+
+				ui->sliceView->setImageData(primary);
+				ui->sliceView->updateData();
+				if (primary)
+					ui->sliceView->setWindowLevelNative(window, level);
+			}
+		});
 }
 
 PrototypeMainWindow::~PrototypeMainWindow()
@@ -1049,42 +1379,23 @@ void PrototypeMainWindow::setWorkflowStep(WorkflowStep step)
 {
 	m_workflowStep = step;
 
-	// Determine enabled state for each step button based on the current step.
-	// Restart is always enabled and managed independently.
-	//
-	// Workflow routes:
-	//   A) Idle -> Resliced -> Landmarked -> Segmented  (via Regions)
-	//   B) Idle -> Resliced -> Landmarked -> Segmented  (via Regions Alt)
-	//   C) Idle -> Resliced -> Landmarked -> Segmented  (via Graph Cut)
-	//
-	// At each step exactly one (or three, at Landmarked) button is enabled:
-	//   Idle       : Reslice=on,  Landmark=off, Regions=off, RegionsAlt=off, GraphCut=off
-	//   Resliced   : Reslice=off, Landmark=on,  Regions=off, RegionsAlt=off, GraphCut=off
-	//   Landmarked : Reslice=off, Landmark=off, Regions=on,  RegionsAlt=on,  GraphCut=on
-	//   Segmented  : Reslice=off, Landmark=off, Regions=off, RegionsAlt=off, GraphCut=off
-
-	const bool atIdle      = (step == WorkflowStep::Idle);
-	const bool atResliced  = (step == WorkflowStep::Resliced);
+	const bool atIdle = (step == WorkflowStep::Idle);
 	const bool atLandmarked = (step == WorkflowStep::Landmarked);
+	const bool atSegmented = (step == WorkflowStep::Segmented);
+	const bool atCleaned = (step == WorkflowStep::Cleaned);
 
-	// File is always available - the user can open a new sidecar at any time.
 	m_actFile->setEnabled(true);
-
-	m_actReslice->setEnabled(atIdle);
-	m_actLandmark->setEnabled(atResliced);
+	m_actInitialize->setEnabled(atIdle);
 	m_actRegions->setEnabled(atLandmarked);
-	m_actRegionsAlt->setEnabled(atLandmarked);
 	m_actRegionsGraphCut->setEnabled(atLandmarked);
 
-	// Export Reslice is available whenever a valid image and finite threshold exist.
-	// It runs its own internal reslice + landmark pipeline so it does not require
-	// a specific prior workflow step.
-	m_actExportReslice->setEnabled(m_image != nullptr && std::isfinite(m_threshold));
+	// Clean is available after initial segmentation and remains available
+	// after cleaning so the user can iteratively remove additional islands.
+	m_actClean->setEnabled(atSegmented || atCleaned);
 
-	// Restart is always enabled - it can be applied at any time.
+	m_actExportReslice->setEnabled(m_image != nullptr && std::isfinite(m_threshold));
 	m_actRestart->setEnabled(true);
 }
-
 // ---------------------------------------------------------------------------
 // Progress slots
 // ---------------------------------------------------------------------------
@@ -2171,93 +2482,6 @@ void PrototypeMainWindow::onRegions()
 	// for the lifetime of this PrototypeMainWindow (its Qt parent).
 }
 
-// ---------------------------------------------------------------------------
-// Morphological pipeline (smooth -> erode -> dilate -> connectivity)
-// ---------------------------------------------------------------------------
-
-void PrototypeMainWindow::onRegionsAlt()
-{
-	// ------------------------------------------------------------------
-	// Pre-conditions (identical to onRegions)
-	// ------------------------------------------------------------------
-	if (!m_reslicedImage)
-	{
-		qWarning("onRegionsAlt: no resliced image available; run Reslice first.");
-		return;
-	}
-
-	if (m_landmarkResult.isEmpty())
-	{
-		qWarning("onRegionsAlt: no landmark points available; run Landmark first.");
-		return;
-	}
-
-	if (!std::isfinite(m_threshold))
-	{
-		qWarning("onRegionsAlt: threshold is not finite; cannot segment.");
-		return;
-	}
-
-	// ------------------------------------------------------------------
-	// Collect the 6 landmark world-space seed points from m_landmarkPoints.
-	// Each of the 3 axes contributes one positive and one negative seed.
-	// ------------------------------------------------------------------
-	std::vector<std::array<double, 3>> seeds;
-	seeds.reserve(6);
-
-	for (int i = 0; i < 3; ++i)
-	{
-		for (int d = 0; d < 2; ++d)
-		{
-			const double* pt = m_landmarkPoints[static_cast<std::size_t>(i)]
-				[static_cast<std::size_t>(d)].data();
-			seeds.push_back({ pt[0], pt[1], pt[2] });
-		}
-	}
-
-	qDebug("onRegionsAlt: running morphological pipeline with %zu seeds, threshold=%.4f",
-		   seeds.size(), m_threshold);
-
-	// ------------------------------------------------------------------
-	// Progress callback
-	// ------------------------------------------------------------------
-showProgressStart();
-	const auto regionProgress = [this](int percent)
-		{
-			showProgressValue(percent);
-			m_progressBar->update();
-			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-		};
-
-	// ------------------------------------------------------------------
-	// Run alternate segmentation (default smoothStdDev=1.0, morphKernelSize=1)
-	// ------------------------------------------------------------------
-	vtkSmartPointer<vtkImageData> labelImage;
-
-	const std::vector<PrototypeHelpers::BoneIsland> islands =
-		PrototypeHelpers::segmentBoneIslandsAlternate(
-			m_reslicedImage,
-			m_threshold,
-			seeds,
-			labelImage,
-			1.0,  // smoothStdDev: Gaussian standard deviation in voxel units
-			1,    // morphKernelSize: half-width ? 3x3x3 structuring element
-			regionProgress);
-
-	showProgressEnd();
-
-	if (islands.empty())
-	{
-		qWarning("onRegionsAlt: no bone islands were found.");
-		return;
-	}
-
-	applyIslandSegmentationResult(islands, labelImage);
-
-	// Segmentation completed - advance to Segmented: no step buttons enabled.
-	setWorkflowStep(WorkflowStep::Segmented);
-}
-
 void PrototypeMainWindow::onRegionsGraphCut()
 {
 	if (!m_reslicedImage || m_landmarkResult.isEmpty() || !std::isfinite(m_threshold))
@@ -2371,330 +2595,260 @@ void PrototypeMainWindow::onRegionsGraphCut()
 	}
 
 	applyIslandSegmentationResult(islands, labelImage);
+	ui->volumeView->hideAllContent();
 	setWorkflowStep(WorkflowStep::Segmented);
 }
 
 // ---------------------------------------------------------------------------
-// Clean slot - post-segmentation clean step
+// onClean
 //
-// Algorithm:
-//   1. Derive the noise distribution from the cached background statistics:
-//      draw = clamp(backgroundMean + U(-2sig, +2sig),  volMin, volMax)
-//      where U(-2sig, +2sig) is a uniform random value in [-2*bgStdDev, +2*bgStdDev].
-//   2. Deep-copy the resliced volume into C.
-//   3. For every voxel v in the resliced volume:
-//        if v > threshold  AND  v is NOT inside any segmented island label:
-//            replace the corresponding voxel in C with a drawn noise value.
-//   4. Display C via setImage().
+// Algorithm
+// ─────────
+//  1. User selects which islands to remove and how many dilation passes
+//     to apply via IslandCleanDialog.
+//  2. Build a binary mask of the selected islands from m_labelImage.
+//  3. Dilate the mask N times (3×3×3) to carve a clean margin.
+//  4. OR the dilated mask with m_orphanMaskImage (pre-computed by
+//     onInitialize step 3) to produce the final removal mask.
+//     Orphan voxels are foreground regions unreachable from any landmark
+//     seed; they are always removed regardless of island selection.
+//  5. Replace every removal-mask voxel in m_reslicedImage with a random
+//     draw from the background noise distribution.
+//  6. Hide the removed island surface actors and refresh both views.
 //
-// Pre-conditions (all checked below):
-//   - m_reslicedImage    : resliced volume exists
-//   - m_labelImage       : segmentation label map exists (0 = background, ?1 = island)
-//   - m_threshold        : finite threshold
-//   - m_backgroundMean / m_backgroundStdDev : cached from setImage()
+// The retained island plays no part: its voxels are absent from both the
+// dilated island mask and the orphan mask, so they are never touched.
 // ---------------------------------------------------------------------------
-
 void PrototypeMainWindow::onClean()
 {
-	qDebug("onClean: clean step triggered (resliceCount=%d).", m_resliceCount);
+	qDebug("onClean: island-targeted clean triggered.");
 
 	// ------------------------------------------------------------------
 	// Pre-conditions
 	// ------------------------------------------------------------------
 	if (!m_reslicedImage)
 	{
-		qWarning("onClean: no resliced image available; run Reslice first.");
+		qWarning("onClean: no resliced image available.");
 		return;
 	}
-
 	if (!m_labelImage)
 	{
-		qWarning("onClean: no label image available; run Regions or Regions Alt first.");
+		qWarning("onClean: no label image; run Regions or Graph Cut first.");
 		return;
 	}
-
+	if (m_islands.empty())
+	{
+		qWarning("onClean: no segmented islands available.");
+		return;
+	}
 	if (!std::isfinite(m_threshold))
 	{
-		qWarning("onClean: threshold is not finite; cannot clean.");
+		qWarning("onClean: threshold is not finite.");
 		return;
 	}
 
 	// ------------------------------------------------------------------
-	// Scalar range of the resliced volume - used to clamp random draws
+	// Show island selection dialog
 	// ------------------------------------------------------------------
-
-	const double scalarRange[2] = {
-	m_imageStats.value(QStringLiteral("min")).toDouble(0.0),
-	m_imageStats.value(QStringLiteral("max")).toDouble(255.0) };
-	const double volMin = scalarRange[0];
-	const double volMax = scalarRange[1];
-
-	// ------------------------------------------------------------------
-	// Background noise distribution parameters sourced from m_imageStats,
-	// which is populated by setImage() via computeScalarThresholdStats().
-	// "meanBg"   - mean scalar value of all below-threshold voxels.
-	// "stdDevBg" - standard deviation of below-threshold voxels.
-	// ------------------------------------------------------------------
-	const double bgMean = m_imageStats.value(QStringLiteral("meanBg")).toDouble(0.0);
-	const double bgStdDev = m_imageStats.value(QStringLiteral("stdDevBg")).toDouble(0.0);
-	const double noiseHalfWidth = 2.0 * bgStdDev;   // +/- 2? uniform range
-
-	qDebug("onClean: bgMean=%.4f  bgStdDev=%.4f  noiseHalfWidth=%.4f  "
-		   "volMin=%.4f  volMax=%.4f  threshold=%.4f",
-		   bgMean, bgStdDev, noiseHalfWidth, volMin, volMax, m_threshold);
-
-	// ------------------------------------------------------------------
-	// Initialize C++17 random number generator
-	// uniform_real_distribution over [-noiseHalfWidth, +noiseHalfWidth]
-	// ------------------------------------------------------------------
-	std::mt19937_64                          rng{ std::random_device{}() };
-	std::uniform_real_distribution<double>   noiseDist(-noiseHalfWidth, noiseHalfWidth);
-
-	// ------------------------------------------------------------------
-	// Deep-copy the resliced volume into C (the output cleaned volume)
-	// ------------------------------------------------------------------
-	auto cleanedImage = vtkSmartPointer<vtkImageData>::New();
-	cleanedImage->DeepCopy(m_reslicedImage);
-
-	vtkDataArray* reslicedScalars = m_reslicedImage->GetPointData()->GetScalars();
-	vtkDataArray* labelScalars = m_labelImage->GetPointData()->GetScalars();
-	vtkDataArray* cleanedScalars = cleanedImage->GetPointData()->GetScalars();
-
-	if (!reslicedScalars || !labelScalars || !cleanedScalars)
-	{
-		qWarning("onClean: scalar arrays missing on resliced, label, or cleaned image.");
+	IslandCleanDialog dlg(m_islands, m_reslicedImage->GetSpacing(), this);
+	if (dlg.exec() != QDialog::Accepted)
 		return;
-	}
 
-	const vtkIdType nReslicedPoints = m_reslicedImage->GetNumberOfPoints();
-	const vtkIdType nLabelPoints = m_labelImage->GetNumberOfPoints();
+	const std::vector<int> labelsToRemove = dlg.labelsToRemove();
+	const int              nDilations = dlg.dilationCount();
 
-	// The label image is produced from the resliced image so their point
-	// counts must match.  Guard against an unexpected mismatch.
-	if (nReslicedPoints != nLabelPoints)
+	if (labelsToRemove.empty())
 	{
-		qWarning("onClean: resliced image point count (%lld) does not match "
-				 "label image point count (%lld); aborting.",
-				 static_cast<long long>(nReslicedPoints),
-				 static_cast<long long>(nLabelPoints));
-		showProgressEnd();
+		qDebug("onClean: no islands selected for removal.");
 		return;
 	}
 
 	showProgressStart();
-
-	// ------------------------------------------------------------------
-	// Voxel loop  [progress 0 ? 80]
-	//
-	// For each voxel i:
-	//   - scalar v  = resliced intensity
-	//   - label  l  = segmentation label (0 = unlabelled / outside all islands)
-	//
-	// Replace in C when:
-	//   v > threshold   (foreground intensity)
-	//   AND l == 0      (not inside any segmented island)
-	// ------------------------------------------------------------------
-	vtkIdType replacedCount = 0;
-
-	for (vtkIdType i = 0; i < nReslicedPoints; ++i)
-	{
-		// Progress: report every 64 K voxels, mapped to the [0, 80] sub-range.
-		if ((i & 0xFFFF) == 0)
-		{
-			const int pct = static_cast<int>(
-				std::clamp(static_cast<double>(i) / static_cast<double>(nReslicedPoints), 0.0, 1.0) * 80.0);
-			showProgressValue(pct);
-			m_progressBar->update();
-			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-		}
-
-		const double v = reslicedScalars->GetTuple1(i);
-		const double l = labelScalars->GetTuple1(i);
-
-		// Keep voxels that are below the threshold (background) or inside an island.
-		if (v <= m_threshold || l != 0.0)
-			continue;
-
-		// Voxel is above-threshold AND outside every segmented island -
-		// replace it with a background-noise draw clamped to [volMin, volMax].
-		const double noise = noiseDist(rng);
-		const double noiseVal = std::clamp(bgMean + noise, volMin, volMax);
-		cleanedScalars->SetTuple1(i, noiseVal);
-		++replacedCount;
-	}
-
-	cleanedScalars->Modified();
-	cleanedImage->Modified();
-
-	qDebug("onClean: replaced %lld above-threshold outside-island voxels with background noise.",
-		   static_cast<long long>(replacedCount));
-
-	// ------------------------------------------------------------------
-	// VOI crop: tighten the cleaned volume to the region of interest.
-	//
-	// Steps:
-	//   1. Compute Dmin = half the shortest inter-landmark paired distance
-	//      (pos-neg pair along the same axis) in world coordinates.
-	//   2. Build a vtkBoundingBox B over all segmented island voxels in
-	//      world coordinates (label > 0 in m_labelImage).
-	//   3. Inflate B by Dmin uniformly from its centroid.
-	//   4. Map B to voxel extent in cleanedImage and apply vtkExtractVOI.
-	// ------------------------------------------------------------------
-
-	// Step 1 - Dmin: half the shortest paired landmark distance.
-	// m_landmarkPoints[axis][0] = positive direction surface point
-	// m_landmarkPoints[axis][1] = negative direction surface point
-	double minPairedDist = std::numeric_limits<double>::max();
-	for (int axis = 0; axis < 3; ++axis)
-	{
-		const double* lPos = m_landmarkPoints[static_cast<std::size_t>(axis)][0].data();
-		const double* lNeg = m_landmarkPoints[static_cast<std::size_t>(axis)][1].data();
-		const double dx = lPos[0] - lNeg[0];
-		const double dy = lPos[1] - lNeg[1];
-		const double dz = lPos[2] - lNeg[2];
-		const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-		minPairedDist = std::min(minPairedDist, dist);
-	}
-
-	const double dMin = 0.5 * minPairedDist;
-
-	qDebug("onClean: minPairedLandmarkDist=%.4f  dMin=%.4f", minPairedDist, dMin);
-
-	// Step 2 - island bounding box in world coordinates  [progress 80 ? 95]
-	// Iterate the label image; accumulate world positions of all labelled voxels.
-	showProgressValue(80);
-	m_progressBar->update();
+	showProgressValue(5);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	vtkBoundingBox islandBB;
-	for (const auto& island : m_islands)
+	const double* spacing = m_reslicedImage->GetSpacing();
+	const double* origin = m_reslicedImage->GetOrigin();
+	const int* dims = m_reslicedImage->GetDimensions();
+	const vtkIdType totalVoxels =
+		static_cast<vtkIdType>(dims[0]) * dims[1] * dims[2];
+
+	vtkDataArray* labelScalars = m_labelImage->GetPointData()->GetScalars();
+	vtkDataArray* reslicedScalars = m_reslicedImage->GetPointData()->GetScalars();
+
+	if (!labelScalars || !reslicedScalars)
 	{
-		const QJsonArray bbMinArr = island.json.value(QStringLiteral("bbMin")).toArray();
-		const QJsonArray bbMaxArr = island.json.value(QStringLiteral("bbMax")).toArray();
-
-		if (bbMinArr.size() < 3 || bbMaxArr.size() < 3)
-		{
-			qWarning("onClean: island label=%d has malformed bbMin/bbMax in JSON; skipped.",
-					 island.label);
-			continue;
-		}
-
-		const double bMin[3] = {
-			bbMinArr[0].toDouble(),
-			bbMinArr[1].toDouble(),
-			bbMinArr[2].toDouble()
-		};
-		const double bMax[3] = {
-			bbMaxArr[0].toDouble(),
-			bbMaxArr[1].toDouble(),
-			bbMaxArr[2].toDouble()
-		};
-
-		// Build a per-island box and union it into the global accumulator.
-		vtkBoundingBox islandBox;
-		islandBox.SetMinPoint(bMin[0], bMin[1], bMin[2]);
-		islandBox.SetMaxPoint(bMax[0], bMax[1], bMax[2]);
-		islandBB.AddBox(islandBox);
-
-		qDebug("onClean: island label=%d  bbMin=(%.3f,%.3f,%.3f)  bbMax=(%.3f,%.3f,%.3f)",
-			   island.label,
-			   bMin[0], bMin[1], bMin[2],
-			   bMax[0], bMax[1], bMax[2]);
-	}
-
-	if (!islandBB.IsValid())
-	{
-		qWarning("onClean: global island bounding box is invalid "
-				 "(no islands with valid bbMin/bbMax); aborting VOI crop.");
+		qWarning("onClean: scalar arrays missing.");
 		showProgressEnd();
 		return;
 	}
 
-	islandBB.Inflate(dMin);
+	const double bgMean =
+		m_imageStats.value(QStringLiteral("meanBg")).toDouble(0.0);
+	const double bgStdDev =
+		m_imageStats.value(QStringLiteral("stdDevBg")).toDouble(0.0);
+	const double noiseHalfWidth = 2.0 * bgStdDev;
+	const double scalarMin =
+		m_imageStats.value(QStringLiteral("min")).toDouble(0.0);
+	const double scalarMax =
+		m_imageStats.value(QStringLiteral("max")).toDouble(255.0);
 
-	// Step 4 - map world BB corners to continuous voxel indices and round to nearest integer.
-	// vtkExtractVOI::SetVOI takes absolute extent indices (not dimension-relative),
-	// so we clamp to the image's actual extent [ext[0],ext[1]] x [ext[2],ext[3]] x [ext[4],ext[5]].
-	showProgressValue(95);
-	m_progressBar->update();
+	const std::unordered_set<int> removeSet(
+		labelsToRemove.begin(), labelsToRemove.end());
+
+	// ------------------------------------------------------------------
+	// Step 1: build binary mask of the selected islands
+	// ------------------------------------------------------------------
+	auto maskImage = vtkSmartPointer<vtkImageData>::New();
+	maskImage->SetDimensions(dims);
+	maskImage->SetSpacing(spacing);
+	maskImage->SetOrigin(origin);
+	maskImage->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+
+	auto* maskPtr = static_cast<unsigned char*>(maskImage->GetScalarPointer());
+	for (vtkIdType i = 0; i < totalVoxels; ++i)
+	{
+		const int lbl = static_cast<int>(labelScalars->GetTuple1(i));
+		maskPtr[i] = removeSet.count(lbl) ? 1u : 0u;
+	}
+	maskImage->Modified();
+
+	showProgressValue(15);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	double voxelIdxMin[3];
-	double voxelIdxMax[3];
+	// ------------------------------------------------------------------
+	// Step 2: dilate the island mask N times (3×3×3 structuring element)
+	// Each pass inflates the removal boundary by one voxel so that the
+	// seam between removed and retained tissue is noise-padded.
+	// ------------------------------------------------------------------
+	vtkSmartPointer<vtkImageData> dilatedMask = maskImage;
 
-	double worldPtMin[3];
-	double worldPtMax[3];
-	islandBB.GetMinPoint(worldPtMin);
-	islandBB.GetMaxPoint(worldPtMax);
-
-	cleanedImage->TransformPhysicalPointToContinuousIndex(worldPtMin, voxelIdxMin);
-	cleanedImage->TransformPhysicalPointToContinuousIndex(worldPtMax, voxelIdxMax);
-
-	int extent[6];
-	cleanedImage->GetExtent(extent);  // absolute extent: [xMin,xMax, yMin,yMax, zMin,zMax]
-
-	const int voiXMin = std::clamp(static_cast<int>(std::lround(voxelIdxMin[0])), extent[0], extent[1]);
-	const int voiXMax = std::clamp(static_cast<int>(std::lround(voxelIdxMax[0])), extent[0], extent[1]);
-	const int voiYMin = std::clamp(static_cast<int>(std::lround(voxelIdxMin[1])), extent[2], extent[3]);
-	const int voiYMax = std::clamp(static_cast<int>(std::lround(voxelIdxMax[1])), extent[2], extent[3]);
-	const int voiZMin = std::clamp(static_cast<int>(std::lround(voxelIdxMin[2])), extent[4], extent[5]);
-	const int voiZMax = std::clamp(static_cast<int>(std::lround(voxelIdxMax[2])), extent[4], extent[5]);
-
-	qDebug("onClean: VOI voxel extent  x=[%d,%d]  y=[%d,%d]  z=[%d,%d]",
-		   voiXMin, voiXMax, voiYMin, voiYMax, voiZMin, voiZMax);
-
-	auto extractVOI = vtkSmartPointer<vtkExtractVOI>::New();
-	extractVOI->SetInputData(cleanedImage);
-	extractVOI->SetVOI(voiXMin, voiXMax, voiYMin, voiYMax, voiZMin, voiZMax);
-	extractVOI->SetSampleRate(1, 1, 1);
-	extractVOI->Update();
-
-	vtkImageData* cropped = extractVOI->GetOutput();
-	if (cropped && cropped->GetNumberOfPoints() > 0)
+	for (int d = 0; d < nDilations; ++d)
 	{
-		auto croppedCopy = vtkSmartPointer<vtkImageData>::New();
-		croppedCopy->DeepCopy(cropped);
-		cleanedImage = croppedCopy;
+		auto dilate = vtkSmartPointer<vtkImageContinuousDilate3D>::New();
+		dilate->SetInputData(dilatedMask);
+		dilate->SetKernelSize(3, 3, 3);
+		dilate->Update();
 
-		const int* croppedDims = cleanedImage->GetDimensions();
-		qDebug("onClean: VOI crop applied - new dims: %d x %d x %d",
-			   croppedDims[0], croppedDims[1], croppedDims[2]);
+		auto copy = vtkSmartPointer<vtkImageData>::New();
+		copy->DeepCopy(dilate->GetOutput());
+		dilatedMask = copy;
+
+		showProgressValue(15 + static_cast<int>(
+			40.0 * (d + 1) / static_cast<double>(nDilations)));
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	}
+
+	vtkDataArray* dilatedScalars = dilatedMask->GetPointData()->GetScalars();
+	if (!dilatedScalars)
+	{
+		qWarning("onClean: dilation produced no scalars.");
+		showProgressEnd();
+		return;
+	}
+
+	showProgressValue(60);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// ------------------------------------------------------------------
+	// Step 3: OR the dilated mask with the pre-computed orphan mask.
+	//
+	// finalMask[i] = dilatedIslandMask[i]  OR  orphanMask[i]
+	//
+	// Orphan voxels are foreground regions unreachable from any landmark
+	// seed, identified once in onInitialize() step 3 and cached in
+	// m_orphanMaskImage.  They are added after dilation so they do not
+	// themselves get inflated (which could erode the retained island).
+	// If the orphan cache is absent the OR term is simply skipped.
+	// ------------------------------------------------------------------
+	vtkDataArray* orphanScalars = nullptr;
+	if (m_orphanMaskImage)
+	{
+		orphanScalars = m_orphanMaskImage->GetPointData()->GetScalars();
+		qDebug("onClean: orphan mask available — merging into removal mask.");
 	}
 	else
 	{
-		qWarning("onClean: vtkExtractVOI produced empty output; skipping crop.");
+		qDebug("onClean: no orphan mask cached "
+			   "(run Initialize to enable orphan removal).");
 	}
 
+	// ------------------------------------------------------------------
+	// Step 4: replace every finalMask voxel with background noise
+	// ------------------------------------------------------------------
+	std::mt19937_64 rng{ std::random_device{}() };
+	std::uniform_real_distribution<double> noiseDist(
+		-noiseHalfWidth, noiseHalfWidth);
 
-	showProgressEnd();
+	vtkIdType replacedIsland = 0;
+	vtkIdType replacedOrphan = 0;
+
+	for (vtkIdType i = 0; i < totalVoxels; ++i)
+	{
+		const bool inDilated =
+			dilatedScalars->GetTuple1(i) > 0.5;
+		const bool inOrphan =
+			orphanScalars && orphanScalars->GetTuple1(i) > 0.5;
+
+		if (!inDilated && !inOrphan)
+			continue;
+
+		const double noiseVal = std::clamp(
+			bgMean + noiseDist(rng), scalarMin, scalarMax);
+		reslicedScalars->SetTuple1(i, noiseVal);
+
+		if (inDilated) ++replacedIsland;
+		else           ++replacedOrphan;
+	}
+
+	reslicedScalars->Modified();
+	m_reslicedImage->Modified();
+
+	qDebug("onClean: %lld island voxel(s) + %lld orphan voxel(s) replaced "
+		   "with background noise (%d dilation pass(es)).",
+		static_cast<long long>(replacedIsland),
+		static_cast<long long>(replacedOrphan),
+		nDilations);
+
+	showProgressValue(80);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// The orphan mask has been consumed — disable the toggle so the user
+	// cannot view a now-stale mask after the resliced image has been modified.
+	m_orphanMaskImage = nullptr;
+	if (m_actToggleOrphanMask)
+	{
+		m_actToggleOrphanMask->setChecked(false); // triggers restore of primary
+		m_actToggleOrphanMask->setEnabled(false);
+	}
 
 	// ------------------------------------------------------------------
-	// Cache the cleaned volume and update the display.
-	// setImage() is NOT called here to avoid resetting the workflow state
-	// and recomputing PCA.  Instead we update only the VolumeView directly,
-	// mirroring the minimal path used elsewhere when the image content
-	// changes without replacing the pipeline source.
+	// Step 5: hide removed island surface actors
 	// ------------------------------------------------------------------
-	m_reslicedImage = cleanedImage;
+	QSet<int> retainedLabels;
+	for (const auto& isl : m_islands)
+		if (!removeSet.count(isl.label))
+			retainedLabels.insert(isl.label);
+
+	applyIslandRetentionFilter(retainedLabels);
+
+	// ------------------------------------------------------------------
+	// Step 6: refresh VolumeView and SliceView
+	// ------------------------------------------------------------------
 	m_image = m_reslicedImage.Get();
-
 	ui->volumeView->setImageData(m_reslicedImage);
 	ui->volumeView->updateData();
 
 	const double level = std::isfinite(m_threshold)
 		? m_threshold
-		: 0.5 * (scalarRange[0] + scalarRange[1]);
-
-	const double window = 2.0 * m_imageStats.value(QStringLiteral("stdDev")).toDouble(1.0);
+		: 0.5 * (scalarMin + scalarMax);
+	const double window = 2.0 * m_imageStats
+		.value(QStringLiteral("stdDev")).toDouble(1.0);
 
 	ui->volumeView->setColorWindowLevel(window, level);
 	syncSliceView(m_reslicedImage, window, level);
 
-	ui->volumeView->renderer()->ResetCamera();
-	ui->volumeView->renderer()->ResetCameraClippingRange();
-	ui->volumeView->render();
-
-	// Clean completed - advance to Cleaned: all step buttons disabled.
+	showProgressEnd();
 	setWorkflowStep(WorkflowStep::Cleaned);
 }
 
@@ -2738,6 +2892,14 @@ void PrototypeMainWindow::onRestart()
 	{
 		m_originalPcaJson = pcaResultToJson(m_pca);
 		qDebug("onRestart: original PCA JSON refreshed.");
+	}
+
+	m_orphanMaskImage = nullptr;
+
+	if (m_actToggleOrphanMask)
+	{
+		m_actToggleOrphanMask->setChecked(false);
+		m_actToggleOrphanMask->setEnabled(false);
 	}
 
 	// Reset the workflow to the start: only Reslice enabled.
@@ -3016,13 +3178,16 @@ void PrototypeMainWindow::syncSliceView(vtkImageData* image, double window, doub
 	if (!ui || !ui->sliceView || !ui->volumeView)
 		return;
 
+	// When the orphan mask overlay is active keep the SliceView pointing at
+	// the mask — do not let an upstream image change replace it.
+	if (m_actToggleOrphanMask && m_actToggleOrphanMask->isChecked())
+		return;
+
 	ui->sliceView->setImageData(image);
 	ui->sliceView->updateData();
 
 	if (image)
-	{
 		ui->sliceView->setWindowLevelNative(window, level);
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -3124,4 +3289,78 @@ void PrototypeMainWindow::applyIslandRetentionFilter(const QSet<int>& retainedLa
 
 	if (ui && ui->volumeView)
 		ui->volumeView->render();
+}
+
+// ---------------------------------------------------------------------------
+// Initialize slot — Reslice + Landmark in one step
+//
+// Runs the PCA reslice pass then immediately locates the surface landmark
+// points on the resulting volume, advancing the workflow directly from Idle
+// to Landmarked and enabling the Regions buttons in a single user action.
+// ---------------------------------------------------------------------------
+void PrototypeMainWindow::onInitialize()
+{
+	if (!m_pca.valid || !m_image || !std::isfinite(m_threshold))
+	{
+		qWarning("onInitialize: pre-conditions not met.");
+		return;
+	}
+
+	qDebug("onInitialize: step 1 — Reslice.");
+	onReslice();
+
+	if (!m_reslicedImage)
+	{
+		qWarning("onInitialize: Reslice step produced no output; aborting.");
+		return;
+	}
+
+	qDebug("onInitialize: step 2 — Landmark.");
+	onLandmark();
+
+	// ------------------------------------------------------------------
+	// Step 3: pre-identify orphan islands.
+	//
+	// An unseeded 26-connected BFS labels every foreground component in
+	// the resliced image at the current threshold.  Components that do
+	// not contain any landmark seed point are written into m_orphanMaskImage
+	// as a binary mask.  onClean() adds these voxels to its removal mask
+	// so they are replaced with background noise even when the user has
+	// not explicitly selected them in the island table.
+	// ------------------------------------------------------------------
+	qDebug("onInitialize: step 3 — orphan island identification.");
+
+	// Collect the 6 landmark seed world positions populated by onLandmark().
+	std::vector<std::array<double, 3>> seeds;
+	seeds.reserve(6);
+	for (int i = 0; i < 3; ++i)
+		for (int d = 0; d < 2; ++d)
+		{
+			const double* pt =
+				m_landmarkPoints[static_cast<std::size_t>(i)]
+				[static_cast<std::size_t>(d)].data();
+			seeds.push_back({ pt[0], pt[1], pt[2] });
+		}
+
+	showProgressStart();
+	const auto orphanProgress = [this](int pct)
+		{
+			showProgressValue(pct);
+			m_progressBar->update();
+			QCoreApplication::processEvents(
+				QEventLoop::ExcludeUserInputEvents, 10);
+		};
+
+	m_orphanMaskImage = nullptr;
+	PrototypeHelpers::identifyOrphanIslands(
+		m_reslicedImage, m_threshold, seeds,
+		m_orphanMaskImage, orphanProgress);
+
+	showProgressEnd();
+
+	// Enable the SliceView toggle only when the orphan mask was successfully built.
+	if (m_actToggleOrphanMask)
+		m_actToggleOrphanMask->setEnabled(m_orphanMaskImage != nullptr);
+
+	qDebug("onInitialize: complete — workflow is now Landmarked.");
 }

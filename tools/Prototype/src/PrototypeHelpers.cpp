@@ -47,13 +47,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 #include <queue>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
-#include <atomic>
 
 namespace PrototypeHelpers
 {
@@ -1319,6 +1320,211 @@ namespace PrototypeHelpers
 		if (progressCb) progressCb(100);
 
 		return islands;
+	}
+
+	// -----------------------------------------------------------------------
+	// Orphan island identification — unseeded connected component labelling
+	//
+	// Pass 1  Build binary threshold mask                      O(N)
+	// Pass 2  BFS flood-fill assigns a unique int component id
+	//         to every 26-connected foreground region          O(N)
+	// Pass 3  Walk seed world points; mark their component ids
+	//         as seeded                                        O(seeds)
+	// Pass 4  Write orphan mask: 1 where component is unseeded O(N)
+	// -----------------------------------------------------------------------
+	void identifyOrphanIslands(
+		vtkImageData* reslicedImage,
+		double                                     threshold,
+		const std::vector<std::array<double, 3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>& outOrphanMask,
+		const std::function<void(int)>& progressCb)
+	{
+		outOrphanMask = nullptr;
+
+		if (!reslicedImage || seedsWorld.empty())
+			return;
+
+		const double* origin = reslicedImage->GetOrigin();
+		const double* spacing = reslicedImage->GetSpacing();
+		const int* dims = reslicedImage->GetDimensions();
+		vtkDataArray* scalars = reslicedImage->GetPointData()->GetScalars();
+
+		if (!scalars)
+		{
+			qWarning("identifyOrphanIslands: resliced image has no scalar data.");
+			return;
+		}
+
+		if (progressCb) progressCb(0);
+
+		const vtkIdType NX = dims[0];
+		const vtkIdType NY = dims[1];
+		const vtkIdType NZ = dims[2];
+		const vtkIdType totalVoxels = NX * NY * NZ;
+
+		const auto flatIdx =
+			[NX, NY](vtkIdType x, vtkIdType y, vtkIdType z) -> vtkIdType
+			{ return z * NY * NX + y * NX + x; };
+
+		constexpr int offsets[26][3] = {
+			{-1,-1,-1},{-1,-1, 0},{-1,-1, 1},
+			{-1, 0,-1},{-1, 0, 0},{-1, 0, 1},
+			{-1, 1,-1},{-1, 1, 0},{-1, 1, 1},
+			{ 0,-1,-1},{ 0,-1, 0},{ 0,-1, 1},
+			{ 0, 0,-1},           { 0, 0, 1},
+			{ 0, 1,-1},{ 0, 1, 0},{ 0, 1, 1},
+			{ 1,-1,-1},{ 1,-1, 0},{ 1,-1, 1},
+			{ 1, 0,-1},{ 1, 0, 0},{ 1, 0, 1},
+			{ 1, 1,-1},{ 1, 1, 0},{ 1, 1, 1},
+		};
+
+		// ── Pass 1: binary threshold mask ────────────────────────────────
+		std::vector<uint8_t> binary(static_cast<std::size_t>(totalVoxels), 0u);
+		for (vtkIdType i = 0; i < totalVoxels; ++i)
+			if (scalars->GetTuple1(i) >= threshold)
+				binary[static_cast<std::size_t>(i)] = 1u;
+
+		if (progressCb) progressCb(10);
+
+		// ── Pass 2: unseeded BFS connected component labelling ────────────
+		// -1 = background; >= 0 = component id.
+		std::vector<int> componentMap(
+			static_cast<std::size_t>(totalVoxels), -1);
+
+		int nextComponent = 0;
+
+		for (vtkIdType z = 0; z < NZ; ++z)
+		{
+			for (vtkIdType y = 0; y < NY; ++y)
+			{
+				for (vtkIdType x = 0; x < NX; ++x)
+				{
+					const std::size_t seed =
+						static_cast<std::size_t>(flatIdx(x, y, z));
+
+					if (binary[seed] == 0u || componentMap[seed] >= 0)
+						continue;
+
+					const int compId = nextComponent++;
+					componentMap[seed] = compId;
+
+					std::queue<std::array<vtkIdType, 3>> bfsQueue;
+					bfsQueue.push({ x, y, z });
+
+					while (!bfsQueue.empty())
+					{
+						const auto cur = bfsQueue.front();
+						bfsQueue.pop();
+
+						const vtkIdType cx = cur[0];
+						const vtkIdType cy = cur[1];
+						const vtkIdType cz = cur[2];
+
+						for (const auto& off : offsets)
+						{
+							const vtkIdType nx_ = cx + off[0];
+							const vtkIdType ny_ = cy + off[1];
+							const vtkIdType nz_ = cz + off[2];
+
+							if (nx_ < 0 || nx_ >= NX ||
+								ny_ < 0 || ny_ >= NY ||
+								nz_ < 0 || nz_ >= NZ)
+								continue;
+
+							const std::size_t nIdx =
+								static_cast<std::size_t>(flatIdx(nx_, ny_, nz_));
+
+							if (binary[nIdx] == 0u || componentMap[nIdx] >= 0)
+								continue;
+
+							componentMap[nIdx] = compId;
+							bfsQueue.push({ nx_, ny_, nz_ });
+						}
+					}
+				}
+			}
+
+			// Progress: BFS pass maps to [10, 70].
+			if ((z & 0xF) == 0 && progressCb)
+			{
+				progressCb(10 + static_cast<int>(
+					60.0 * (z + 1) / static_cast<double>(NZ)));
+			}
+		}
+
+		if (progressCb) progressCb(70);
+
+		qDebug("identifyOrphanIslands: %d connected foreground component(s) found.",
+			nextComponent);
+
+		// ── Pass 3: mark which components contain at least one seed ───────
+		std::unordered_set<int> seededComponents;
+		seededComponents.reserve(static_cast<std::size_t>(seedsWorld.size()));
+
+		for (const auto& sw : seedsWorld)
+		{
+			double cont[3] = {};
+			reslicedImage->TransformPhysicalPointToContinuousIndex(
+				sw.data(), cont);
+
+			const int ix = static_cast<int>(std::lround(cont[0]));
+			const int iy = static_cast<int>(std::lround(cont[1]));
+			const int iz = static_cast<int>(std::lround(cont[2]));
+
+			if (ix < 0 || ix >= dims[0] ||
+				iy < 0 || iy >= dims[1] ||
+				iz < 0 || iz >= dims[2])
+				continue;
+
+			const int comp = componentMap[
+				static_cast<std::size_t>(flatIdx(ix, iy, iz))];
+
+			if (comp >= 0)
+			{
+				seededComponents.insert(comp);
+				qDebug("identifyOrphanIslands: seed (%.2f,%.2f,%.2f)"
+					   " -> component %d",
+					   sw[0], sw[1], sw[2], comp);
+			}
+		}
+
+		const int orphanComponentCount =
+			nextComponent - static_cast<int>(seededComponents.size());
+
+		qDebug("identifyOrphanIslands: %zu seeded component(s), "
+			   "%d orphan component(s).",
+			seededComponents.size(), orphanComponentCount);
+
+		if (progressCb) progressCb(80);
+
+		// ── Pass 4: build orphan mask ─────────────────────────────────────
+		outOrphanMask = vtkSmartPointer<vtkImageData>::New();
+		outOrphanMask->SetDimensions(dims);
+		outOrphanMask->SetSpacing(spacing);
+		outOrphanMask->SetOrigin(origin);
+		outOrphanMask->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+
+		auto* outPtr = static_cast<uint8_t*>(outOrphanMask->GetScalarPointer());
+
+		vtkIdType orphanVoxels = 0;
+		for (vtkIdType i = 0; i < totalVoxels; ++i)
+		{
+			const int comp = componentMap[static_cast<std::size_t>(i)];
+			if (comp >= 0 && seededComponents.count(comp) == 0)
+			{
+				outPtr[i] = 1u;
+				++orphanVoxels;
+			}
+			else
+			{
+				outPtr[i] = 0u;
+			}
+		}
+
+		qDebug("identifyOrphanIslands: %lld orphan voxel(s) written to mask.",
+			static_cast<long long>(orphanVoxels));
+
+		if (progressCb) progressCb(100);
 	}
 
 	// -----------------------------------------------------------------------
