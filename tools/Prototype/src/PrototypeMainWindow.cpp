@@ -133,7 +133,7 @@ namespace {
 				static_cast<int>(islands.size()), 3, this);
 			table->setHorizontalHeaderLabels(
 				{ tr("Island"),
-				  tr("Volume (\u00D710\u00B3 mm\u00B3)"),
+				  tr("Volume (\u00D710\u207B\u00B3 mm\u00B3)"),
 				  tr("Remove") });
 			table->setSelectionMode(QAbstractItemView::NoSelection);
 			table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -285,10 +285,9 @@ namespace {
 	{
 	public:
 		using IterateFunc = std::function<
-			std::vector<PrototypeHelpers::BoneIsland>(double threshold)
+			std::vector<PrototypeHelpers::BoneIsland>(double threshold, bool firstIteration)
 		>;
 		using ResetFunc = std::function<void()>;
-		using OrphanFunc = std::function<void()>;
 
 		explicit IterationProgressDialog(
 			double baselineThreshold,
@@ -313,11 +312,11 @@ namespace {
 				new QLabel(QString::number(regionMean, 'f', 2), this));
 			setupForm->addRow(tr("Region std deviation:"),
 				new QLabel(QString::number(regionStdDev, 'f', 2), this));
-			setupForm->addRow(tr("Region volume (\u00D710\u00B3 mm\u00B3):"),
+			setupForm->addRow(tr("Region volume (\u00D710\u207B\u00B3 mm\u00B3):"),
 				new QLabel(QString::number(regionVolumeMm3 * 1000.0, 'f', 1), this));
 
 			m_spinIterations = new QSpinBox(this);
-			m_spinIterations->setRange(1, 100);
+			m_spinIterations->setRange(2, 100);
 			m_spinIterations->setValue(20);
 			setupForm->addRow(tr("Max Iterations:"), m_spinIterations);
 
@@ -331,16 +330,16 @@ namespace {
 			// The run stops when the absolute volume change between the last
 			// two appended rows falls at or below this value.
 			m_spinVolumeThreshold = new QDoubleSpinBox(this);
-			m_spinVolumeThreshold->setRange(0.0, 999999.0);
+			m_spinVolumeThreshold->setRange(0.0, 1000.0);
 			m_spinVolumeThreshold->setSingleStep(0.1);
 			m_spinVolumeThreshold->setDecimals(3);
 			m_spinVolumeThreshold->setValue(1.0);
-			setupForm->addRow(tr("Volume threshold (\u00D710\u00B3 mm\u00B3):"),
+			setupForm->addRow(tr("Volume threshold (\u00D710\u207B\u00B3 mm\u00B3):"),
 				m_spinVolumeThreshold);
 
 			m_spinMultiplier = new QDoubleSpinBox(this);
 			m_spinMultiplier->setRange(0.01, 10.0);
-			m_spinMultiplier->setSingleStep(0.1);
+			m_spinMultiplier->setSingleStep(0.01);
 			m_spinMultiplier->setDecimals(3);
 			m_spinMultiplier->setValue(0.1);
 			setupForm->addRow(tr("Std-dev multiplier:"), m_spinMultiplier);
@@ -471,8 +470,7 @@ namespace {
 			m_selectionGroup = new QButtonGroup(this);
 			m_selectionGroup->setExclusive(true);
 
-			connect(m_selectionGroup,
-				QOverload<int>::of(&QButtonGroup::buttonClicked),
+			connect(m_selectionGroup, &QButtonGroup::idClicked,
 				this,
 				[this](int) {
 					m_btnApply->setEnabled(
@@ -560,7 +558,6 @@ namespace {
 
 		void setIterateCallback(IterateFunc fn) { m_iterateFunc = std::move(fn); }
 		void setResetCallback(ResetFunc fn) { m_resetFunc = std::move(fn); }
-		void setOrphanCallback(OrphanFunc fn) { m_orphanFunc = std::move(fn); }
 
 	private:
 		// Returns the active starting threshold: custom value when override is
@@ -619,12 +616,12 @@ namespace {
 
 			// Back-compute the multiplier:
 			//   iters × multiplier × stdDev = threshMax - threshMin
-			//   multiplier = (threshMax - threshMin) / (iters × stdDev)
-			if (iters > 0 && m_baseStdDev > 0.0)
+			//   multiplier = (threshMax - threshMin) / ((iters - 1) × stdDev)
+			if (iters >= 2 && m_baseStdDev > 0.0)
 			{
 				const double newMultiplier =
 					(threshMax - threshMin)
-					/ (static_cast<double>(iters) * m_baseStdDev);
+					/ (static_cast<double>(iters-1) * m_baseStdDev);
 
 				// QDoubleSpinBox::setValue() silently clamps to [minimum, maximum].
 				// The refined multiplier may be far outside the default [0.01, 10.0]
@@ -636,8 +633,6 @@ namespace {
 											   std::max(1e-7, newMultiplier));
 				const double safeMax = std::max(m_spinMultiplier->maximum(),
 											   newMultiplier);
-				m_spinMultiplier->setRange(safeMin, safeMax);
-
 				m_spinMultiplier->setRange(safeMin, safeMax);
 
 				// Compute the required decimal precision from the magnitude of
@@ -785,6 +780,15 @@ namespace {
 			const int maxIslands = m_spinTargetIslands->value();
 			const double volumeThreshold = m_spinVolumeThreshold->value();
 
+			// Clear per-run data so a second Run without an explicit Reset starts
+			// from a clean table and matched threshold/volume vectors.
+			m_iterationThresholds.clear();
+			m_iterationVolumes.clear();
+			m_iterationTable->setRowCount(0);
+			const auto existingButtons = m_selectionGroup->buttons();
+			for (auto* btn : existingButtons)
+				m_selectionGroup->removeButton(btn);
+
 			rebuildTableColumns(maxIslands);
 
 			// Tracks whether the loop exited via the target-islands criterion
@@ -797,9 +801,9 @@ namespace {
 			{
 				const double threshold =
 					startThreshold
-					+ static_cast<double>(iter - 1) * multiplier * m_baseStdDev;
+					+ static_cast<double>(iter) * multiplier * m_baseStdDev;
 
-				const auto islands = m_iterateFunc(threshold);
+				const auto islands = m_iterateFunc(threshold, iter == 1);
 
 				if (islands.empty())
 				{
@@ -835,7 +839,7 @@ namespace {
 				// Append one row to the iteration history table.
 				appendIterationRow(iter, threshold, volumeMm3x1k, islands);
 
-				QCoreApplication::processEvents();
+				QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 
 				// Stop as soon as the segmentation produces the desired number of islands.
 				if (static_cast<int>(islands.size()) >= maxIslands)
@@ -915,8 +919,8 @@ namespace {
 						this,
 						tr("Volume Convergence \u2014 Refinement Not Required"),
 						tr("The volume change between the two bracketing rows is "
-						"<b>%1 \u00D710\u00B3 mm\u00B3</b>, which is at or below "
-						"the volume threshold of <b>%2 \u00D710\u00B3 mm\u00B3</b>.<br><br>"
+						"<b>%1 \u00D710\u207B\u00B3 mm\u00B3</b>, which is at or below "
+						"the volume threshold of <b>%2 \u00D710\u207B\u00B3 mm\u00B3</b>.<br><br>"
 						"Further refinement is unlikely to improve the result.<br><br>"
 						"Row <b>%3</b> (threshold&nbsp;%4) has been selected automatically."
 						"<br>Click <i>Apply Selection</i> to finalise.")
@@ -925,16 +929,6 @@ namespace {
 							.arg(rowM + 1)
 							.arg(m_iterationThresholds[static_cast<std::size_t>(rowM)], 0, 'f', 2));
 				}
-			}
-
-			// Re-identify orphan islands against the final iteration state so
-			// that any island split off during region growth — not connected to
-			// a landmark seed — is captured in the orphan mask and will be
-			// cleaned by onClean() without needing to be explicitly selected.
-			if (m_orphanFunc)
-			{
-				qDebug("IterationProgressDialog: running orphan identification after iterations.");
-				m_orphanFunc();
 			}
 
 			m_btnRun->setEnabled(true);
@@ -960,11 +954,11 @@ namespace {
 			QStringList headers;
 			headers << tr("#")
 				<< tr("Threshold")
-				<< tr("Volume (\u00D710\u00B3 mm\u00B3)")
+				<< tr("Volume (\u00D710\u207B\u00B3 mm\u00B3)")
 				<< tr("Islands");
 
 			for (int i = 0; i < m_islandColumnCount; ++i)
-				headers << tr("Island %1 (\u00D710\u00B3 mm\u00B3)").arg(i + 1);
+				headers << tr("Island %1 (\u00D710\u207B\u00B3 mm\u00B3)").arg(i + 1);
 
 			headers << tr("Select");
 			m_iterationTable->setHorizontalHeaderLabels(headers);
@@ -1109,11 +1103,12 @@ namespace {
 			m_chkCustomStart->setChecked(false);
 			m_spinCustomStart->setValue(m_baseThreshold);
 
-			// Restore the multiplier spin to its default range and precision
-			// in case a previous Refine widened them.
+			// Restore all spins to their defaults so a Reset gives a fully
+			// clean slate: multiplier range/precision, and volume threshold.
 			m_spinMultiplier->setDecimals(3);
 			m_spinMultiplier->setRange(0.001, 10.0);
 			m_spinMultiplier->setValue(0.1);
+			m_spinVolumeThreshold->setValue(1.0);
 
 			m_series->clear();
 			m_seriesPoints->clear();
@@ -1159,7 +1154,7 @@ namespace {
 			m_btnReset->setEnabled(false);
 			m_btnApply->setEnabled(false);
 
-			m_iterateFunc(threshold);
+			m_iterateFunc(threshold, false);
 
 			m_btnRun->setEnabled(true);
 			m_btnReset->setEnabled(true);
@@ -1201,7 +1196,6 @@ namespace {
 
 		IterateFunc              m_iterateFunc;
 		ResetFunc                m_resetFunc;
-		OrphanFunc               m_orphanFunc;
 		std::vector<double>      m_iterationThresholds;
 		std::vector<double>      m_iterationVolumes;
 	};
@@ -1269,8 +1263,7 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	// Enabled only after segmentation completes AND at least 8 Reslice operations
 	// have been performed in the current session (m_resliceCount >= 8).
 	m_actClean = new QAction(tr("Clean"), this);
-	m_actClean->setToolTip(tr("Run the post-segmentation clean step "
-		"(available after 8 or more Reslice operations)"));
+	m_actClean->setToolTip(tr("Run the post-segmentation clean step"));
 	ui->toolBar->addAction(m_actClean);
 	connect(m_actClean, &QAction::triggered, this, &PrototypeMainWindow::onClean);
 
@@ -1697,7 +1690,7 @@ void PrototypeMainWindow::loadFromSidecar(const QString& sidecarPath)
 	setWorkflowStep(WorkflowStep::Idle);
 }
 
-void PrototypeMainWindow::setImage(vtkImageData* image)
+void PrototypeMainWindow::setImage(vtkSmartPointer<vtkImageData> image)
 {
 	if (!ui || !ui->volumeView)
 		return;
@@ -1717,7 +1710,7 @@ void PrototypeMainWindow::setImage(vtkImageData* image)
 	m_labelImage = nullptr;
 	m_islands.clear();
 
-	// Cache raw pointer for use by onLandmark() (lifetime owned by m_imageLoader pipeline).
+	// Cache the image for use by onLandmark() and onReslice().
 	m_image = image;
 
 	// Invalidate any previously cached PCA result and landmark data.
@@ -2226,21 +2219,17 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 	// Remove actors from any previous regions run (including scalar bar)
 	clearIslandActors();
 
-	vtkRenderer* ren = (ui && ui->volumeView) ? ui->volumeView->renderer() : nullptr;
-
-	const int nIslands = static_cast<int>(islands.size());
-
-	// ------------------------------------------------------------------
-	// Determine the voxel-count range across all islands for colour mapping
-	// ------------------------------------------------------------------
-	vtkIdType minVoxels = islands[0].voxelCount;
-	vtkIdType maxVoxels = islands[0].voxelCount;
-
-	for (const auto& isl : islands)
+	if (islands.empty())
 	{
-		minVoxels = std::min(minVoxels, isl.voxelCount);
-		maxVoxels = std::max(maxVoxels, isl.voxelCount);
+		qWarning("applyIslandSegmentationResult: called with empty islands vector; aborting.");
+		return;
 	}
+
+	const auto [minIt, maxIt] = std::minmax_element(islands.begin(), islands.end(),
+		[](const PrototypeHelpers::BoneIsland& a, const PrototypeHelpers::BoneIsland& b)
+		{ return a.voxelCount < b.voxelCount; });
+	const vtkIdType minVoxels = minIt->voxelCount;
+	const vtkIdType maxVoxels = maxIt->voxelCount;
 
 	qDebug("applyIslandSegmentationResult: voxel-count range  min=%lld  max=%lld",
 		   static_cast<long long>(minVoxels),
@@ -2257,6 +2246,8 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 	// Create one surface actor per island, coloured by its voxel count
 	// ------------------------------------------------------------------
 	QJsonArray regionsArray;
+	const int nIslands = static_cast<int>(islands.size());
+	vtkRenderer* ren = (ui && ui->volumeView) ? ui->volumeView->renderer() : nullptr;
 
 	for (int idx = 0; idx < nIslands; ++idx)
 	{
@@ -2400,7 +2391,7 @@ void PrototypeMainWindow::onRegions()
 	const double baseVolume =
 		PrototypeHelpers::computeRegionVolumeMm3(labelImage);
 
-	qDebug("onRegions: baseline region stats — mean=%d  stdDev=%d  volume=%.3f x 10^3 mm^3",
+	qDebug("onRegions: baseline region stats — mean=%d  stdDev=%d  volume=%.3f x 10^-3 mm^3",
 		   int(baseStats.mean), int(baseStats.stdDev), baseVolume * 1000);
 
 	// ------------------------------------------------------------------
@@ -2420,7 +2411,7 @@ void PrototypeMainWindow::onRegions()
 		this);
 
 	progressDlg->setIterateCallback(
-		[this, seeds](double threshold) -> std::vector<PrototypeHelpers::BoneIsland>
+		[this, seeds](double threshold, bool firstIteration) -> std::vector<PrototypeHelpers::BoneIsland>
 		{
 			const auto progress = [this](int pct)
 				{
@@ -2429,9 +2420,6 @@ void PrototypeMainWindow::onRegions()
 					QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 				};
 
-			// Move each seed inward along its eigen-axis toward the centroid to
-			// the nearest voxel that satisfies the current (higher) threshold.
-			// The original landmark sphere positions are not modified.
 			const std::vector<std::array<double, 3>> adjustedSeeds =
 				PrototypeHelpers::computeInwardAdjustedSeeds(
 					m_reslicedImage, threshold, seeds, m_pca);
@@ -2452,6 +2440,61 @@ void PrototypeMainWindow::onRegions()
 			if (!iterIslands.empty())
 				applyIslandSegmentationResult(iterIslands, iterLabel);
 
+			// ── Incremental orphan accumulation ───────────────────────────
+			// Reset the cumulative mask at the start of each fresh Run so
+			// stale results from a previous run are not carried forward.
+			if (firstIteration)
+				m_orphanMaskImage = nullptr;
+
+			// Identify orphans at the current iteration threshold using the
+			// inward-adjusted seeds (which reflect where seeds actually land
+			// at this threshold).  OR-merge into the cumulative mask so any
+			// island that was ever disconnected from a seed — even if it later
+			// merges back or disappears entirely — is permanently captured.
+			if (m_reslicedImage)
+			{
+				vtkSmartPointer<vtkImageData> iterOrphanMask;
+				PrototypeHelpers::identifyOrphanIslands(
+					m_reslicedImage, threshold, adjustedSeeds,
+					iterOrphanMask, /*progressCb=*/nullptr);
+
+				if (iterOrphanMask)
+				{
+					if (!m_orphanMaskImage)
+					{
+						// First contribution — take it directly.
+						m_orphanMaskImage = iterOrphanMask;
+					}
+					else
+					{
+						// OR-merge: any voxel orphaned at any threshold stays
+						// marked, even if it disappears at a later iteration.
+						const vtkIdType nVox =
+							m_orphanMaskImage->GetNumberOfPoints();
+						if (iterOrphanMask->GetNumberOfPoints() != nVox)
+						{
+							qWarning("onRegions orphan OR-merge: mask dimension mismatch "
+								"(acc=%lld  new=%lld); skipping merge for this iteration.",
+								static_cast<long long>(nVox),
+								static_cast<long long>(iterOrphanMask->GetNumberOfPoints()));
+						}
+						else
+						{
+							auto* accPtr = static_cast<uint8_t*>(
+								m_orphanMaskImage->GetScalarPointer());
+							const auto* newPtr = static_cast<const uint8_t*>(
+								iterOrphanMask->GetScalarPointer());
+							for (vtkIdType i = 0; i < nVox; ++i)
+								accPtr[i] |= newPtr[i];
+							m_orphanMaskImage->Modified();
+						}
+					}
+
+					if (m_actToggleOrphanMask)
+						m_actToggleOrphanMask->setEnabled(true);
+				}
+			}
+
 			return iterIslands;
 		});
 
@@ -2461,39 +2504,11 @@ void PrototypeMainWindow::onRegions()
 	progressDlg->setResetCallback(
 		[this, islands, labelImage]()
 		{
+			m_orphanMaskImage = nullptr;
+			if (m_actToggleOrphanMask)
+				m_actToggleOrphanMask->setEnabled(false);
 			applyIslandSegmentationResult(islands, labelImage);
 		});
-
-	progressDlg->setOrphanCallback(
-	[this, seeds]()
-	{
-		if (!m_reslicedImage || !std::isfinite(m_threshold))
-		{
-			qWarning("onRegions orphan callback: pre-conditions not met; skipping.");
-			return;
-		}
-
-		const auto progress = [this](int pct)
-			{
-				showProgressValue(pct);
-				m_progressBar->update();
-				QCoreApplication::processEvents(
-					QEventLoop::ExcludeUserInputEvents, 10);
-			};
-
-		showProgressStart();
-		m_orphanMaskImage = nullptr;
-		PrototypeHelpers::identifyOrphanIslands(
-			m_reslicedImage, m_threshold, seeds,
-			m_orphanMaskImage, progress);
-		showProgressEnd();
-
-		if (m_actToggleOrphanMask)
-			m_actToggleOrphanMask->setEnabled(m_orphanMaskImage != nullptr);
-
-		qDebug("onRegions orphan callback: orphan mask %s after iterations.",
-			m_orphanMaskImage ? "updated" : "unavailable");
-	});
 
 	progressDlg->setAttribute(Qt::WA_DeleteOnClose);
 	progressDlg->show();
@@ -2627,18 +2642,16 @@ void PrototypeMainWindow::onRegionsGraphCut()
 // ─────────
 //  1. User selects which islands to remove and how many dilation passes
 //     to apply via IslandCleanDialog.
-//  2. Build a binary mask of the selected islands from m_labelImage.
-//  3. Dilate the mask N times (3×3×3) to carve a clean margin.
-//  4. OR the dilated mask with m_orphanMaskImage (pre-computed by
-//     onInitialize step 3) to produce the final removal mask.
-//     Orphan voxels are foreground regions unreachable from any landmark
-//     seed; they are always removed regardless of island selection.
-//  5. Replace every removal-mask voxel in m_reslicedImage with mean
+//  2. Build a combined binary mask: selected islands OR orphan islands.
+//     Orphans are merged before dilation so all removed regions receive
+//     the same noise-padded boundary margin.
+//  3. Dilate the combined mask N times (3×3×3) to carve a clean margin.
+//  4. Replace every dilated-mask voxel in m_reslicedImage with the mean
 //     background value.
-//  6. Hide the removed island surface actors and refresh both views.
+//  5. Hide the removed island surface actors and refresh both views.
 //
 // The retained island plays no part: its voxels are absent from both the
-// dilated island mask and the orphan mask, so they are never touched.
+// selected-island mask and the orphan mask, so they are never touched.
 // ---------------------------------------------------------------------------
 void PrototypeMainWindow::onClean()
 {
@@ -2706,9 +2719,6 @@ void PrototypeMainWindow::onClean()
 
 	const double bgMean =
 		m_imageStats.value(QStringLiteral("meanBg")).toDouble(0.0);
-	const double bgStdDev =
-		m_imageStats.value(QStringLiteral("stdDevBg")).toDouble(0.0);
-	const double noiseHalfWidth = 2.0 * bgStdDev;
 	const double scalarMin =
 		m_imageStats.value(QStringLiteral("min")).toDouble(0.0);
 	const double scalarMax =
@@ -2718,8 +2728,25 @@ void PrototypeMainWindow::onClean()
 		labelsToRemove.begin(), labelsToRemove.end());
 
 	// ------------------------------------------------------------------
-	// Step 1: build binary mask of the selected islands
+	// Step 1: build combined binary mask — selected islands OR orphans.
+	//
+	// Orphan voxels are merged into the mask before dilation so that the
+	// dilation passes apply equally to both selected islands and orphan
+	// islands.  This ensures a consistent noise-padded margin around all
+	// removed regions regardless of how they were identified.
 	// ------------------------------------------------------------------
+	vtkDataArray* orphanScalars = nullptr;
+	if (m_orphanMaskImage)
+	{
+		orphanScalars = m_orphanMaskImage->GetPointData()->GetScalars();
+		qDebug("onClean: orphan mask available — merged into pre-dilation removal mask.");
+	}
+	else
+	{
+		qDebug("onClean: no orphan mask cached "
+			   "(run Initialize to enable orphan removal).");
+	}
+
 	auto maskImage = vtkSmartPointer<vtkImageData>::New();
 	maskImage->SetDimensions(dims);
 	maskImage->SetSpacing(spacing);
@@ -2729,8 +2756,10 @@ void PrototypeMainWindow::onClean()
 	auto* maskPtr = static_cast<unsigned char*>(maskImage->GetScalarPointer());
 	for (vtkIdType i = 0; i < totalVoxels; ++i)
 	{
-		const int lbl = static_cast<int>(labelScalars->GetTuple1(i));
-		maskPtr[i] = removeSet.count(lbl) ? 1u : 0u;
+		const int  lbl = static_cast<int>(labelScalars->GetTuple1(i));
+		const bool inIsland = removeSet.count(lbl) > 0;
+		const bool inOrphan = orphanScalars && orphanScalars->GetTuple1(i) > 0.5;
+		maskPtr[i] = (inIsland || inOrphan) ? 1u : 0u;
 	}
 	maskImage->Modified();
 
@@ -2738,9 +2767,9 @@ void PrototypeMainWindow::onClean()
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
 	// ------------------------------------------------------------------
-	// Step 2: dilate the island mask N times (3×3×3 structuring element)
-	// Each pass inflates the removal boundary by one voxel so that the
-	// seam between removed and retained tissue is noise-padded.
+	// Step 2: dilate the combined mask N times (3×3×3 structuring element).
+	// Dilation applies to both selected islands and orphan islands so all
+	// removed regions receive the same noise-padded boundary margin.
 	// ------------------------------------------------------------------
 	vtkSmartPointer<vtkImageData> dilatedMask = maskImage;
 
@@ -2772,45 +2801,28 @@ void PrototypeMainWindow::onClean()
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
 	// ------------------------------------------------------------------
-	// Step 3: OR the dilated mask with the pre-computed orphan mask.
-	//
-	// finalMask[i] = dilatedIslandMask[i]  OR  orphanMask[i]
-	//
-	// Orphan voxels are foreground regions unreachable from any landmark
-	// seed, identified once in onInitialize() step 3 and cached in
-	// m_orphanMaskImage.  They are added after dilation so they do not
-	// themselves get inflated (which could erode the retained island).
-	// If the orphan cache is absent the OR term is simply skipped.
+	// Step 3: replace all dilated voxels with background mean.
+	// The dilated mask already contains both island and orphan contributions
+	// so a single pass suffices — no post-dilation OR is required.
 	// ------------------------------------------------------------------
-	vtkDataArray* orphanScalars = nullptr;
-	if (m_orphanMaskImage)
-	{
-		orphanScalars = m_orphanMaskImage->GetPointData()->GetScalars();
-		qDebug("onClean: orphan mask available — merging into removal mask.");
-	}
-	else
-	{
-		qDebug("onClean: no orphan mask cached "
-			   "(run Initialize to enable orphan removal).");
-	}
-
 	vtkIdType replacedIsland = 0;
 	vtkIdType replacedOrphan = 0;
 
 	for (vtkIdType i = 0; i < totalVoxels; ++i)
 	{
-		const bool inDilated =
-			dilatedScalars->GetTuple1(i) > 0.5;
-		const bool inOrphan =
-			orphanScalars && orphanScalars->GetTuple1(i) > 0.5;
-
-		if (!inDilated && !inOrphan)
+		if (dilatedScalars->GetTuple1(i) <= 0.5)
 			continue;
 
 		reslicedScalars->SetTuple1(i, bgMean);
 
-		if (inDilated) ++replacedIsland;
-		else           ++replacedOrphan;
+		// Attribute each replaced voxel for the debug log.
+		// Voxels introduced purely by dilation expansion (not in any source
+		// mask) are counted with the island total as they border island tissue.
+		const int  lbl = static_cast<int>(labelScalars->GetTuple1(i));
+		const bool inIsland = removeSet.count(lbl) > 0;
+		const bool inOrphan = orphanScalars && orphanScalars->GetTuple1(i) > 0.5;
+		if (inOrphan && !inIsland) ++replacedOrphan;
+		else                       ++replacedIsland;
 	}
 
 	reslicedScalars->Modified();
@@ -2835,7 +2847,7 @@ void PrototypeMainWindow::onClean()
 	}
 
 	// ------------------------------------------------------------------
-	// Step 5: hide removed island surface actors
+	// Step 4: hide removed island surface actors
 	// ------------------------------------------------------------------
 	QSet<int> retainedLabels;
 	for (const auto& isl : m_islands)
@@ -2845,9 +2857,9 @@ void PrototypeMainWindow::onClean()
 	applyIslandRetentionFilter(retainedLabels);
 
 	// ------------------------------------------------------------------
-	// Step 6: refresh VolumeView and SliceView
+	// Step 5: refresh VolumeView and SliceView
 	// ------------------------------------------------------------------
-	m_image = m_reslicedImage.Get();
+	m_image = m_reslicedImage;
 	ui->volumeView->setImageData(m_reslicedImage);
 	ui->volumeView->updateData();
 

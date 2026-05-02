@@ -34,7 +34,7 @@ public:
 
 	void loadFromSidecar(const QString& sidecarPath);
 	void loadFromSidecarAsync(const QString& sidecarPath);
-	void setImage(vtkImageData* image);
+	void setImage(vtkSmartPointer<vtkImageData> image);
 
 	const QJsonObject& landmarkResult()  const { return m_landmarkResult; }
 	const QJsonObject& landmarkJson()    const { return m_landmarkJson; }
@@ -115,8 +115,7 @@ private:
 
 	double m_threshold = std::numeric_limits<double>::quiet_NaN();
 
-	vtkImageData* m_image = nullptr;
-
+	vtkSmartPointer<vtkImageData> m_image;
 	vtkSmartPointer<vtkImageData> m_originalImage;
 
 	vtkSmartPointer<ImageLoader>           m_imageLoader;
