@@ -425,11 +425,6 @@ namespace {
 			connect(m_btnReset, &QPushButton::clicked, this,
 				[this] { resetState(); });
 
-			m_btnApply = new QPushButton(tr("Apply Selection"), this);
-			m_btnApply->setEnabled(false);
-			connect(m_btnApply, &QPushButton::clicked, this,
-				[this] { applySelection(); });
-
 			// Refine: enabled when >=2 rows are spanned by the table selection.
 			// Sets start threshold = min selected threshold and back-computes the
 			// multiplier so that iterations x step = max selected threshold - start.
@@ -447,7 +442,6 @@ namespace {
 			leftLayout->addSpacing(8);
 			leftLayout->addWidget(m_btnRun);
 			leftLayout->addWidget(m_btnReset);
-			leftLayout->addWidget(m_btnApply);
 			leftLayout->addWidget(m_btnRefine);
 			leftLayout->addStretch();
 
@@ -469,13 +463,6 @@ namespace {
 			// QButtonGroup enforces mutual exclusivity across all row checkboxes.
 			m_selectionGroup = new QButtonGroup(this);
 			m_selectionGroup->setExclusive(true);
-
-			connect(m_selectionGroup, &QButtonGroup::idClicked,
-				this,
-				[this](int) {
-					m_btnApply->setEnabled(
-						m_selectionGroup->checkedButton() != nullptr);
-				});
 
 			auto* historyBox = new QGroupBox(tr("Iteration History"), this);
 			auto* historyBoxLayout = new QVBoxLayout(historyBox);
@@ -769,7 +756,6 @@ namespace {
 
 			m_btnRun->setEnabled(false);
 			m_btnReset->setEnabled(false);
-			m_btnApply->setEnabled(false);
 			m_spinIterations->setEnabled(false);
 			m_spinTargetIslands->setEnabled(false);
 			m_spinVolumeThreshold->setEnabled(false);
@@ -909,7 +895,6 @@ namespace {
 					if (auto* btn = m_selectionGroup->button(rowM))
 						btn->setChecked(true);
 
-					m_btnApply->setEnabled(true);
 					m_btnRefine->setEnabled(false);
 
 					if (auto* item = m_iterationTable->item(rowM, 0))
@@ -933,8 +918,6 @@ namespace {
 
 			m_btnRun->setEnabled(true);
 			m_btnReset->setEnabled(true);
-			m_btnApply->setEnabled(
-				m_selectionGroup->checkedButton() != nullptr);
 			m_spinIterations->setEnabled(true);
 			m_spinMultiplier->setEnabled(true);
 			m_spinTargetIslands->setEnabled(true);
@@ -1097,7 +1080,6 @@ namespace {
 			m_iterationTable->setRowCount(0);
 			rebuildTableColumns(0);
 
-			m_btnApply->setEnabled(false);
 			m_btnRefine->setEnabled(false);
 
 			m_chkCustomStart->setChecked(false);
@@ -1129,38 +1111,6 @@ namespace {
 			qDebug("IterationProgressDialog: state reset to baseline.");
 		}
 
-		// Re-runs segmentation at the selected iteration's threshold and
-		// updates the 3D view through the iterate callback.
-		void applySelection()
-		{
-			if (!m_iterateFunc)
-				return;
-
-			QAbstractButton* checked = m_selectionGroup->checkedButton();
-			if (!checked)
-				return;
-
-			const int id = m_selectionGroup->id(checked);
-			if (id < 0 || id >= static_cast<int>(m_iterationThresholds.size()))
-				return;
-
-			const double threshold =
-				m_iterationThresholds[static_cast<std::size_t>(id)];
-
-			qDebug("IterationProgressDialog: applying selection — "
-				   "row=%d  threshold=%.4f", id, threshold);
-
-			m_btnRun->setEnabled(false);
-			m_btnReset->setEnabled(false);
-			m_btnApply->setEnabled(false);
-
-			m_iterateFunc(threshold, false);
-
-			m_btnRun->setEnabled(true);
-			m_btnReset->setEnabled(true);
-			m_btnApply->setEnabled(true);
-		}
-
 		double          m_baseThreshold;
 		double          m_baseStdDev;
 		double          m_voxelVolMm3;
@@ -1176,7 +1126,6 @@ namespace {
 		QDoubleSpinBox* m_spinCustomStart = nullptr;
 		QPushButton* m_btnRun = nullptr;
 		QPushButton* m_btnReset = nullptr;
-		QPushButton* m_btnApply = nullptr;
 		QPushButton* m_btnRefine = nullptr;
 
 		QTableWidget* m_iterationTable = nullptr;
@@ -1418,6 +1367,7 @@ void PrototypeMainWindow::showProgressValue(int percent)
 {
 	m_progressBar->setValue(percent);
 	m_progressBar->setVisible(true);
+	m_progressBar->repaint();
 }
 
 void PrototypeMainWindow::showProgressEnd()
@@ -1685,6 +1635,9 @@ void PrototypeMainWindow::loadFromSidecar(const QString& sidecarPath)
 	m_originalImage->DeepCopy(out);
 
 	setImage(out);
+
+	setWindowTitle(
+		tr("CTAXPrototype \u2014 %1").arg(QFileInfo(m_cropPath).fileName()));
 
 	// A freshly loaded image starts the workflow at Idle (only Reslice enabled).
 	setWorkflowStep(WorkflowStep::Idle);
