@@ -1200,6 +1200,7 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	ui->toolBar->addAction(m_actRegions);
 	connect(m_actRegions, &QAction::triggered, this, &PrototypeMainWindow::onRegions);
 
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 	// "Graph Cut" toolbar button: ITK ImageGridCutFilter (multi-threaded GridCut solver)
 	m_actRegionsGraphCut = new QAction(tr("Graph Cut"), this);
 	m_actRegionsGraphCut->setToolTip(tr(
@@ -1207,6 +1208,7 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	ui->toolBar->addAction(m_actRegionsGraphCut);
 	connect(m_actRegionsGraphCut, &QAction::triggered,
 			this, &PrototypeMainWindow::onRegionsGraphCut);
+#endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 
 	// "Clean" toolbar button: post-segmentation clean step.
 	// Enabled only after segmentation completes AND at least 8 Reslice operations
@@ -1342,7 +1344,9 @@ void PrototypeMainWindow::setWorkflowStep(WorkflowStep step)
 	m_actFile->setEnabled(true);
 	m_actInitialize->setEnabled(atIdle);
 	m_actRegions->setEnabled(atLandmarked);
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 	m_actRegionsGraphCut->setEnabled(atLandmarked);
+#endif
 	m_actClean->setEnabled(atSegmented || atCleaned);
 
 	// Export is only meaningful once onClean() has produced a cleaned
@@ -1478,10 +1482,11 @@ void PrototypeMainWindow::clearIslandActors()
 	m_islandActors.clear();
 }
 
+
 // ---------------------------------------------------------------------------
 // Graph-cut seed actor management
 // ---------------------------------------------------------------------------
-
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 void PrototypeMainWindow::clearGraphCutSeedActors()
 {
 	if (!ui || !ui->volumeView)
@@ -1499,6 +1504,8 @@ void PrototypeMainWindow::clearGraphCutSeedActors()
 	}
 	m_graphCutSeedActors.clear();
 }
+#endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
+
 
 // ---------------------------------------------------------------------------
 // PCA JSON serialisation helper
@@ -1656,7 +1663,9 @@ void PrototypeMainWindow::setImage(vtkSmartPointer<vtkImageData> image)
 	// m_labelImage is released so the actor pipeline does not hold a dangling
 	// reference to a VTK image that is about to be replaced.
 	clearIslandActors();
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 	clearGraphCutSeedActors();
+#endif
 
 	// Release derived segmentation data so downstream steps (onLandmark,
 	// onRegions*) always start from a clean slate for the incoming image.
@@ -2471,6 +2480,7 @@ void PrototypeMainWindow::onRegions()
 	// for the lifetime of this PrototypeMainWindow (its Qt parent).
 }
 
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 void PrototypeMainWindow::onRegionsGraphCut()
 {
 	if (!m_reslicedImage || m_landmarkResult.isEmpty() || !std::isfinite(m_threshold))
@@ -2587,6 +2597,7 @@ void PrototypeMainWindow::onRegionsGraphCut()
 	ui->volumeView->hideAllContent();
 	setWorkflowStep(WorkflowStep::Segmented);
 }
+#endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 
 // ---------------------------------------------------------------------------
 // onClean

@@ -53,30 +53,30 @@ namespace PrototypeHelpers
 	// -----------------------------------------------------------------------
 
 	bool computePca(vtkImageData* image, double threshold,
-	                PcaResult& result,
-	                const std::function<void(int)>& progressCb = nullptr);
+					PcaResult& result,
+					const std::function<void(int)>& progressCb = nullptr);
 
 	// -----------------------------------------------------------------------
 	// Ray-AABB intersection (slab method)
 	// -----------------------------------------------------------------------
 
 	bool rayAabbIntersect(const double rayOrigin[3], const double rayDir[3],
-	                      const double bbMin[3],    const double bbMax[3],
-	                      double& tEntry, double& tExit);
+						  const double bbMin[3], const double bbMax[3],
+						  double& tEntry, double& tExit);
 
 	bool rayAabbExit(const double rayOrigin[3], const double rayDir[3],
-	                 const double bbMin[3],    const double bbMax[3],
-	                 double& tExit);
+					 const double bbMin[3], const double bbMax[3],
+					 double& tExit);
 
 	// -----------------------------------------------------------------------
 	// Surface search
 	// -----------------------------------------------------------------------
 
 	void findSurfacePointFromBoundary(vtkImageData* image,
-	                                  const double centroid[3],
-	                                  const double axisDir[3],
-	                                  double threshold,
-	                                  double outWorld[3]);
+									  const double centroid[3],
+									  const double axisDir[3],
+									  double threshold,
+									  double outWorld[3]);
 
 	// -----------------------------------------------------------------------
 	// Bone island segmentation
@@ -160,14 +160,15 @@ namespace PrototypeHelpers
 	// `morphKernelSize`: half-width of the erode/dilate structuring element
 	//                    (default 1  3x3x3 kernel).
 	std::vector<BoneIsland> segmentBoneIslandsAlternate(
-		vtkImageData*                            reslicedImage,
+		vtkImageData* reslicedImage,
 		double                                   threshold,
-		const std::vector<std::array<double,3>>& seedsWorld,
-		vtkSmartPointer<vtkImageData>&           outLabelImage,
-		double                                   smoothStdDev    = 1.0,
+		const std::vector<std::array<double, 3>>& seedsWorld,
+		vtkSmartPointer<vtkImageData>& outLabelImage,
+		double                                   smoothStdDev = 1.0,
 		int                                      morphKernelSize = 1,
-		const std::function<void(int)>&          progressCb      = nullptr);
+		const std::function<void(int)>& progressCb = nullptr);
 
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 	// -----------------------------------------------------------------------
 	// Bone island segmentation - ITK ImageGridCutFilter (graph cut)
 	// -----------------------------------------------------------------------
@@ -185,22 +186,33 @@ namespace PrototypeHelpers
 	//            For 16-bit CT bone data try 50-200; smaller = sharper edges.
 	// `minIslandVoxels` : connected components smaller than this are discarded.
 	void buildGraphCutSeedImages(
-		vtkImageData*                            reslicedImage,
-		const std::array<std::array<std::array<double,3>,2>,3>& landmarkPoints,
+		vtkImageData* reslicedImage,
+		const std::array<std::array<std::array<double, 3>, 2>, 3>& landmarkPoints,
 		const double                             eigenvectors[3][3],
-		vtkSmartPointer<vtkImageData>&           outForegroundSeeds,
-		vtkSmartPointer<vtkImageData>&           outBackgroundSeeds,
+		vtkSmartPointer<vtkImageData>& outForegroundSeeds,
+		vtkSmartPointer<vtkImageData>& outBackgroundSeeds,
 		double                                   threshold);
 
 	std::vector<BoneIsland> segmentBoneIslandsGraphCut(
-		vtkImageData*                            reslicedImage,
+		vtkImageData* reslicedImage,
 		double                                   threshold,
-		const std::vector<std::array<double,3>>& foregroundSeedsWorld,
-		const std::vector<std::array<double,3>>& backgroundSeedsWorld,
-		vtkSmartPointer<vtkImageData>&           outLabelImage,
-		double                                   sigma           = 100.0,
+		const std::vector<std::array<double, 3>>& foregroundSeedsWorld,
+		const std::vector<std::array<double, 3>>& backgroundSeedsWorld,
+		vtkSmartPointer<vtkImageData>& outLabelImage,
+		double                                   sigma = 100.0,
 		vtkIdType                                minIslandVoxels = 50,
-		const std::function<void(int)>&          progressCb      = nullptr);
+		const std::function<void(int)>& progressCb = nullptr);
+
+	// Converts a binary seed image (1 = seed, 0 = background) produced by
+	// buildGraphCutSeedImages into a vtkPolyData of point vertices suitable
+	// for rendering as a point cloud overlay.
+	// Each above-zero voxel centre is emitted as one vertex.
+	// Colour the returned actor with r,g,b to distinguish FG from BG seeds.
+	vtkSmartPointer<vtkActor> makeSeedImageActor(
+		vtkImageData* seedImage,
+		double        r, double g, double b,
+		double        pointSize = 3.0);
+#endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 
 	// -----------------------------------------------------------------------
 	// VTK actor / prop builders
@@ -242,16 +254,6 @@ namespace PrototypeHelpers
 		vtkIdType                 minVoxels,
 		vtkIdType                 maxVoxels);
 
-	// Converts a binary seed image (1 = seed, 0 = background) produced by
-	// buildGraphCutSeedImages into a vtkPolyData of point vertices suitable
-	// for rendering as a point cloud overlay.
-	// Each above-zero voxel centre is emitted as one vertex.
-	// Colour the returned actor with r,g,b to distinguish FG from BG seeds.
-	vtkSmartPointer<vtkActor> makeSeedImageActor(
-		vtkImageData* seedImage,
-		double        r, double g, double b,
-		double        pointSize = 3.0);
-
 	// -----------------------------------------------------------------------
 	// Region statistics helpers  (used by onRegions iterative loop)
 	// -----------------------------------------------------------------------
@@ -261,8 +263,9 @@ namespace PrototypeHelpers
 	struct RegionStats { double mean = 0.0; double stdDev = 0.0; };
 
 	RegionStats computeRegionStats(vtkImageData* reslicedImage,
-	                               vtkImageData* labelImage);
+								   vtkImageData* labelImage);
 
-	// Physical volume (mm^3) of all voxels in labelImage where scalar > 0.
+	// Total volume (mm³) of all above-zero voxels in labelImage.
 	double computeRegionVolumeMm3(vtkImageData* labelImage);
+
 } // namespace PrototypeHelpers

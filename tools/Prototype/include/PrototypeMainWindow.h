@@ -58,13 +58,14 @@ private slots:
 	// a cool-to-warm transfer function.
 	void onRegions();
 
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 	// Triggered by the "Graph Cut" toolbar button.
 	// Builds foreground seed paths (centroid -> 5 landmark tips) and background
 	// seed rays (outward from the same 5 tips, threshold-gated), then runs
 	// ITK ImageGridCutFilter (GridCut multi-threaded solver) to segment bone
-	// islands.  Results are displayed using the same colour logic
-	// as onRegions().
+	// islands.  Results are displayed using the same colour logic as onRegions().
 	void onRegionsGraphCut();
+#endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 
 	// Triggered by the "Clean" toolbar button.
 	// Enabled only after segmentation (Regions, Regions Alt, or Graph Cut) has
@@ -123,13 +124,14 @@ private:
 	QProgressBar* m_progressBar = nullptr;
 
 	QAction* m_actExportReslice = nullptr;
-
-	QAction* m_actFile            = nullptr;
-	QAction* m_actInitialize      = nullptr;
-	QAction* m_actRegions         = nullptr;
+	QAction* m_actFile = nullptr;
+	QAction* m_actInitialize = nullptr;
+	QAction* m_actRegions = nullptr;
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 	QAction* m_actRegionsGraphCut = nullptr;
-	QAction* m_actClean           = nullptr;
-	QAction* m_actRestart         = nullptr;
+#endif
+	QAction* m_actClean = nullptr;
+	QAction* m_actRestart = nullptr;
 	QAction* m_actToggleOrphanMask = nullptr;
 
 	WorkflowStep m_workflowStep = WorkflowStep::Idle;
@@ -154,8 +156,14 @@ private:
 	vtkSmartPointer<vtkMatrix4x4> m_lastResliceAxes;
 
 	std::vector<PrototypeHelpers::BoneIsland> m_islands;
-	std::vector<vtkSmartPointer<vtkActor>> m_islandActors;
-	std::vector<vtkSmartPointer<vtkActor>> m_graphCutSeedActors;
+	std::vector<vtkSmartPointer<vtkActor>>    m_islandActors;
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
+	// m_graphCutSeedActors is always present; populated only when graph-cut
+	// segmentation is enabled so clearGraphCutSeedActors() can remain
+	// unconditional and always leaves it empty when the feature is off.
+	std::vector<vtkSmartPointer<vtkActor>>    m_graphCutSeedActors;
+	void    clearGraphCutSeedActors();
+#endif
 
 	QJsonObject m_originalPcaJson;
 	QJsonObject m_reslicedPcaJson;
@@ -167,7 +175,6 @@ private:
 	bool    writePrototypeSidecar() const;
 	void    clearPcaOverlay();
 	void    clearIslandActors();
-	void    clearGraphCutSeedActors();
 	void    applyIslandSegmentationResult(
 		const std::vector<PrototypeHelpers::BoneIsland>& islands,
 		vtkSmartPointer<vtkImageData>                    labelImage);
@@ -185,13 +192,5 @@ private:
 
 	// Applies the inverse of the PCA reslice transform to map modified voxels
 	// from the cleaned resliced image back into original image coordinate space.
-	//
-	// A voxel is considered modified when it was originally above-threshold
-	// (bone) in m_originalImage but is now below-threshold in m_reslicedImage
-	// (replaced with background noise by onClean()).
-	//
-	// Returns a deep copy of m_originalImage with those voxels replaced by
-	// the corresponding noise values from the inverse-mapped resliced image.
-	// Returns nullptr when pre-conditions are not satisfied.
 	vtkSmartPointer<vtkImageData> applyInverseResliceToOriginal() const;
 };

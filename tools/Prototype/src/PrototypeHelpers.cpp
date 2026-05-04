@@ -27,6 +27,7 @@
 #include <vtkImageThresholdConnectivity.h>
 
 // ITK headers required by segmentBoneIslandsGraphCut
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 #include <itkImage.h>
 #include <itkVTKImageToImageFilter.h>
 #include <itkImageToVTKImageFilter.h>
@@ -35,6 +36,7 @@
 #include <itkRelabelComponentImageFilter.h>
 
 #include "GraphCut.h" // selects GridCut or Kolmogorov backend
+#endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 
 #include <QDebug>
 #include <QFile>
@@ -2088,6 +2090,7 @@ namespace PrototypeHelpers
 		return islands;
 	}
 
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 	// -----------------------------------------------------------------------
 	// buildGraphCutSeedImages
 	//
@@ -2412,6 +2415,7 @@ namespace PrototypeHelpers
 		qDebug("buildGraphCutSeedImages: seed images built "
 			   "(5 FG segments from centroid, 5 threshold-gated BG rays).");
 	}
+
 
 	// -----------------------------------------------------------------------
 	// Bone island segmentation - ITK ImageGridCutFilter (graph cut)
@@ -2799,6 +2803,8 @@ namespace PrototypeHelpers
 
 		return actor;
 	}
+
+#endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 
 	// -----------------------------------------------------------------------
 	// Region statistics helpers
