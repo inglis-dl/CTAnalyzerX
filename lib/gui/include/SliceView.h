@@ -90,6 +90,7 @@ signals:
 protected:
 	void resetCamera() override;
 	void rotateCamera(double degrees) override;
+	void resizeEvent(QResizeEvent* event) override;
 	void flipHorizontal();
 	void flipVertical();
 
@@ -153,6 +154,10 @@ private:
 	bool m_originalBaselineValid = false;
 	double m_originalBaselineWindowNative = std::numeric_limits<double>::quiet_NaN();
 	double m_originalBaselineLevelNative = std::numeric_limits<double>::quiet_NaN();
+
+	// Coalesces rapid resize events into a single deferred render so the VTK
+	// framebuffer is repainted at the new window dimensions without redundant work.
+	bool m_pendingResizeRender = false;
 
 	// helper: ensure vtkInteractorStyleImage internal baseline values reflect imageProperty
 	void updateInteractorWindowLevelBaseline();

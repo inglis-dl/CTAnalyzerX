@@ -1354,15 +1354,19 @@ void SliceView::onCursorMoved(vtkObject* /*caller*/)
 		return;
 
 	double x = 0.0, y = 0.0, z = 0.0;
-	if (m_coordWidget->GetCursorPosition(x, y, z) == 0)
+	if (m_coordWidget->GetCursorPosition(x, y, z) == 0
+		|| !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
 	{
 		emit cursorDataChanged(QString());
 		return;
 	}
 
-	double val = 0.0;
-	const bool hasScalar = (m_coordWidget->GetCursorData1(val) != VTK_DOUBLE_MAX) &&-
-		val <= m_scalarRangeMax && val >= m_scalarRangeMin;
+	double val = VTK_DOUBLE_MAX;
+	const int nSet = m_coordWidget->GetCursorData1(val);
+	const bool hasScalar = (nSet > 0)
+		&& std::isfinite(val)
+		&& (val >= m_scalarRangeMin)
+		&& (val <= m_scalarRangeMax);
 
 	const QString text = hasScalar
 		? QStringLiteral("X:%1  Y:%2  Z:%3   Val: %4")
@@ -1376,4 +1380,34 @@ void SliceView::onCursorMoved(vtkObject* /*caller*/)
 		.arg(z, 9, 'f', 2);
 
 	emit cursorDataChanged(text);
+}
+
+void SliceView::resizeEvent(QResizeEvent* event)
+{
+	// Let the base-class chain handle layout and header-button resize.
+	ImageFrameWidget::resizeEvent(event);
+
+	if (!m_imageData || !m_imageInitialized)
+		return;
+
+	// Coalesce rapid resize events (window drag, maximize animation) into a
+	// single deferred render.  The zero-ms timer fires after Qt has delivered
+	// the resize event to ui->renderArea (the QVTKOpenGLNativeWidget), which
+	// calls m_renderWindow->SetSize() with the new pixel dimensions.  Only
+	// then can Render() produce a correctly-sized framebuffer and eliminate
+	// the stretching caused by Qt scaling up a stale smaller framebuffer.
+	//
+	// Crucially, this does NOT call updateCamera(): that would reset
+	// m_currentSlice and reposition the camera via ResetCamera(), breaking
+	// the slice display until the user interacted with the view.
+	if (!m_pendingResizeRender)
+	{
+		m_pendingResizeRender = true;
+		QTimer::singleShot(0, this, [this]()
+		{
+			m_pendingResizeRender = false;
+			if (m_imageData && m_imageInitialized)
+				render();
+		});
+	}
 }
