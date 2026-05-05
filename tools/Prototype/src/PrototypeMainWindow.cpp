@@ -1224,7 +1224,7 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 		"Reslice, landmark, threshold-crop the volume and export as a NIfTI file"));
 	ui->toolBar->addAction(m_actExportReslice);
 	connect(m_actExportReslice, &QAction::triggered,
-		this, &PrototypeMainWindow::onExportReslice);
+		this, &PrototypeMainWindow::onExport);
 
 	// "Restart" toolbar button: revert to the original image and reset the workflow.
 	// Always enabled - Restart can be applied at any workflow step.
@@ -2908,27 +2908,32 @@ void PrototypeMainWindow::loadFromSidecarAsync(const QString& sidecarPath)
 }
 
 // ---------------------------------------------------------------------------
-// onExportReslice
+// onExport
 //
-// Projects the cleaned resliced image back into the original image coordinate
-// space via applyInverseResliceToOriginal() and writes the result as a NIfTI
-// file alongside the source sidecar.
+// Full pipeline:
+//   1. Inverse-reslice cleaned image back into original space.
+//   2. PCA + rotate (reslice) the result so it is bone-aligned.
+//   3. Recompute PCA on the rotated image to get the centroid in rotated space.
+//   4. Find 6 surface landmark seeds on the rotated image.
+//   5. Region-grow from seeds at baseline threshold.
+//   6. Binarize the label mask: 0 = background, 255 = bone.
+//   7. Locate the tight bounding box of the binarized mask.
+//   8. Inflate the bounding box by a 10-voxel margin.
+//   9. Crop the grayscale rotated image to the inflated VOI and export NIfTI.
+//  10. Crop the binarized mask to the same inflated VOI and export NIfTI.
 //
-// The action is only enabled once the workflow has reached WorkflowStep::Cleaned
-// so all pre-conditions are guaranteed by the time the user can trigger it.
-//
-// Output file: <sidecar_dir>/<crop_basename>_cleaned_original.nii
+// Output files:
+//   <sidecar_dir>/<crop_basename>_export_grayscale.nii
+//   <sidecar_dir>/<crop_basename>_export_mask.nii
 // ---------------------------------------------------------------------------
-void PrototypeMainWindow::onExportReslice()
+void PrototypeMainWindow::onExport()
 {
-	// Guard — all pre-conditions should already be satisfied because the action
-	// is only enabled at WorkflowStep::Cleaned, but validate defensively.
 	if (!m_reslicedImage || !m_originalImage ||
-		!m_pca.valid || !std::isfinite(m_threshold))
+		!m_lastResliceAxes || !std::isfinite(m_threshold))
 	{
-		QMessageBox::warning(this, tr("Export Cleaned Image"),
+		QMessageBox::warning(this, tr("Export Reslice"),
 			tr("The export requires a completed Clean step.\n"
-			"Run Initialize → Regions (or Graph Cut) → Clean first."));
+			"Run Initialize \u2192 Regions (or Graph Cut) \u2192 Clean first."));
 		return;
 	}
 
@@ -2936,54 +2941,300 @@ void PrototypeMainWindow::onExportReslice()
 	showProgressValue(5);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	// Project cleaned resliced voxels back into original image space.
-	const auto result = applyInverseResliceToOriginal();
+	// ── Step 1: project cleaned resliced image back into original space ───────
+	const auto invResult = applyInverseResliceToOriginal();
 
-	showProgressValue(90);
+	showProgressValue(15);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	if (!result)
+	if (!invResult)
 	{
-		QMessageBox::critical(this, tr("Export Cleaned Image"),
+		QMessageBox::critical(this, tr("Export Reslice"),
 			tr("Inverse reslice failed; export aborted."));
 		showProgressEnd();
 		return;
 	}
 
-	// ── Generate output path ──────────────────────────────────────────────────
-	// Pattern: <sidecar_dir>/<crop_basename>_cleaned_original.nii
-	// Fallback: <temp_dir>/cleaned_original.nii
-	QString outputPath;
+	// ── Step 2a: PCA on the inverse-resliced result ───────────────────────────
+	PrototypeHelpers::PcaResult exportPca;
+	const bool pcaOk = PrototypeHelpers::computePca(
+		invResult, m_threshold, exportPca, nullptr);
+
+	if (!pcaOk || !exportPca.valid)
+	{
+		QMessageBox::critical(this, tr("Export Reslice"),
+			tr("PCA failed on inverse-resliced image; export aborted."));
+		showProgressEnd();
+		return;
+	}
+
+	showProgressValue(25);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// ── Step 2b: rotate the image using the PCA axes ──────────────────────────
+	auto resliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
+	resliceAxes->Identity();
+	for (int row = 0; row < 3; ++row)
+	{
+		resliceAxes->SetElement(row, 0, exportPca.axes[0][row]);
+		resliceAxes->SetElement(row, 1, exportPca.axes[1][row]);
+		resliceAxes->SetElement(row, 2, exportPca.axes[2][row]);
+		resliceAxes->SetElement(row, 3, exportPca.centroid[row]);
+	}
+
+	const double bgMean =
+		m_imageStats.value(QStringLiteral("meanBg")).toDouble(0.0);
+
+	auto resliceFilter = vtkSmartPointer<vtkImageReslice>::New();
+	resliceFilter->SetInputData(invResult);
+	resliceFilter->SetResliceAxes(resliceAxes);
+	resliceFilter->SetInterpolationModeToCubic();
+	resliceFilter->AutoCropOutputOn();
+	resliceFilter->SetOutputDimensionality(3);
+	resliceFilter->SetBackgroundLevel(bgMean);
+	resliceFilter->Update();
+
+	// ── Step 3: cache the grayscale rotated image ─────────────────────────────
+	auto rotatedImage = vtkSmartPointer<vtkImageData>::New();
+	rotatedImage->DeepCopy(resliceFilter->GetOutput());
+
+	showProgressValue(35);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// ── Step 3b: recompute PCA on the rotated image (centroid in rotated space)─
+	PrototypeHelpers::PcaResult rotatedPca;
+	const bool rotPcaOk = PrototypeHelpers::computePca(
+		rotatedImage, m_threshold, rotatedPca, nullptr);
+
+	if (!rotPcaOk || !rotatedPca.valid)
+	{
+		QMessageBox::critical(this, tr("Export Reslice"),
+			tr("PCA failed on rotated image; export aborted."));
+		showProgressEnd();
+		return;
+	}
+
+	showProgressValue(40);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// ── Step 4: find 6 surface landmark seeds on the rotated image ───────────
+	std::array<std::array<double, 3>, 3> landmarkPos;
+	std::array<std::array<double, 3>, 3> landmarkNeg;
+
+	for (int i = 0; i < 3; ++i)
+	{
+		const double axisDirPos[3] = {
+			rotatedPca.axes[i][0], rotatedPca.axes[i][1], rotatedPca.axes[i][2]
+		};
+		const double axisDirNeg[3] = {
+			-rotatedPca.axes[i][0], -rotatedPca.axes[i][1], -rotatedPca.axes[i][2]
+		};
+
+		PrototypeHelpers::findSurfacePointFromBoundary(
+			rotatedImage, rotatedPca.centroid, axisDirPos, m_threshold,
+			landmarkPos[i].data());
+		PrototypeHelpers::findSurfacePointFromBoundary(
+			rotatedImage, rotatedPca.centroid, axisDirNeg, m_threshold,
+			landmarkNeg[i].data());
+
+		qDebug("onExport: landmark axis %d  +: (%.2f,%.2f,%.2f)  -: (%.2f,%.2f,%.2f)",
+			i,
+			landmarkPos[i][0], landmarkPos[i][1], landmarkPos[i][2],
+			landmarkNeg[i][0], landmarkNeg[i][1], landmarkNeg[i][2]);
+	}
+
+	std::vector<std::array<double, 3>> seeds;
+	seeds.reserve(6);
+	for (int i = 0; i < 3; ++i)
+	{
+		seeds.push_back(landmarkPos[i]);
+		seeds.push_back(landmarkNeg[i]);
+	}
+
+	showProgressValue(45);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// ── Step 5: region-grow from seeds at baseline threshold ─────────────────
+	const auto growProgress = [this](int pct)
+		{
+			showProgressValue(45 + static_cast<int>(pct * 0.2));
+			m_progressBar->update();
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+		};
+
+	vtkSmartPointer<vtkImageData> labelImage;
+
+#ifdef PARALLEL_ISLANDS
+	const auto islands = PrototypeHelpers::segmentBoneIslandsParallel(
+		rotatedImage, m_threshold, seeds, labelImage, growProgress);
+#else
+	const auto islands = PrototypeHelpers::segmentBoneIslands(
+		rotatedImage, m_threshold, seeds, labelImage, growProgress);
+#endif
+
+	if (!labelImage)
+	{
+		QMessageBox::critical(this, tr("Export Reslice"),
+			tr("Region grow produced no label image; export aborted."));
+		showProgressEnd();
+		return;
+	}
+
+	showProgressValue(65);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// ── Step 6: binarize the mask — 0 = background, 255 = bone ───────────────
+	// Use the label image's own extent as the authoritative iteration domain.
+	// GetDimensions() is avoided: it always returns non-negative counts from
+	// [0,0,0] and would produce wrong flat indices for images with a non-zero
+	// extent origin.
+	int lblExtent[6];
+	labelImage->GetExtent(lblExtent);
+
+	const int lblNX = lblExtent[1] - lblExtent[0] + 1;
+	const int lblNY = lblExtent[3] - lblExtent[2] + 1;
+	const int lblNZ = lblExtent[5] - lblExtent[4] + 1;
+	const vtkIdType totalVoxels =
+		static_cast<vtkIdType>(lblNX) * lblNY * lblNZ;
+
+	auto maskImage = vtkSmartPointer<vtkImageData>::New();
+	maskImage->SetExtent(lblExtent);
+	maskImage->SetSpacing(labelImage->GetSpacing());
+	maskImage->SetOrigin(labelImage->GetOrigin());
+	maskImage->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+
+	auto* maskPtr = static_cast<unsigned char*>(maskImage->GetScalarPointer());
+	vtkDataArray* lblScalars = labelImage->GetPointData()->GetScalars();
+
+	// Flat index is relative to the extent origin throughout.
+	for (int k = lblExtent[4]; k <= lblExtent[5]; ++k)
+		for (int j = lblExtent[2]; j <= lblExtent[3]; ++j)
+			for (int i = lblExtent[0]; i <= lblExtent[1]; ++i)
+			{
+				const vtkIdType flat =
+					static_cast<vtkIdType>(k - lblExtent[4]) * lblNY * lblNX
+					+ static_cast<vtkIdType>(j - lblExtent[2]) * lblNX
+					+ (i - lblExtent[0]);
+
+				maskPtr[flat] =
+					(lblScalars->GetTuple1(flat) > 0.0) ? 255u : 0u;
+			}
+
+	maskImage->Modified();
+
+	showProgressValue(70);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// ── Step 7: find tight bounding box of the binarized mask ────────────────
+	int boundsMin[3] = { lblExtent[1], lblExtent[3], lblExtent[5] };
+	int boundsMax[3] = { lblExtent[0], lblExtent[2], lblExtent[4] };
+	bool anyForeground = false;
+
+	for (int k = lblExtent[4]; k <= lblExtent[5]; ++k)
+		for (int j = lblExtent[2]; j <= lblExtent[3]; ++j)
+			for (int i = lblExtent[0]; i <= lblExtent[1]; ++i)
+			{
+				const vtkIdType flat = 
+					static_cast<vtkIdType>(k - lblExtent[4]) * lblNY * lblNX
+					+ static_cast<vtkIdType>(j - lblExtent[2]) * lblNX
+					+ (i - lblExtent[0]);
+
+				if (maskPtr[flat] == 0u)
+					continue;
+
+				anyForeground = true;
+				if (i < boundsMin[0]) boundsMin[0] = i;
+				if (j < boundsMin[1]) boundsMin[1] = j;
+				if (k < boundsMin[2]) boundsMin[2] = k;
+				if (i > boundsMax[0]) boundsMax[0] = i;
+				if (j > boundsMax[1]) boundsMax[1] = j;
+				if (k > boundsMax[2]) boundsMax[2] = k;
+			}
+
+	if (!anyForeground)
+	{
+		QMessageBox::critical(this, tr("Export Reslice"),
+			tr("No foreground voxels in the binarized mask; export aborted."));
+		showProgressEnd();
+		return;
+	}
+
+	showProgressValue(75);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// ── Step 8: inflate bounds by 10-voxel margin, clamped to the extent ─────
+	constexpr int margin = 10;
+	const int voiMinX = std::max(lblExtent[0], boundsMin[0] - margin);
+	const int voiMinY = std::max(lblExtent[2], boundsMin[1] - margin);
+	const int voiMinZ = std::max(lblExtent[4], boundsMin[2] - margin);
+	const int voiMaxX = std::min(lblExtent[1], boundsMax[0] + margin);
+	const int voiMaxY = std::min(lblExtent[3], boundsMax[1] + margin);
+	const int voiMaxZ = std::min(lblExtent[5], boundsMax[2] + margin);
+
+	qDebug("onExport: mask bounds [%d,%d,%d]-[%d,%d,%d]  "
+		"VOI (margin=%d) [%d,%d,%d]-[%d,%d,%d]",
+		boundsMin[0], boundsMin[1], boundsMin[2],
+		boundsMax[0], boundsMax[1], boundsMax[2],
+		margin,
+		voiMinX, voiMinY, voiMinZ,
+		voiMaxX, voiMaxY, voiMaxZ);
+
+	// ── Step 9: crop grayscale rotated image and export NIfTI ─────────────────
+	auto extractGray = vtkSmartPointer<vtkExtractVOI>::New();
+	extractGray->SetInputData(rotatedImage);
+	extractGray->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
+	extractGray->Update();
+
+	// ── Step 10: crop binarized mask and export NIfTI ─────────────────────────
+	auto extractMask = vtkSmartPointer<vtkExtractVOI>::New();
+	extractMask->SetInputData(maskImage);
+	extractMask->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
+	extractMask->Update();
+
+	showProgressValue(85);
+	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
+	// ── Determine output paths ────────────────────────────────────────────────
+	QString grayPath, maskPath;
 	if (!m_sidecarPath.isEmpty() && !m_cropPath.isEmpty())
 	{
 		const QString cropBase = QFileInfo(m_cropPath).completeBaseName();
 		const QString sidecarDir = QFileInfo(m_sidecarPath).absolutePath();
-		outputPath = QDir(sidecarDir).filePath(
-			cropBase + QStringLiteral("_cleaned_original.nii"));
+		grayPath = QDir(sidecarDir).filePath(
+			cropBase + QStringLiteral("_export_grayscale.nii"));
+		maskPath = QDir(sidecarDir).filePath(
+			cropBase + QStringLiteral("_export_mask.nii"));
 	}
 	else
 	{
-		outputPath = QDir::temp().filePath(
-			QStringLiteral("cleaned_original.nii"));
+		grayPath = QDir::temp().filePath(QStringLiteral("export_grayscale.nii"));
+		maskPath = QDir::temp().filePath(QStringLiteral("export_mask.nii"));
 	}
 
-	// ── Write NIfTI ───────────────────────────────────────────────────────────
-	auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
-	writer->SetInputData(result);
-	writer->SetFileName(outputPath.toUtf8().constData());
-	writer->Write();
+	// ── Write NIfTI files ─────────────────────────────────────────────────────
+	const auto writeNii = [](vtkImageData* img, const QString& path)
+		{
+			auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
+			writer->SetInputData(img);
+			writer->SetFileName(path.toUtf8().constData());
+			writer->Write();
+		};
+
+	writeNii(extractGray->GetOutput(), grayPath);
+	writeNii(extractMask->GetOutput(), maskPath);
 
 	showProgressEnd();
 
-	qDebug("onExportReslice: cleaned original written to '%s'.",
-		qUtf8Printable(outputPath));
+	qDebug("onExport: grayscale written to '%s'.", qUtf8Printable(grayPath));
+	qDebug("onExport: mask written to '%s'.", qUtf8Printable(maskPath));
 
 	statusBar()->showMessage(
-		tr("Cleaned original image saved to: %1").arg(outputPath), 8000);
+		tr("Export saved: %1  |  %2").arg(grayPath).arg(maskPath), 8000);
 
-	QMessageBox::information(this, tr("Export Cleaned Image"),
-		tr("Cleaned original image saved to:\n%1").arg(outputPath));
+	QMessageBox::information(this, tr("Export Reslice"),
+		tr("Grayscale:\n%1\n\nMask:\n%2").arg(grayPath).arg(maskPath));
 }
+
 // ---------------------------------------------------------------------------
 // syncSliceView
 //

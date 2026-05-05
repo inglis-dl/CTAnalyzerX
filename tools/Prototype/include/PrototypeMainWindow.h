@@ -85,7 +85,7 @@ private slots:
 
 	void onInitialize();
 
-	void onExportReslice();
+	void onExport();
 
 private:
 	// -----------------------------------------------------------------------
