@@ -1218,12 +1218,12 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 	ui->toolBar->addAction(m_actClean);
 	connect(m_actClean, &QAction::triggered, this, &PrototypeMainWindow::onClean);
 
-	// "Export Reslice" toolbar button: reslice -> landmark -> threshold crop -> NIfTI export.
-	m_actExportReslice = new QAction(tr("Export Reslice"), this);
-	m_actExportReslice->setToolTip(tr(
+	// "Export" toolbar button: reslice -> landmark -> threshold crop -> NIfTI export.
+	m_actExport = new QAction(tr("Export"), this);
+	m_actExport->setToolTip(tr(
 		"Reslice, landmark, threshold-crop the volume and export as a NIfTI file"));
-	ui->toolBar->addAction(m_actExportReslice);
-	connect(m_actExportReslice, &QAction::triggered,
+	ui->toolBar->addAction(m_actExport);
+	connect(m_actExport, &QAction::triggered,
 		this, &PrototypeMainWindow::onExport);
 
 	// "Restart" toolbar button: revert to the original image and reset the workflow.
@@ -1265,52 +1265,6 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 		else
 			statusBar()->showMessage(text);
 	});
-
-	// ── Orphan mask toggle ────────────────────────────────────────────────────
-// Placed in the SliceView's right-aligned header area beside the expand
-// button.  Disabled until onInitialize() step 3 produces a valid orphan
-// mask; consumed and disabled again by onClean().
-	m_actToggleOrphanMask = new QAction(tr("Mask"), this);
-	m_actToggleOrphanMask->setCheckable(true);
-	m_actToggleOrphanMask->setChecked(false);
-	m_actToggleOrphanMask->setEnabled(false);
-	m_actToggleOrphanMask->setToolTip(
-		tr("Toggle between the resliced image and the orphan mask.\n"
-		"White voxels are foreground regions not connected to any\n"
-		"landmark seed point — these will be removed by Clean."));
-	ui->sliceView->addHeaderAction(m_actToggleOrphanMask);
-
-	connect(m_actToggleOrphanMask, &QAction::toggled,
-		this, [this](bool checked)
-		{
-			if (!ui || !ui->sliceView)
-				return;
-
-			if (checked && m_orphanMaskImage)
-			{
-				// Orphan mask is VTK_UNSIGNED_CHAR 0/1.
-				// window=1, level=0.5 maps 0→black, 1→white.
-				ui->sliceView->setImageData(m_orphanMaskImage);
-				ui->sliceView->updateData();
-				ui->sliceView->setWindowLevelNative(1.0, 0.5);
-			}
-			else
-			{
-				// Restore the resliced image with its current WL parameters.
-				vtkImageData* primary =
-					m_reslicedImage ? m_reslicedImage.Get() : m_image;
-
-				const double level = std::isfinite(m_threshold)
-					? m_threshold : 0.0;
-				const double window = 2.0 * m_imageStats
-					.value(QStringLiteral("stdDev")).toDouble(1.0);
-
-				ui->sliceView->setImageData(primary);
-				ui->sliceView->updateData();
-				if (primary)
-					ui->sliceView->setWindowLevelNative(window, level);
-			}
-		});
 }
 
 PrototypeMainWindow::~PrototypeMainWindow()
@@ -1351,7 +1305,7 @@ void PrototypeMainWindow::setWorkflowStep(WorkflowStep step)
 
 	// Export is only meaningful once onClean() has produced a cleaned
 	// resliced image that can be projected back into original image space.
-	m_actExportReslice->setEnabled(atCleaned);
+	m_actExport->setEnabled(atCleaned);
 
 	m_actRestart->setEnabled(true);
 }
@@ -1437,28 +1391,10 @@ void PrototypeMainWindow::clearPcaOverlay()
 	if (!ui || !ui->volumeView)
 		return;
 
-	vtkRenderer* ren = ui->volumeView->renderer();
-	if (!ren)
-		return;
-
-	for (auto& a : m_axisActors)
-	{
-		if (a) { ren->RemoveActor(a); a = nullptr; }
-	}
-	for (auto& a : m_tipActors)
-	{
-		if (a) { ren->RemoveActor(a); a = nullptr; }
-	}
-	for (auto& a : m_ringActors)
-	{
-		if (a) { ren->RemoveActor(a); a = nullptr; }
-	}
-
-	// Remove landmark label actors added by onLandmark()
-	for (auto& a : m_landmarkLabelActors)
-	{
-		if (a) { ren->RemoveActor(a); a = nullptr; }
-	}
+	ui->volumeView->removeAuxProps(kKeyPcaAxes);
+	ui->volumeView->removeAuxProps(kKeyPcaTips);
+	ui->volumeView->removeAuxProps(kKeyPcaRings);
+	ui->volumeView->removeAuxProps(kKeyLandmarkLabels);
 }
 
 // ---------------------------------------------------------------------------
@@ -1470,18 +1406,11 @@ void PrototypeMainWindow::clearIslandActors()
 	if (!ui || !ui->volumeView)
 		return;
 
-	vtkRenderer* ren = ui->volumeView->renderer();
-	if (!ren)
-		return;
-
-	// Remove surface actors
-	for (auto& a : m_islandActors)
-	{
-		if (a) ren->RemoveActor(a);
-	}
-	m_islandActors.clear();
+	// Each island was registered under its own "island_<label>" key.
+	// Use the current m_islands vector — callers must clear before replacing it.
+	for (const auto& island : m_islands)
+		ui->volumeView->removeAuxProps("island_" + std::to_string(island.label));
 }
-
 
 // ---------------------------------------------------------------------------
 // Graph-cut seed actor management
@@ -1489,20 +1418,13 @@ void PrototypeMainWindow::clearIslandActors()
 #ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 void PrototypeMainWindow::clearGraphCutSeedActors()
 {
-	if (!ui || !ui->volumeView)
-		return;
-
-	vtkRenderer* ren = ui->volumeView->renderer();
-	if (!ren)
-		return;
-
-	// Remove the debug seed-cloud actors (FG green + BG orange) added by
-	// onRegionsGraphCut() and release the smart-pointer references.
-	for (auto& a : m_graphCutSeedActors)
+	void PrototypeMainWindow::clearGraphCutSeedActors()
 	{
-		if (a) { ren->RemoveActor(a); a = nullptr; }
+		if (!ui || !ui->volumeView)
+			return;
+
+		ui->volumeView->removeAuxProps(kKeyGraphCutSeeds);
 	}
-	m_graphCutSeedActors.clear();
 }
 #endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 
@@ -1782,9 +1704,9 @@ void PrototypeMainWindow::setImage(vtkSmartPointer<vtkImageData> image)
 
 	// Axis colours: R=axis0 (largest variance), G=axis1, B=axis2
 	const double axisColors[3][3] = {
-		{ 1.0, 0.2, 0.2 },  // axis 0 - red
-		{ 0.2, 1.0, 0.2 },  // axis 1 - green
-		{ 0.2, 0.2, 1.0 },  // axis 2 - blue
+		{ 1.0, 0.2, 0.2 },
+		{ 0.2, 1.0, 0.2 },
+		{ 0.2, 0.2, 1.0 },
 	};
 
 	for (int i = 0; i < 3; ++i)
@@ -1792,7 +1714,6 @@ void PrototypeMainWindow::setImage(vtkSmartPointer<vtkImageData> image)
 		const double* col = axisColors[i];
 		const double  R = m_pca.circumRadius;
 
-		// Tip points along +axis and -axis
 		double tipPos[3], tipNeg[3];
 		for (int d = 0; d < 3; ++d)
 		{
@@ -1800,25 +1721,18 @@ void PrototypeMainWindow::setImage(vtkSmartPointer<vtkImageData> image)
 			tipNeg[d] = m_pca.centroid[d] - R * m_pca.axes[i][d];
 		}
 
-		// Shaft from -tip to +tip
-		m_axisActors[i] = PrototypeHelpers::makeLineActor(tipNeg, tipPos, col[0], col[1], col[2], 2.5);
-		ren->AddActor(m_axisActors[i]);
+		ui->volumeView->addAuxProp(kKeyPcaAxes,
+			PrototypeHelpers::makeLineActor(tipNeg, tipPos, col[0], col[1], col[2], 2.5));
 
-		// Sphere glyphs at both ends (4x the original 2 % size)
-		m_tipActors[static_cast<std::size_t>(i * 2)] = PrototypeHelpers::makeSphereActor(tipPos, glyphR, col[0], col[1], col[2]);
-		m_tipActors[static_cast<std::size_t>(i * 2 + 1)] = PrototypeHelpers::makeSphereActor(tipNeg, glyphR, col[0], col[1], col[2]);
-		ren->AddActor(m_tipActors[static_cast<std::size_t>(i * 2)]);
-		ren->AddActor(m_tipActors[static_cast<std::size_t>(i * 2 + 1)]);
+		ui->volumeView->addAuxProp(kKeyPcaTips,
+			PrototypeHelpers::makeSphereActor(tipPos, glyphR, col[0], col[1], col[2]));
+		ui->volumeView->addAuxProp(kKeyPcaTips,
+			PrototypeHelpers::makeSphereActor(tipNeg, glyphR, col[0], col[1], col[2]));
 
-		// Ring i:
-		//   - centre  : PCA centroid (all three rings share the same centre)
-		//   - normal  : axes[i]  (the eigen direction for this axis)
-		//   - radius  : circumsphere radius R
-		// The ring lies in the plane perpendicular to axes[i] passing through
-		// the centroid, so each ring slices through the centre of the point cloud.
-		m_ringActors[i] = PrototypeHelpers::makeRingActor(m_pca.centroid, m_pca.axes[i], R,
-														   col[0], col[1], col[2], 2.0);
-		ren->AddActor(m_ringActors[i]);
+		ui->volumeView->addAuxProp(kKeyPcaRings,
+			PrototypeHelpers::makeRingActor(
+			m_pca.centroid, m_pca.axes[i], R,
+			col[0], col[1], col[2], 2.0));
 	}
 
 	ui->volumeView->renderer()->ResetCamera();
@@ -1908,14 +1822,43 @@ void PrototypeMainWindow::onLandmark()
 	// JSON arrays to accumulate per-axis landmark data
 	QJsonArray jsonLandmarks;
 
-	// Remove any existing landmark label actors before rebuilding
-	if (ren)
-	{
-		for (auto& a : m_landmarkLabelActors)
+	// Build replacement tip spheres and landmark label actors for all three axes,
+	// then install them atomically.  setAuxProps removes old actors first.
+	std::vector<vtkSmartPointer<vtkProp>> newTips;
+	std::vector<vtkSmartPointer<vtkProp>> newLabels;
+	newTips.reserve(6);
+	newLabels.reserve(6);
+
+	auto makeLandmarkLabel =
+		[&](int axisIdx, const double pt[3], const double dir[3],
+			const char* sign, const double c[3])
+		-> vtkSmartPointer<vtkBillboardTextActor3D>
 		{
-			if (a) { ren->RemoveActor(a); a = nullptr; }
-		}
-	}
+			// World-space anchor = tip point + offset along eigenvector
+			const double ax = pt[0] + dir[0] * labelOffset;
+			const double ay = pt[1] + dir[1] * labelOffset;
+			const double az = pt[2] + dir[2] * labelOffset;
+
+			auto label = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+
+			const std::string text = std::string(axisNames[axisIdx]) + sign;
+			label->SetInput(text.c_str());
+			label->SetPosition(ax, ay, az);
+
+			label->SetDisplayOffset(8, 8);
+
+			vtkTextProperty* tp = label->GetTextProperty();
+			tp->SetFontFamilyToArial();
+			tp->SetFontSize(14);
+			tp->SetBold(1);
+			tp->SetItalic(0);
+			tp->SetShadow(1);
+			tp->SetShadowOffset(1, -1);
+			tp->SetColor(c[0], c[1], c[2]);
+			tp->SetOpacity(1.0);
+
+			return label;
+		};
 
 	for (int i = 0; i < 3; ++i)
 	{
@@ -1935,80 +1878,13 @@ void PrototypeMainWindow::onLandmark()
 		const double* lNeg = m_landmarkPoints[static_cast<std::size_t>(i)][1].data();
 
 		qDebug("Landmark axis %d  +: (%.2f, %.2f, %.2f)  -: (%.2f, %.2f, %.2f)",
-			   i,
-			   lPos[0], lPos[1], lPos[2],
-			   lNeg[0], lNeg[1], lNeg[2]);
+			i, lPos[0], lPos[1], lPos[2], lNeg[0], lNeg[1], lNeg[2]);
 
-		// Relocate the existing tip sphere actors to the new surface positions
-		if (ren)
-		{
-			const std::size_t posIdx = static_cast<std::size_t>(i * 2);
-			const std::size_t negIdx = static_cast<std::size_t>(i * 2 + 1);
+		newTips.push_back(PrototypeHelpers::makeSphereActor(lPos, glyphR, col[0], col[1], col[2]));
+		newTips.push_back(PrototypeHelpers::makeSphereActor(lNeg, glyphR, col[0], col[1], col[2]));
 
-			if (m_tipActors[posIdx]) ren->RemoveActor(m_tipActors[posIdx]);
-			if (m_tipActors[negIdx]) ren->RemoveActor(m_tipActors[negIdx]);
-
-			m_tipActors[posIdx] = PrototypeHelpers::makeSphereActor(lPos, glyphR, col[0], col[1], col[2]);
-			m_tipActors[negIdx] = PrototypeHelpers::makeSphereActor(lNeg, glyphR, col[0], col[1], col[2]);
-
-			ren->AddActor(m_tipActors[posIdx]);
-			ren->AddActor(m_tipActors[negIdx]);
-
-			// ------------------------------------------------------------------
-			// Billboard text labels at each landmark tip.
-			//
-			// The label for the positive tip is "<name>+" and for the negative
-			// tip is "<name>-".  Each label is offset along its own eigenvector
-			// direction so it clears the sphere glyph.
-			//
-			// vtkBillboardTextActor3D always faces the camera so the text is
-			// readable from any viewpoint without requiring a vtkFollower camera
-			// reference.  DisplayOffset shifts the label in screen pixels after
-			// billboard projection - (10, 10) moves it up-right of the anchor.
-			// ------------------------------------------------------------------
-			auto makeLandmarkLabel =
-				[&](const double pt[3], const double dir[3],
-					const char* sign, const double c[3])
-				-> vtkSmartPointer<vtkBillboardTextActor3D>
-				{
-					// World-space anchor = tip point + offset along eigenvector
-					const double ax = pt[0] + dir[0] * labelOffset;
-					const double ay = pt[1] + dir[1] * labelOffset;
-					const double az = pt[2] + dir[2] * labelOffset;
-
-					auto label = vtkSmartPointer<vtkBillboardTextActor3D>::New();
-
-					const std::string text = std::string(axisNames[i]) + sign;
-					label->SetInput(text.c_str());
-					label->SetPosition(ax, ay, az);
-
-					// Small screen-space nudge so the text doesn't overlap the sphere
-					label->SetDisplayOffset(8, 8);
-
-					vtkTextProperty* tp = label->GetTextProperty();
-					tp->SetFontFamilyToArial();
-					tp->SetFontSize(14);
-					tp->SetBold(1);
-					tp->SetItalic(0);
-					tp->SetShadow(1);           // thin drop-shadow improves legibility
-					tp->SetShadowOffset(1, -1);
-					tp->SetColor(c[0], c[1], c[2]);
-					tp->SetOpacity(1.0);
-
-					return label;
-				};
-
-			const std::size_t lblPosIdx = static_cast<std::size_t>(i * 2);
-			const std::size_t lblNegIdx = static_cast<std::size_t>(i * 2 + 1);
-
-			m_landmarkLabelActors[lblPosIdx] =
-				makeLandmarkLabel(lPos, axisDirPos, "+", col);
-			m_landmarkLabelActors[lblNegIdx] =
-				makeLandmarkLabel(lNeg, axisDirNeg, "-", col);
-
-			ren->AddActor(m_landmarkLabelActors[lblPosIdx]);
-			ren->AddActor(m_landmarkLabelActors[lblNegIdx]);
-		}
+		newLabels.push_back(makeLandmarkLabel(i, lPos, axisDirPos, "+", col));
+		newLabels.push_back(makeLandmarkLabel(i, lNeg, axisDirNeg, "-", col));
 
 		// Accumulate JSON for this axis
 		auto packVec3 = [](const double v[3]) -> QJsonArray
@@ -2024,6 +1900,10 @@ void PrototypeMainWindow::onLandmark()
 		axisObj[QStringLiteral("landmarkNeg")] = packVec3(lNeg);
 		jsonLandmarks.append(axisObj);
 	}
+
+	// Atomically replace old tips and labels in the VolumeView.
+	ui->volumeView->setAuxProps(kKeyPcaTips, std::move(newTips));
+	ui->volumeView->setAuxProps(kKeyLandmarkLabels, std::move(newLabels));
 
 	// ------------------------------------------------------------------
 	// Build and cache the per-axis raw landmark result (existing behaviour)
@@ -2172,14 +2052,12 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 	const std::vector<PrototypeHelpers::BoneIsland>& islands,
 	vtkSmartPointer<vtkImageData>                    labelImage)
 {
-	// Cache the label image so it stays alive for the actors' pipeline
-	m_labelImage = labelImage;
-
-	// Cache the island vector for downstream consumers (Clean, export, stats).
-	m_islands = islands;
-
-	// Remove actors from any previous regions run (including scalar bar)
+	// Clear actors registered under old island keys BEFORE m_islands is replaced,
+	// since clearIslandActors() derives the keys from the current m_islands vector.
 	clearIslandActors();
+
+	m_labelImage = labelImage;
+	m_islands = islands;
 
 	if (islands.empty())
 	{
@@ -2190,52 +2068,34 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 	const auto [minIt, maxIt] = std::minmax_element(islands.begin(), islands.end(),
 		[](const PrototypeHelpers::BoneIsland& a, const PrototypeHelpers::BoneIsland& b)
 		{ return a.voxelCount < b.voxelCount; });
-	const vtkIdType minVoxels = minIt->voxelCount;
-	const vtkIdType maxVoxels = maxIt->voxelCount;
 
-	qDebug("applyIslandSegmentationResult: voxel-count range  min=%lld  max=%lld",
-		   static_cast<long long>(minVoxels),
-		   static_cast<long long>(maxVoxels));
-
-	// ------------------------------------------------------------------
-	// Build the colour transfer function over [minVoxels, maxVoxels]
-	// ------------------------------------------------------------------
 	auto colorTF = PrototypeHelpers::makeIslandColorTF(
-		static_cast<double>(minVoxels),
-		static_cast<double>(maxVoxels));
+		static_cast<double>(minIt->voxelCount),
+		static_cast<double>(maxIt->voxelCount));
 
-	// ------------------------------------------------------------------
-	// Create one surface actor per island, coloured by its voxel count
-	// ------------------------------------------------------------------
 	QJsonArray regionsArray;
 	const int nIslands = static_cast<int>(islands.size());
-	vtkRenderer* ren = (ui && ui->volumeView) ? ui->volumeView->renderer() : nullptr;
 
 	for (int idx = 0; idx < nIslands; ++idx)
 	{
 		const auto& island = islands[static_cast<std::size_t>(idx)];
 
-		// Sample the transfer function at this island's voxel count
 		double rgb[3] = { 1.0, 1.0, 1.0 };
 		colorTF->GetColor(static_cast<double>(island.voxelCount), rgb);
 
 		auto actor = PrototypeHelpers::makeIslandSurfaceActor(
-			m_labelImage,
-			island.label,
-			rgb[0], rgb[1], rgb[2],
-			0.55);
+			m_labelImage, island.label, rgb[0], rgb[1], rgb[2], 0.55);
 
-		m_islandActors.push_back(actor);
-
-		if (ren)
-			ren->AddActor(actor);
+		// Each island is stored under its own key so visibility can be toggled
+		// individually in applyIslandRetentionFilter without extra bookkeeping.
+		ui->volumeView->addAuxProp(
+			"island_" + std::to_string(island.label), actor);
 
 		qDebug("applyIslandSegmentationResult: island %d  label=%d  voxels=%lld  rgb=(%.3f,%.3f,%.3f)",
-			   idx, island.label,
-			   static_cast<long long>(island.voxelCount),
-			   rgb[0], rgb[1], rgb[2]);
+			idx, island.label,
+			static_cast<long long>(island.voxelCount),
+			rgb[0], rgb[1], rgb[2]);
 
-		// Augment the existing island JSON with the mapped colour for reference
 		QJsonObject islandJson = island.json;
 		islandJson[QStringLiteral("colorR")] = rgb[0];
 		islandJson[QStringLiteral("colorG")] = rgb[1];
@@ -2243,15 +2103,9 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 		regionsArray.append(islandJson);
 	}
 
-	// ------------------------------------------------------------------
-	// Merge regions summary into the landmark JSON cache
-	// ------------------------------------------------------------------
 	m_landmarkJson[QStringLiteral("regions")] = regionsArray;
 
-	qDebug("applyIslandSegmentationResult: %d islands cached in landmarkJson[\"regions\"].",
-		   nIslands);
-
-	if (ren)
+	if (ui && ui->volumeView)
 		ui->volumeView->render();
 }
 
@@ -2451,9 +2305,6 @@ void PrototypeMainWindow::onRegions()
 							m_orphanMaskImage->Modified();
 						}
 					}
-
-					if (m_actToggleOrphanMask)
-						m_actToggleOrphanMask->setEnabled(true);
 				}
 			}
 
@@ -2467,8 +2318,6 @@ void PrototypeMainWindow::onRegions()
 		[this, islands, labelImage]()
 		{
 			m_orphanMaskImage = nullptr;
-			if (m_actToggleOrphanMask)
-				m_actToggleOrphanMask->setEnabled(false);
 			applyIslandSegmentationResult(islands, labelImage);
 		});
 
@@ -2524,17 +2373,10 @@ void PrototypeMainWindow::onRegionsGraphCut()
 	// Actors are tracked in m_graphCutSeedActors so onRestart() can
 	// remove them when the workflow is reset.
 	// ------------------------------------------------------------------
-	vtkRenderer* ren = (ui && ui->volumeView) ? ui->volumeView->renderer() : nullptr;
-	if (ren)
-	{
-		auto fgActor = PrototypeHelpers::makeSeedImageActor(fgSeedImage, 0.0, 1.0, 0.0, 4.0);
-		auto bgActor = PrototypeHelpers::makeSeedImageActor(bgSeedImage, 1.0, 0.3, 0.0, 4.0);
-		ren->AddActor(fgActor);
-		ren->AddActor(bgActor);
-		m_graphCutSeedActors.push_back(fgActor);
-		m_graphCutSeedActors.push_back(bgActor);
-		ui->volumeView->render();
-	}
+	ui->volumeView->addAuxProp(kKeyGraphCutSeeds,
+		PrototypeHelpers::makeSeedImageActor(fgSeedImage, 0.0, 1.0, 0.0, 4.0));
+	ui->volumeView->addAuxProp(kKeyGraphCutSeeds,
+		PrototypeHelpers::makeSeedImageActor(bgSeedImage, 1.0, 0.3, 0.0, 4.0));
 
 	// ------------------------------------------------------------------
 	// Extract world-space coordinates of all seed voxels for
@@ -2804,11 +2646,6 @@ void PrototypeMainWindow::onClean()
 	// The orphan mask has been consumed — disable the toggle so the user
 	// cannot view a now-stale mask after the resliced image has been modified.
 	m_orphanMaskImage = nullptr;
-	if (m_actToggleOrphanMask)
-	{
-		m_actToggleOrphanMask->setChecked(false); // triggers restore of primary
-		m_actToggleOrphanMask->setEnabled(false);
-	}
 
 	// ------------------------------------------------------------------
 	// Step 4: hide removed island surface actors
@@ -2884,12 +2721,6 @@ void PrototypeMainWindow::onRestart()
 	}
 
 	m_orphanMaskImage = nullptr;
-
-	if (m_actToggleOrphanMask)
-	{
-		m_actToggleOrphanMask->setChecked(false);
-		m_actToggleOrphanMask->setEnabled(false);
-	}
 
 	// Reset the workflow to the start: only Reslice enabled.
 	setWorkflowStep(WorkflowStep::Idle);
@@ -3080,6 +2911,30 @@ void PrototypeMainWindow::onExport()
 		return;
 	}
 
+	if (islands.empty())
+	{
+		QMessageBox::critical(this, tr("Export Reslice"),
+			tr("Region grow produced no islands; export aborted."));
+		showProgressEnd();
+		return;
+	}
+
+	// Identify the largest island by voxel count.  The exported mask will
+	// contain only this island so that the output represents a single,
+	// unambiguous bone region regardless of how many islands the grow found.
+	const auto largestIslandIt = std::max_element(
+		islands.begin(), islands.end(),
+		[](const PrototypeHelpers::BoneIsland& a,
+		const PrototypeHelpers::BoneIsland& b)
+		{ return a.voxelCount < b.voxelCount; });
+
+	const int largestLabel = largestIslandIt->label;
+
+	qDebug("onExport: %zu island(s) found — largest label=%d  voxelCount=%lld",
+		islands.size(),
+		largestLabel,
+		static_cast<long long>(largestIslandIt->voxelCount));
+
 	showProgressValue(65);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
@@ -3117,13 +2972,14 @@ void PrototypeMainWindow::onExport()
 					+ (i - lblExtent[0]);
 
 				maskPtr[flat] =
-					(lblScalars->GetTuple1(flat) > 0.0) ? 255u : 0u;
+					(lblScalars->GetTuple1(flat) == largestLabel) ? 255u : 0u;
 			}
 
 	maskImage->Modified();
 
 	showProgressValue(70);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+
 
 	// ── Step 7: find tight bounding box of the binarized mask ────────────────
 	int boundsMin[3] = { lblExtent[1], lblExtent[3], lblExtent[5] };
@@ -3248,11 +3104,6 @@ void PrototypeMainWindow::syncSliceView(vtkImageData* image, double window, doub
 	if (!ui || !ui->sliceView || !ui->volumeView)
 		return;
 
-	// When the orphan mask overlay is active keep the SliceView pointing at
-	// the mask — do not let an upstream image change replace it.
-	if (m_actToggleOrphanMask && m_actToggleOrphanMask->isChecked())
-		return;
-
 	ui->sliceView->setImageData(image);
 	ui->sliceView->updateData();
 
@@ -3345,20 +3196,20 @@ void PrototypeMainWindow::alignCameraToMediumAxis()
 // ---------------------------------------------------------------------------
 void PrototypeMainWindow::applyIslandRetentionFilter(const QSet<int>& retainedLabels)
 {
-	for (std::size_t i = 0; i < m_islandActors.size() && i < m_islands.size(); ++i)
-	{
-		if (!m_islandActors[i])
-			continue;
+	if (!ui || !ui->volumeView)
+		return;
 
-		const bool retain = retainedLabels.contains(m_islands[i].label);
-		m_islandActors[i]->SetVisibility(retain ? 1 : 0);
+	for (const auto& island : m_islands)
+	{
+		const bool retain = retainedLabels.contains(island.label);
+		ui->volumeView->setAuxPropsVisible(
+			"island_" + std::to_string(island.label), retain);
 
 		qDebug("applyIslandRetentionFilter: island label=%d  retain=%s",
-			   m_islands[i].label, retain ? "yes" : "no");
+			island.label, retain ? "yes" : "no");
 	}
 
-	if (ui && ui->volumeView)
-		ui->volumeView->render();
+	ui->volumeView->render();
 }
 
 // ---------------------------------------------------------------------------
@@ -3428,114 +3279,8 @@ void PrototypeMainWindow::onInitialize()
 
 	showProgressEnd();
 
-	// Enable the SliceView toggle only when the orphan mask was successfully built.
-	if (m_actToggleOrphanMask)
-		m_actToggleOrphanMask->setEnabled(m_orphanMaskImage != nullptr);
-
 	qDebug("onInitialize: complete — workflow is now Landmarked.");
 }
-
-/*
-vtkSmartPointer<vtkImageData>
-PrototypeMainWindow::applyInverseResliceToOriginal() const
-{
-	if (!m_reslicedImage || !m_originalImage ||
-		!m_pca.valid || !std::isfinite(m_threshold))
-	{
-		qWarning("applyInverseResliceToOriginal: pre-conditions not met.");
-		return nullptr;
-	}
-
-	const int* origDims = m_originalImage->GetDimensions();
-	const int* reslDims = m_reslicedImage->GetDimensions();
-
-	vtkDataArray* origScalars = m_originalImage->GetPointData()->GetScalars();
-	vtkDataArray* reslScalars = m_reslicedImage->GetPointData()->GetScalars();
-
-	if (!origScalars || !reslScalars)
-	{
-		qWarning("applyInverseResliceToOriginal: scalar arrays missing.");
-		return nullptr;
-	}
-
-	// Deep-copy of original image — output with selectively replaced voxels.
-	auto output = vtkSmartPointer<vtkImageData>::New();
-	output->DeepCopy(m_originalImage);
-	vtkDataArray* outScalars = output->GetPointData()->GetScalars();
-
-	vtkIdType replaced = 0;
-	vtkIdType outOfRange = 0;
-
-	int extent[6];
-	m_originalImage->GetExtent(extent);
-
-	int resliceExtent[6];
-	m_reslicedImage->GetExtent(resliceExtent);
-
-	for (int k = extent[4]; k <= extent[5]; ++k)
-		for (int j = extent[2]; j <= extent[3]; ++j)
-			for (int i = extent[0]; i <= extent[1]; ++i)
-			{
-				double value = m_originalImage->GetScalarComponentAsDouble(i, j, k, 0);
-
-				// Skip background voxels — onClean() never touched them.
-				if (value < m_threshold)
-					continue;
-
-				// ── 1. Original voxel index → physical world point ───────────────────
-				// Both images share the same physical world space so this point is
-				// directly usable as input to the resliced image's index transform.
-				const double contIdx[3] = {
-					static_cast<double>(i),
-					static_cast<double>(j),
-					static_cast<double>(k)
-				};
-
-				double physPt[3] = {};
-				m_originalImage->TransformContinuousIndexToPhysicalPoint(contIdx, physPt);
-
-				// ── 2. Physical world point → continuous index in resliced image ─────
-				double reslContIdx[3] = {};
-				m_reslicedImage->TransformPhysicalPointToContinuousIndex(physPt, reslContIdx);
-
-				// ── 3. Round to nearest voxel and bounds-check ───────────────────────
-				const int ri = static_cast<int>(std::lround(reslContIdx[0]));
-				const int rj = static_cast<int>(std::lround(reslContIdx[1]));
-				const int rk = static_cast<int>(std::lround(reslContIdx[2]));
-
-				if (ri < resliceExtent[0] || ri > resliceExtent[1] ||
-					rj < resliceExtent[2] || rj > resliceExtent[3] ||
-					rk < resliceExtent[4] || rk > resliceExtent[5])
-				{
-					++outOfRange;
-					continue;
-				}
-
-				// ── 4. Lookup cleaned resliced scalar ────────────────────────────────
-				const double reslVal = m_reslicedImage->GetScalarComponentAsDouble(ri, rj, rk, 0);
-
-				// ── 5. Replace if the resliced voxel was cleaned (noise < threshold) ─
-				if (reslVal < m_threshold)
-				{
-					int ijk[3] = { i, j, k };
-					vtkIdType outputId = output->ComputePointId(ijk);
-
-					outScalars->SetTuple1(outputId, reslVal);
-					++replaced;
-				}
-			}
-
-	outScalars->Modified();
-	output->Modified();
-
-	qDebug("applyInverseResliceToOriginal: "
-		   "%lld voxel(s) replaced  %lld out-of-reslice-range.",
-		static_cast<long long>(replaced),
-		static_cast<long long>(outOfRange));
-
-	return output;
-}
-*/
 
 vtkSmartPointer<vtkImageData>
 PrototypeMainWindow::applyInverseResliceToOriginal() const

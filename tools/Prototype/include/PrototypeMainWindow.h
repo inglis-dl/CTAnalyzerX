@@ -1,4 +1,3 @@
-#pragma once
 
 #include <QMainWindow>
 #include <QProgressBar>
@@ -16,8 +15,6 @@ class ImageLoader;
 
 class QAction;
 
-class vtkActor;
-class vtkBillboardTextActor3D;
 class vtkEventQtSlotConnect;
 class vtkImageData;
 class vtkMatrix4x4;
@@ -52,62 +49,24 @@ private slots:
 	void showProgressValue(int percent);
 	void showProgressEnd();
 
-	// Triggered by the "Regions" toolbar button.
-	// Thresholds the resliced volume, runs a seeded 26-connected BFS flood-fill
-	// from each landmark point, colours each island surface by voxel count using
-	// a cool-to-warm transfer function.
 	void onRegions();
 
 #ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
-	// Triggered by the "Graph Cut" toolbar button.
-	// Builds foreground seed paths (centroid -> 5 landmark tips) and background
-	// seed rays (outward from the same 5 tips, threshold-gated), then runs
-	// ITK ImageGridCutFilter (GridCut multi-threaded solver) to segment bone
-	// islands.  Results are displayed using the same colour logic as onRegions().
 	void onRegionsGraphCut();
-#endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
+#endif
 
-	// Triggered by the "Clean" toolbar button.
-	// Enabled only after segmentation (Regions, Regions Alt, or Graph Cut) has
-	// completed and at least 8 Reslice steps have been performed.
-	// Replaces above-threshold voxels outside every segmented island with
-	// background noise, then VOI-crops the result and advances to Cleaned.
 	void onClean();
-
-	// Triggered by the "Restart" toolbar button.
-	// Reverts the view to the original loaded image and its default PCA-positioned
-	// axes, clears all reslice/landmark/region/graph-cut state, and resets the
-	// workflow step buttons so only "Reslice" is enabled.
 	void onRestart();
-
-	// Open a json sidecar file and load the cropped image.
 	void onFileOpen();
-
 	void onInitialize();
-
 	void onExport();
 
 private:
-	// -----------------------------------------------------------------------
-	// Workflow step state machine
-	// -----------------------------------------------------------------------
-
-	enum class WorkflowStep
-	{
-		Idle,
-		Resliced,
-		Landmarked,
-		Segmented,
-		Cleaned
-	};
+	enum class WorkflowStep { Idle, Resliced, Landmarked, Segmented, Cleaned };
 
 	void setWorkflowStep(WorkflowStep step);
 	void onLandmark();
 	void onReslice();
-
-	// -----------------------------------------------------------------------
-	// Private members
-	// -----------------------------------------------------------------------
 
 	Ui::MainWindow* ui = nullptr;
 
@@ -123,7 +82,7 @@ private:
 	vtkSmartPointer<vtkEventQtSlotConnect> m_vtkConnections;
 	QProgressBar* m_progressBar = nullptr;
 
-	QAction* m_actExportReslice = nullptr;
+	QAction* m_actExport = nullptr;
 	QAction* m_actFile = nullptr;
 	QAction* m_actInitialize = nullptr;
 	QAction* m_actRegions = nullptr;
@@ -132,16 +91,9 @@ private:
 #endif
 	QAction* m_actClean = nullptr;
 	QAction* m_actRestart = nullptr;
-	QAction* m_actToggleOrphanMask = nullptr;
 
 	WorkflowStep m_workflowStep = WorkflowStep::Idle;
-
-	int m_resliceCount = 0;
-
-	std::array<vtkSmartPointer<vtkActor>, 3> m_axisActors;
-	std::array<vtkSmartPointer<vtkActor>, 6> m_tipActors;
-	std::array<vtkSmartPointer<vtkActor>, 3> m_ringActors;
-	vtkSmartPointer<vtkActor>                m_circumsphereActor;
+	int          m_resliceCount = 0;
 
 	PrototypeHelpers::PcaResult m_pca;
 
@@ -156,41 +108,37 @@ private:
 	vtkSmartPointer<vtkMatrix4x4> m_lastResliceAxes;
 
 	std::vector<PrototypeHelpers::BoneIsland> m_islands;
-	std::vector<vtkSmartPointer<vtkActor>>    m_islandActors;
-#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
-	// m_graphCutSeedActors is always present; populated only when graph-cut
-	// segmentation is enabled so clearGraphCutSeedActors() can remain
-	// unconditional and always leaves it empty when the feature is off.
-	std::vector<vtkSmartPointer<vtkActor>>    m_graphCutSeedActors;
-	void    clearGraphCutSeedActors();
-#endif
 
 	QJsonObject m_originalPcaJson;
 	QJsonObject m_reslicedPcaJson;
-
 	QJsonObject m_imageStats;
 
 	static QJsonObject pcaResultToJson(const PrototypeHelpers::PcaResult& pca);
 	QString prototypeOutputPath() const;
 	bool    writePrototypeSidecar() const;
-	void    clearPcaOverlay();
-	void    clearIslandActors();
-	void    applyIslandSegmentationResult(
+
+	// Aux prop key constants: centralise strings to avoid typos.
+	static constexpr const char* kKeyPcaAxes = "pca_axes";
+	static constexpr const char* kKeyPcaTips = "pca_tips";
+	static constexpr const char* kKeyPcaRings = "pca_rings";
+	static constexpr const char* kKeyLandmarkLabels = "landmark_labels";
+	static constexpr const char* kKeyGraphCutSeeds = "graphcut_seeds";
+	// Per-island keys are formed as "island_<label>" at call sites.
+
+	// Remove all PCA axis/tip/ring props and landmark labels from the VolumeView.
+	void clearPcaOverlay();
+	// Remove all island surface props from the VolumeView.
+	void clearIslandActors();
+#ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
+	void clearGraphCutSeedActors();
+#endif
+
+	void applyIslandSegmentationResult(
 		const std::vector<PrototypeHelpers::BoneIsland>& islands,
 		vtkSmartPointer<vtkImageData>                    labelImage);
 
-	std::array<vtkSmartPointer<vtkBillboardTextActor3D>, 6> m_landmarkLabelActors;
-
 	void alignCameraToMediumAxis();
-
-	// Synchronise the SliceView (XY orientation) with the current image and
-	// window/level whenever a new image is pushed to the VolumeView.
 	void syncSliceView(vtkImageData* image, double window, double level);
-
-	// Hides island surface actors whose labels are not in retainedLabels.
 	void applyIslandRetentionFilter(const QSet<int>& retainedLabels);
-
-	// Applies the inverse of the PCA reslice transform to map modified voxels
-	// from the cleaned resliced image back into original image coordinate space.
 	vtkSmartPointer<vtkImageData> applyInverseResliceToOriginal() const;
 };

@@ -4,23 +4,25 @@
 #include <algorithm>
 #include <cmath>
 
+#include <vtkActor.h>
 #include <vtkAlgorithm.h>
+#include <vtkAlgorithmOutput.h>
 #include <vtkCamera.h>
+#include <vtkCubeSource.h>
+#include <vtkDataObject.h>
 #include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkRenderWindowInteractor.h>
-#include <vtkRenderer.h>
 #include <vtkImageData.h>
 #include <vtkImageShiftScale.h>
+#include <vtkLineSource.h>
 #include <vtkMath.h>
 #include <vtkOrientationMarkerWidget.h>
-#include <vtkCubeSource.h>
-#include <vtkLineSource.h>
 #include <vtkPolyDataMapper.h>
-#include <vtkActor.h>
-#include <vtkProperty.h>
+#include <vtkProp.h>
 #include <vtkPropAssembly.h>
-#include <vtkAlgorithmOutput.h>
-#include <vtkDataObject.h>
+#include <vtkProperty.h>
+#include <vtkRenderer.h>
+#include <vtkRenderWindowInteractor.h>
+
 #include <QSettings>
 
 
@@ -61,7 +63,10 @@ ImageFrameWidget::ImageFrameWidget(QWidget* parent)
 	m_orientationCubeActor = nullptr;
 }
 
-ImageFrameWidget::~ImageFrameWidget() = default;
+ImageFrameWidget::~ImageFrameWidget()
+{
+	clearAuxProps();
+}
 
 void ImageFrameWidget::setImageData(vtkImageData* image)
 {
@@ -733,4 +738,92 @@ void ImageFrameWidget::writeSettings() const
 
 	settings.endGroup(); // key
 	settings.sync();
+}
+
+// ---------------------------------------------------------------------------
+// Named auxiliary prop management
+// ---------------------------------------------------------------------------
+
+void ImageFrameWidget::addAuxProp(const std::string& key,
+								  vtkSmartPointer<vtkProp> prop)
+{
+	if (!prop || !m_renderer)
+		return;
+
+	m_auxProps[key].push_back(prop);
+	m_renderer->AddViewProp(prop);
+}
+
+void ImageFrameWidget::setAuxProps(const std::string& key,
+								   std::vector<vtkSmartPointer<vtkProp>> props)
+{
+	// Remove all existing props for this key from the renderer.
+	auto it = m_auxProps.find(key);
+	if (it != m_auxProps.end())
+	{
+		if (m_renderer)
+			for (auto& p : it->second)
+				m_renderer->RemoveViewProp(p);
+		it->second.clear();
+	}
+
+	if (props.empty())
+	{
+		m_auxProps.erase(key);
+		return;
+	}
+
+	auto& group = m_auxProps[key];
+	group = std::move(props);
+
+	if (m_renderer)
+		for (auto& p : group)
+			if (p) m_renderer->AddViewProp(p);
+}
+
+void ImageFrameWidget::removeAuxProps(const std::string& key)
+{
+	auto it = m_auxProps.find(key);
+	if (it == m_auxProps.end())
+		return;
+
+	if (m_renderer)
+		for (auto& p : it->second)
+			m_renderer->RemoveViewProp(p);
+
+	m_auxProps.erase(it);
+}
+
+void ImageFrameWidget::clearAuxProps()
+{
+	if (m_renderer)
+		for (auto& [key, group] : m_auxProps)
+			for (auto& p : group)
+				m_renderer->RemoveViewProp(p);
+
+	m_auxProps.clear();
+}
+
+void ImageFrameWidget::setAuxPropsVisible(const std::string& key, bool visible)
+{
+	auto it = m_auxProps.find(key);
+	if (it == m_auxProps.end())
+		return;
+
+	for (auto& p : it->second)
+		if (p) p->SetVisibility(visible ? 1 : 0);
+}
+
+bool ImageFrameWidget::hasAuxProps(const std::string& key) const
+{
+	auto it = m_auxProps.find(key);
+	return it != m_auxProps.end() && !it->second.empty();
+}
+
+int ImageFrameWidget::auxPropCount(const std::string& key) const
+{
+	auto it = m_auxProps.find(key);
+	return it != m_auxProps.end()
+		? static_cast<int>(it->second.size())
+		: 0;
 }

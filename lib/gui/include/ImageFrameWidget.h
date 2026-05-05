@@ -1,23 +1,27 @@
-#pragma once
+﻿#pragma once
 #include "SelectionFrameWidget.h"
 
 #include <QWidget>
 #include <QColor>
 #include <limits>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include <vtkSmartPointer.h>
 
-class vtkImageData;
-class vtkRenderer;
-class vtkGenericOpenGLRenderWindow;
-class vtkRenderWindow;
-class vtkImageShiftScale;
-class vtkAlgorithmOutput;
-class vtkAlgorithm;
-class vtkDataObject;
-class vtkOrientationMarkerWidget;
 class vtkActor;
+class vtkAlgorithm;
+class vtkAlgorithmOutput;
+class vtkDataObject;
+class vtkGenericOpenGLRenderWindow;
+class vtkImageData;
+class vtkImageShiftScale;
+class vtkOrientationMarkerWidget;
+class vtkProp;
 class vtkPropAssembly;
+class vtkRenderer;
+class vtkRenderWindow;
 
 class ImageFrameWidget : public SelectionFrameWidget
 {
@@ -103,6 +107,48 @@ public:
 
 	vtkRenderWindow* renderWindow() const;
 	vtkRenderer* renderer() const;
+
+	// ── Named auxiliary prop management ──────────────────────────────────────
+	//
+	// Auxiliary props are arbitrary vtkProp instances (actors, volumes,
+	// assemblies, text actors, legend scales, etc.) fully integrated into the
+	// renderer's 3D world.  Props are grouped under a caller-chosen string key
+	// so they can be managed as a unit.  Applies to both 2D and 3D props.
+	//
+	// The primary visualization pipeline of each derived class (vtkVolume,
+	// vtkImageSlice, ortho-planes) is entirely separate and is never affected
+	// by these operations.
+	//
+	// Example keys: "pca_axes", "landmark_spheres", "island_surfaces", "seeds"
+	//
+	// All methods must be called on the GUI thread.
+
+	// Append one prop to the named group and add it to the renderer immediately.
+	// Creates the group if it does not already exist.
+	void addAuxProp(const std::string& key, vtkSmartPointer<vtkProp> prop);
+
+	// Atomically replace the entire named group.
+	// Existing props for the key are removed from the renderer first.
+	// Passing an empty vector is equivalent to removeAuxProps(key).
+	void setAuxProps(const std::string& key,
+					 std::vector<vtkSmartPointer<vtkProp>> props);
+
+	// Remove all props under the given key from the renderer and erase the group.
+	// No-op if the key does not exist.
+	void removeAuxProps(const std::string& key);
+
+	// Remove every group from the renderer and clear the map.
+	void clearAuxProps();
+
+	// Show or hide all props in the named group without removing them.
+	// No-op if the key does not exist.
+	void setAuxPropsVisible(const std::string& key, bool visible);
+
+	// Returns true when the key exists and contains at least one prop.
+	bool hasAuxProps(const std::string& key) const;
+
+	// Returns the number of props registered under the key (0 if absent).
+	int auxPropCount(const std::string& key) const;
 
 public slots:
 	virtual void updateData() {};
@@ -220,5 +266,10 @@ private:
 	// This will set m_imageData to the vtkImageData produced by the upstream producer
 	// or the raw input data object if SetInputData was used.
 	void refreshImageDataFromPipeline();
-};
 
+	// ── Named auxiliary prop storage ──────────────────────────────────────────
+	// key -> ordered list of props managed as a named group.
+	// Entirely separate from the primary visualization pipeline members.
+	// Declared last so it is destroyed first, before m_renderer is released.
+	std::unordered_map<std::string, std::vector<vtkSmartPointer<vtkProp>>> m_auxProps;
+};
