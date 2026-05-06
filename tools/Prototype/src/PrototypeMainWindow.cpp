@@ -103,7 +103,8 @@ namespace {
 			: QDialog(parent)
 		{
 			setWindowTitle(tr("Clean Islands"));
-			setMinimumWidth(480);
+			setMinimumWidth(280);
+			resize(310, 350);
 
 			const double voxelVol =
 				voxelSpacing[0] * voxelSpacing[1] * voxelSpacing[2];
@@ -133,25 +134,25 @@ namespace {
 				static_cast<int>(islands.size()), 3, this);
 			table->setHorizontalHeaderLabels(
 				{ tr("Island"),
-				  tr("Volume (\u00D710\u207B\u00B3 mm\u00B3)"),
+				  tr("Volume\n(\u00D710\u207B\u00B3 mm\u00B3)"),
 				  tr("Remove") });
 			table->setSelectionMode(QAbstractItemView::NoSelection);
 			table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 			table->verticalHeader()->setVisible(false);
-			table->horizontalHeader()->setSectionResizeMode(
-				0, QHeaderView::Fixed);
-			table->horizontalHeader()->setSectionResizeMode(
-				1, QHeaderView::Stretch);
-			table->horizontalHeader()->setSectionResizeMode(
-				2, QHeaderView::Fixed);
+
+			// All three columns are Fixed so the dialog width is fully
+			// determined by the explicit column widths rather than stretching.
+			table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Fixed);
+			table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+			table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Fixed);
 			table->setColumnWidth(0, 90);
+			table->setColumnWidth(1, 110);
 			table->setColumnWidth(2, 72);
 
 			for (int row = 0; row < static_cast<int>(islands.size()); ++row)
 			{
 				const auto& isl = islands[static_cast<std::size_t>(row)];
 
-				// Sample the same TF used by the VolumeView legend.
 				double rgb[3] = { 1.0, 1.0, 1.0 };
 				colorTF->GetColor(static_cast<double>(isl.voxelCount), rgb);
 
@@ -160,25 +161,22 @@ namespace {
 					static_cast<int>(rgb[1] * 255.0),
 					static_cast<int>(rgb[2] * 255.0));
 
-				// Perceived luminance — choose black or white text.
-				const double lum =
-					0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+				const double lum = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
 				const QColor fgColor = (lum > 0.5) ? Qt::black : Qt::white;
 
-				// Col 0: coloured swatch with island label text.
-				auto* swatchItem = new QTableWidgetItem(
-					tr("Island %1").arg(isl.label));
+				// Col 0: coloured swatch + island label.
+				auto* swatchItem = new QTableWidgetItem(tr("Island %1").arg(isl.label));
 				swatchItem->setTextAlignment(Qt::AlignCenter);
 				swatchItem->setBackground(QBrush(bgColor));
 				swatchItem->setForeground(QBrush(fgColor));
 				table->setItem(row, 0, swatchItem);
 
-				// Col 1: volume (right-aligned).
+				// Col 1: volume, centre-aligned.
 				const double volMm3x1k =
 					static_cast<double>(isl.voxelCount) * voxelVol * 1000.0;
 				auto* volItem = new QTableWidgetItem(
 					QString::number(volMm3x1k, 'g', 4));
-				volItem->setTextAlignment(Qt::AlignVCenter | Qt::AlignRight);
+				volItem->setTextAlignment(Qt::AlignCenter);
 				table->setItem(row, 1, volItem);
 
 				// Col 2: Remove checkbox, centred in a cell widget.
@@ -195,47 +193,48 @@ namespace {
 				m_checkboxes.push_back({ isl.label, chk });
 			}
 
-			// ── Dilation passes control ────────────────────────────────────────
+			// ── Dilation passes spin box ──────────────────────────────────────
 			m_spinDilations = new QSpinBox(this);
+
+			// Size the spin box to fit exactly 2 digits (e.g. "99").
+			// sizeHint() accounts for all internal chrome: frame, field margins,
+			// and the arrow-button column.  We temporarily widen the range to
+			// a 2-digit maximum so Qt measures against the widest possible value,
+			// then restore the real maximum afterwards.
+			m_spinDilations->setRange(1, 10);
+			const int spinFixedWidth = m_spinDilations->sizeHint().width();
 			m_spinDilations->setRange(1, 20);
 			m_spinDilations->setValue(1);
+			m_spinDilations->setFixedWidth(spinFixedWidth);
 			m_spinDilations->setToolTip(
 				tr("Number of 3\u00D73\u00D73 morphological dilation passes applied\n"
 				"to the island mask before voxels are replaced with noise.\n"
 				"Higher values widen the removed boundary around each island."));
 
-			auto* form = new QFormLayout;
-			// Orphan foreground checkbox — removes above-threshold voxels that
-			// are not connected to any landmark seed point (label == 0 in the
-			// segmentation output).
-			m_chkOrphans = new QCheckBox(
-				tr("Remove unlabeled foreground regions"), this);
-			m_chkOrphans->setChecked(true);
-			m_chkOrphans->setToolTip(
-				tr("Also replace above-threshold voxels that are not connected\n"
-				"to any landmark seed point (not part of any labeled island).\n"
-				"These are bone fragments or adjacent structures that lie\n"
-				"outside the seeded segmentation."));
+			// Wrap the spin box in an HBox so the fixed-width widget stays
+			// left-aligned inside the QFormLayout's field column rather than
+			// being stretched to fill it.
+			auto* spinRow = new QHBoxLayout;
+			spinRow->setContentsMargins(0, 0, 0, 0);
+			spinRow->addWidget(m_spinDilations);
+			spinRow->addStretch(1);
 
-			form->addRow(tr("Dilation passes:"), m_spinDilations);
-			form->addRow(QString(), m_chkOrphans);
+			auto* form = new QFormLayout;
+			form->addRow(tr("Dilation passes:"), spinRow);
 
 			// ── Buttons ───────────────────────────────────────────────────────
 			auto* buttons = new QDialogButtonBox(
 				QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-			connect(buttons, &QDialogButtonBox::accepted,
-				this, &QDialog::accept);
-			connect(buttons, &QDialogButtonBox::rejected,
-				this, &QDialog::reject);
+			connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+			connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
-			// ── Root layout ───────────────────────────────────────────────────
+			// ── Root layout: table (stretches) / form / buttons ───────────────
 			auto* root = new QVBoxLayout(this);
 			root->addWidget(table, 1);
 			root->addLayout(form);
 			root->addWidget(buttons);
 		}
 
-		// Returns the labels whose Remove checkbox is checked.
 		std::vector<int> labelsToRemove() const
 		{
 			std::vector<int> result;
@@ -245,16 +244,11 @@ namespace {
 			return result;
 		}
 
-		int dilationCount() const { return m_spinDilations->value(); }
-
-		bool removeOrphanForeground() const
-		{
-			return m_chkOrphans && m_chkOrphans->isChecked();
-		}
+		int  dilationCount()          const { return m_spinDilations->value(); }
+		bool removeOrphanForeground() const { return true; }
 
 	private:
 		QSpinBox* m_spinDilations = nullptr;
-		QCheckBox* m_chkOrphans = nullptr;
 		std::vector<std::pair<int, QCheckBox*>> m_checkboxes;
 	};
 
@@ -312,7 +306,7 @@ namespace {
 				new QLabel(QString::number(regionMean, 'f', 2), this));
 			setupForm->addRow(tr("Region std deviation:"),
 				new QLabel(QString::number(regionStdDev, 'f', 2), this));
-			setupForm->addRow(tr("Region volume (\u00D710\u207B\u00B3 mm\u00B3):"),
+			setupForm->addRow(tr("Region volume\n(\u00D710\u207B\u00B3 mm\u00B3):"),
 				new QLabel(QString::number(regionVolumeMm3 * 1000.0, 'f', 1), this));
 
 			m_spinIterations = new QSpinBox(this);
@@ -428,7 +422,7 @@ namespace {
 			// Refine: enabled when >=2 rows are spanned by the table selection.
 			// Sets start threshold = min selected threshold and back-computes the
 			// multiplier so that iterations x step = max selected threshold - start.
-			m_btnRefine = new QPushButton(tr("Refine from Selection"), this);
+			m_btnRefine = new QPushButton(tr("Refine"), this);
 			m_btnRefine->setEnabled(false);
 			m_btnRefine->setToolTip(
 				tr("Set the start threshold to the lowest selected threshold and compute\n"
@@ -450,15 +444,22 @@ namespace {
 			// exclusive so exactly one iteration can be nominated for Apply.
 			m_iterationTable = new QTableWidget(0, 5, this);
 			m_iterationTable->setHorizontalHeaderLabels(
-				{ tr("#"), tr("Threshold"), tr("Volume (\u00D710\u00B3 mm\u00B3)"), tr("Islands"), tr("Select") });
+				{ tr("#"), tr("Threshold"), tr("Volume\n(\u00D710\u00B3 mm\u00B3)"), tr("Islands"), tr("Select") });
 			// ExtendedSelection: click selects a row; Ctrl+click / Shift+click adds to or ranges the selection.
 			m_iterationTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
 			m_iterationTable->setSelectionBehavior(QAbstractItemView::SelectRows);
 			m_iterationTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
 			m_iterationTable->verticalHeader()->setVisible(false);
-			m_iterationTable->horizontalHeader()->setSectionResizeMode(
-				2, QHeaderView::Stretch);
-			m_iterationTable->horizontalHeader()->setStretchLastSection(false);
+
+			auto header = m_iterationTable->horizontalHeader();
+			header->setDefaultAlignment(Qt::AlignCenter | Qt::AlignVCenter);
+			QFontMetrics fm(header->font());
+			int lines = 2;
+			int padding = 6;
+			int height = lines * fm.height() + padding;
+			header->setFixedHeight(height);
+			header->setSectionResizeMode(2, QHeaderView::Stretch);
+			header->setStretchLastSection(false);
 
 			// QButtonGroup enforces mutual exclusivity across all row checkboxes.
 			m_selectionGroup = new QButtonGroup(this);
@@ -937,11 +938,11 @@ namespace {
 			QStringList headers;
 			headers << tr("#")
 				<< tr("Threshold")
-				<< tr("Volume (\u00D710\u207B\u00B3 mm\u00B3)")
+				<< tr("Volume\n(\u00D710\u207B\u00B3 mm\u00B3)")
 				<< tr("Islands");
 
 			for (int i = 0; i < m_islandColumnCount; ++i)
-				headers << tr("Island %1 (\u00D710\u207B\u00B3 mm\u00B3)").arg(i + 1);
+				headers << tr("Island %1\n(\u00D710\u207B\u00B3 mm\u00B3)").arg(i + 1);
 
 			headers << tr("Select");
 			m_iterationTable->setHorizontalHeaderLabels(headers);
@@ -1726,13 +1727,16 @@ void PrototypeMainWindow::setImage(vtkSmartPointer<vtkImageData> image)
 
 		ui->volumeView->addAuxProp(kKeyPcaTips,
 			PrototypeHelpers::makeSphereActor(tipPos, glyphR, col[0], col[1], col[2]));
+
 		ui->volumeView->addAuxProp(kKeyPcaTips,
 			PrototypeHelpers::makeSphereActor(tipNeg, glyphR, col[0], col[1], col[2]));
 
+		/*
 		ui->volumeView->addAuxProp(kKeyPcaRings,
 			PrototypeHelpers::makeRingActor(
 			m_pca.centroid, m_pca.axes[i], R,
 			col[0], col[1], col[2], 2.0));
+		*/
 	}
 
 	ui->volumeView->renderer()->ResetCamera();

@@ -149,15 +149,15 @@ namespace PrototypeHelpers
 	// -----------------------------------------------------------------------
 
 	// Alternative segmentation pipeline that pre-processes the input with:
-	//   1. vtkImageGaussianSmooth     - suppress noise before morphology.
-	//   2. vtkImageContinuousErode3D  - shrink thin connections between regions.
-	//   3. vtkImageContinuousDilate3D - restore island cores after erosion.
-	//   4. vtkImageThresholdConnectivity - seed-based connected-threshold fill.
+	//   1. vtkImageGaussianSmooth			suppress noise before morphology.
+	//   2. vtkImageContinuousErode3D		shrink thin connections between regions.
+	//   3. vtkImageContinuousDilate3D		restore island cores after erosion.
+	//   4. vtkImageThresholdConnectivity	seed-based connected-threshold fill.
 	// The resulting label image uses one integer label per accepted seed and
 	// the returned BoneIsland vector is coloured by island voxel-count scale,
 	// identical to segmentBoneIslands.
-	// `smoothStdDev`   : Gaussian standard deviation in voxel units (default 1.0).
-	// `morphKernelSize`: half-width of the erode/dilate structuring element
+	// smoothStdDev   : Gaussian standard deviation in voxel units (default 1.0).
+	// morphKernelSize: half-width of the erode/dilate structuring element
 	//                    (default 1  3x3x3 kernel).
 	std::vector<BoneIsland> segmentBoneIslandsAlternate(
 		vtkImageData* reslicedImage,
@@ -182,9 +182,9 @@ namespace PrototypeHelpers
 	// Background seed image: threshold-gated outward rays from the same 5
 	// landmark tips, stopping on re-entry into bone-density tissue.
 	//
-	// `sigma`  : Gaussian width for the boundary term exp(-delta^2 / 2*sigma^2).
+	// sigma  : Gaussian width for the boundary term exp(-delta^2 / 2*sigma^2).
 	//            For 16-bit CT bone data try 50-200; smaller = sharper edges.
-	// `minIslandVoxels` : connected components smaller than this are discarded.
+	// minIslandVoxels : connected components smaller than this are discarded.
 	void buildGraphCutSeedImages(
 		vtkImageData* reslicedImage,
 		const std::array<std::array<std::array<double, 3>, 2>, 3>& landmarkPoints,
@@ -244,9 +244,9 @@ namespace PrototypeHelpers
 		double minVal, double maxVal);
 
 	// Builds a vertical scalar bar actor annotated with voxel-count labels.
-	// `colorTF`   : the same transfer function used to colour the surfaces.
-	// `minVoxels` : lower bound displayed on the bar (smallest island).
-	// `maxVoxels` : upper bound displayed on the bar (largest island).
+	// colorTF   : the same transfer function used to colour the surfaces.
+	// minVoxels : lower bound displayed on the bar (smallest island).
+	// maxVoxels : upper bound displayed on the bar (largest island).
 	// The bar is positioned in the upper-right corner of the viewport at
 	// normalised coordinates and sized so it does not obstruct the volume.
 	vtkSmartPointer<vtkScalarBarActor> makeIslandScalarBar(
@@ -265,7 +265,7 @@ namespace PrototypeHelpers
 	RegionStats computeRegionStats(vtkImageData* reslicedImage,
 								   vtkImageData* labelImage);
 
-	// Total volume (mm³) of all above-zero voxels in labelImage.
+	// Total volume (mm^3) of all above-zero voxels in labelImage.
 	double computeRegionVolumeMm3(vtkImageData* labelImage);
 
 } // namespace PrototypeHelpers
