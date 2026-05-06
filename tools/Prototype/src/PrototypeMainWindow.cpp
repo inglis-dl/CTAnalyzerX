@@ -252,7 +252,6 @@ namespace {
 		std::vector<std::pair<int, QCheckBox*>> m_checkboxes;
 	};
 
-
 	// ---------------------------------------------------------------------------
 	// IterationProgressDialog
 	//
@@ -282,6 +281,9 @@ namespace {
 			std::vector<PrototypeHelpers::BoneIsland>(double threshold, bool firstIteration)
 		>;
 		using ResetFunc = std::function<void()>;
+
+		// ── Status bar helpers ────────────────────────────────────────────────
+		enum class StatusState { Idle, Busy, Complete };
 
 		explicit IterationProgressDialog(
 			double baselineThreshold,
@@ -431,12 +433,20 @@ namespace {
 			connect(m_btnRefine, &QPushButton::clicked, this,
 				[this] { applyRefinement(); });
 
+			m_btnAuto = new QPushButton(tr("Auto"), this);
+			m_btnAuto->setToolTip(
+				tr("Run iterations; if the result is refinable, apply Refine and run again.\n"
+				"Repeats until convergence or the result is no longer refinable."));
+			connect(m_btnAuto, &QPushButton::clicked, this,
+				[this] { runAuto(); });
+
 			auto* leftLayout = new QVBoxLayout;
 			leftLayout->addWidget(setupBox);
 			leftLayout->addSpacing(8);
 			leftLayout->addWidget(m_btnRun);
 			leftLayout->addWidget(m_btnReset);
 			leftLayout->addWidget(m_btnRefine);
+			leftLayout->addWidget(m_btnAuto);
 			leftLayout->addStretch();
 
 			// ── Right panel: iteration history table (top) ───────────────────
@@ -538,10 +548,33 @@ namespace {
 			rightLayout->addWidget(historyBox, 1);
 			rightLayout->addWidget(chartView, 2);
 
-			// ── Root layout: left | right ─────────────────────────────────────
-			auto* root = new QHBoxLayout(this);
-			root->addLayout(leftLayout);
-			root->addLayout(rightLayout, 1);
+			// ── Status bar (bottom) ───────────────────────────────────────────
+			m_statusLabel = new QLabel(this);
+			m_statusLabel->setContentsMargins(4, 0, 0, 0);
+
+			m_stateIndicator = new QLabel(this);
+			m_stateIndicator->setAlignment(Qt::AlignCenter);
+			m_stateIndicator->setMinimumWidth(90);
+
+			auto* statusBarFrame = new QFrame(this);
+			statusBarFrame->setFrameShape(QFrame::StyledPanel);
+			statusBarFrame->setFrameShadow(QFrame::Sunken);
+			statusBarFrame->setMaximumHeight(28);
+			auto* statusBarLayout = new QHBoxLayout(statusBarFrame);
+			statusBarLayout->setContentsMargins(4, 2, 4, 2);
+			statusBarLayout->addWidget(m_statusLabel, 1);
+			statusBarLayout->addWidget(m_stateIndicator);
+
+			// ── Root layout: content area (left | right) above the status bar ─
+			auto* contentLayout = new QHBoxLayout;
+			contentLayout->addLayout(leftLayout);
+			contentLayout->addLayout(rightLayout, 1);
+
+			auto* root = new QVBoxLayout(this);
+			root->addLayout(contentLayout, 1);
+			root->addWidget(statusBarFrame);
+
+			setStatus(tr("Ready \u2014 click Run or Auto to begin."), StatusState::Idle);
 		}
 
 		void setIterateCallback(IterateFunc fn) { m_iterateFunc = std::move(fn); }
@@ -609,7 +642,7 @@ namespace {
 			{
 				const double newMultiplier =
 					(threshMax - threshMin)
-					/ (static_cast<double>(iters-1) * m_baseStdDev);
+					/ (static_cast<double>(iters - 1) * m_baseStdDev);
 
 				// QDoubleSpinBox::setValue() silently clamps to [minimum, maximum].
 				// The refined multiplier may be far outside the default [0.01, 10.0]
@@ -644,6 +677,49 @@ namespace {
 
 			updateStepSizeLabel(m_spinMultiplier->value());
 			updateFinalThresholdLabel(iters, m_spinMultiplier->value());
+		}
+
+		// Runs iterations; if the result is refinable (Refine button enabled),
+		// applies the refinement and runs once more.
+		// If further refinement is still needed after the second run, the user
+		// can click Reset to start again or Refine + Run manually.
+		void runAuto()
+		{
+			if (!m_iterateFunc)
+				return;
+
+			m_btnAuto->setEnabled(false);
+
+			setStatus(tr("Auto: initial run\u2026"), StatusState::Busy);
+			runIterations();
+
+			if (m_btnRefine->isEnabled())
+			{
+				setStatus(
+					tr("Auto: result is refinable \u2014 applying refinement and re-running\u2026"),
+					StatusState::Busy);
+				applyRefinement();
+				runIterations();
+
+				// runIterations() has already set the final status; override only
+				// to clarify that Auto drove the second pass.
+				const bool stillRefinable = m_btnRefine->isEnabled();
+				setStatus(
+					stillRefinable
+						? tr("Auto complete \u2014 further refinement is possible. "
+					"Click Reset to start again or Refine to continue manually.")
+						: tr("Auto complete \u2014 result is finalised. "
+					"Click Apply Selection to confirm."),
+					stillRefinable ? StatusState::Idle : StatusState::Complete);
+			}
+			else
+			{
+				setStatus(
+					tr("Auto complete \u2014 no refinement was required after the initial run."),
+					StatusState::Complete);
+			}
+
+			m_btnAuto->setEnabled(true);
 		}
 
 		// Called whenever the table selection changes.
@@ -755,8 +831,11 @@ namespace {
 				updateFinalThresholdLabel(savedIterations, savedMultiplier);
 			}
 
+			setStatus(tr("Running iterations\u2026"), StatusState::Busy);
+
 			m_btnRun->setEnabled(false);
 			m_btnReset->setEnabled(false);
+			m_btnAuto->setEnabled(false);
 			m_spinIterations->setEnabled(false);
 			m_spinTargetIslands->setEnabled(false);
 			m_spinVolumeThreshold->setEnabled(false);
@@ -875,6 +954,7 @@ namespace {
 			// Post-loop convergence check.
 			// Only evaluated when the loop stopped because the target island
 			// count was reached AND there are at least two rows to compare.
+			bool converged = false;
 			if (targetReached
 				&& targetRowM >= 1
 				&& targetRowM < static_cast<int>(m_iterationVolumes.size()))
@@ -897,6 +977,7 @@ namespace {
 						btn->setChecked(true);
 
 					m_btnRefine->setEnabled(false);
+					converged = true;
 
 					if (auto* item = m_iterationTable->item(rowM, 0))
 						m_iterationTable->scrollToItem(item);
@@ -917,8 +998,32 @@ namespace {
 				}
 			}
 
+			// Set the final status message based on how the run ended.
+			if (converged)
+			{
+				setStatus(
+					tr("Converged \u2014 volume change is within threshold. "
+					"Click Apply Selection to finalise."),
+					StatusState::Complete);
+			}
+			else if (targetReached && m_btnRefine->isEnabled())
+			{
+				setStatus(
+					tr("Target island count reached \u2014 "
+					"click Auto to refine automatically, or select rows and click Refine."),
+					StatusState::Idle);
+			}
+			else
+			{
+				setStatus(
+					tr("Run complete \u2014 "
+					"review the table and chart, then select rows to enable Refine."),
+					StatusState::Idle);
+			}
+
 			m_btnRun->setEnabled(true);
 			m_btnReset->setEnabled(true);
+			m_btnAuto->setEnabled(true);
 			m_spinIterations->setEnabled(true);
 			m_spinMultiplier->setEnabled(true);
 			m_spinTargetIslands->setEnabled(true);
@@ -1067,6 +1172,25 @@ namespace {
 			m_iterationTable->scrollToBottom();
 		}
 
+
+
+		void setStatus(const QString& message, StatusState state)
+		{
+			struct StateStyle { const char* bg; const char* label; };
+			static constexpr StateStyle k[] = {
+				{ "#FFF9C4", "Waiting"    },   // Idle
+				{ "#FFCDD2", "Processing" },   // Busy
+				{ "#C8E6C9", "Complete"   },   // Complete
+			};
+			const auto& s = k[static_cast<int>(state)];
+			m_statusLabel->setText(message);
+			m_stateIndicator->setText(tr(s.label));
+			m_stateIndicator->setStyleSheet(
+				QStringLiteral("background-color: %1; border-radius: 3px; padding: 2px 8px;")
+					.arg(QLatin1String(s.bg)));
+			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+		}
+
 		// Clears all accumulated iteration data and restores the baseline view.
 		void resetState()
 		{
@@ -1109,6 +1233,7 @@ namespace {
 			if (m_resetFunc)
 				m_resetFunc();
 
+			setStatus(tr("Reset \u2014 ready to run."), StatusState::Idle);
 			qDebug("IterationProgressDialog: state reset to baseline.");
 		}
 
@@ -1128,6 +1253,10 @@ namespace {
 		QPushButton* m_btnRun = nullptr;
 		QPushButton* m_btnReset = nullptr;
 		QPushButton* m_btnRefine = nullptr;
+		QPushButton* m_btnAuto = nullptr;
+
+		QLabel* m_statusLabel = nullptr;
+		QLabel* m_stateIndicator = nullptr;
 
 		QTableWidget* m_iterationTable = nullptr;
 		QButtonGroup* m_selectionGroup = nullptr;
@@ -2994,7 +3123,7 @@ void PrototypeMainWindow::onExport()
 		for (int j = lblExtent[2]; j <= lblExtent[3]; ++j)
 			for (int i = lblExtent[0]; i <= lblExtent[1]; ++i)
 			{
-				const vtkIdType flat = 
+				const vtkIdType flat =
 					static_cast<vtkIdType>(k - lblExtent[4]) * lblNY * lblNX
 					+ static_cast<vtkIdType>(j - lblExtent[2]) * lblNX
 					+ (i - lblExtent[0]);
