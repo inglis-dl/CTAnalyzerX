@@ -64,6 +64,7 @@
 #include <QThread>
 #include <QValueAxis>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrent>
 
 #include <functional>
 #include <algorithm>
@@ -709,13 +710,14 @@ namespace {
 						? tr("Auto complete \u2014 further refinement is possible. "
 					"Click Reset to start again or Refine to continue manually.")
 						: tr("Auto complete \u2014 result is finalised. "
-					"Click Apply Selection to confirm."),
+					"Close this dialog and proceed to clean and export."),
 					stillRefinable ? StatusState::Idle : StatusState::Complete);
 			}
 			else
 			{
 				setStatus(
-					tr("Auto complete \u2014 no refinement was required after the initial run."),
+					tr("Auto complete \u2014 no refinement was required after the initial run. "
+					"Close this dialog and proceed to clean and export."),
 					StatusState::Complete);
 			}
 
@@ -989,8 +991,7 @@ namespace {
 						"<b>%1 \u00D710\u207B\u00B3 mm\u00B3</b>, which is at or below "
 						"the volume threshold of <b>%2 \u00D710\u207B\u00B3 mm\u00B3</b>.<br><br>"
 						"Further refinement is unlikely to improve the result.<br><br>"
-						"Row <b>%3</b> (threshold&nbsp;%4) has been selected automatically."
-						"<br>Click <i>Apply Selection</i> to finalise.")
+						"Row <b>%3</b> (threshold&nbsp;%4) has been selected automatically.")
 							.arg(volChange, 0, 'f', 4)
 							.arg(m_spinVolumeThreshold->value(), 0, 'f', 4)
 							.arg(rowM + 1)
@@ -2666,6 +2667,13 @@ void PrototypeMainWindow::onClean()
 	const std::unordered_set<int> removeSet(
 		labelsToRemove.begin(), labelsToRemove.end());
 
+	// 256-entry O(1) label lookup — avoids one hash-table probe per voxel.
+	// Labels are quint8 (0-255); the array covers the complete domain.
+	std::array<bool, 256> removeTable{};
+	for (int lbl : labelsToRemove)
+		if (lbl >= 0 && lbl < 256)
+			removeTable[static_cast<std::size_t>(lbl)] = true;
+
 	// ------------------------------------------------------------------
 	// Step 1: build combined binary mask — selected islands OR orphans.
 	//
@@ -2692,12 +2700,19 @@ void PrototypeMainWindow::onClean()
 	maskImage->SetOrigin(origin);
 	maskImage->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
 
+	// Direct typed pointers — label and orphan images are both VTK_UNSIGNED_CHAR.
+	// Avoids one virtual GetTuple1 dispatch per voxel for each array.
+	const auto* labelPtr = static_cast<const unsigned char*>(
+		m_labelImage->GetScalarPointer());
+	const auto* orphanPtr = orphanScalars
+		? static_cast<const unsigned char*>(m_orphanMaskImage->GetScalarPointer())
+		: nullptr;
+
 	auto* maskPtr = static_cast<unsigned char*>(maskImage->GetScalarPointer());
 	for (vtkIdType i = 0; i < totalVoxels; ++i)
 	{
-		const int  lbl = static_cast<int>(labelScalars->GetTuple1(i));
-		const bool inIsland = removeSet.count(lbl) > 0;
-		const bool inOrphan = orphanScalars && orphanScalars->GetTuple1(i) > 0.5;
+		const bool inIsland = removeTable[labelPtr[i]];
+		const bool inOrphan = orphanPtr && orphanPtr[i] > 0u;
 		maskPtr[i] = (inIsland || inOrphan) ? 1u : 0u;
 	}
 	maskImage->Modified();
@@ -2706,27 +2721,21 @@ void PrototypeMainWindow::onClean()
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
 	// ------------------------------------------------------------------
-	// Step 2: dilate the combined mask N times (3×3×3 structuring element).
-	// Dilation applies to both selected islands and orphan islands so all
-	// removed regions receive the same noise-padded boundary margin.
+	// Step 2: dilate the combined mask with a single (2N+1)³ kernel.
+	// N applications of a 3×3×3 box structuring element are equivalent
+	// (by Minkowski sum associativity) to one application of a
+	// (2N+1)×(2N+1)×(2N+1) box kernel — identical geometric result with
+	// one VTK pipeline setup and one DeepCopy instead of N of each.
 	// ------------------------------------------------------------------
-	vtkSmartPointer<vtkImageData> dilatedMask = maskImage;
+	const int kernelSide = 2 * nDilations + 1;
 
-	for (int d = 0; d < nDilations; ++d)
-	{
-		auto dilate = vtkSmartPointer<vtkImageContinuousDilate3D>::New();
-		dilate->SetInputData(dilatedMask);
-		dilate->SetKernelSize(3, 3, 3);
-		dilate->Update();
+	auto dilateFilter = vtkSmartPointer<vtkImageContinuousDilate3D>::New();
+	dilateFilter->SetInputData(maskImage);
+	dilateFilter->SetKernelSize(kernelSide, kernelSide, kernelSide);
+	dilateFilter->Update();
 
-		auto copy = vtkSmartPointer<vtkImageData>::New();
-		copy->DeepCopy(dilate->GetOutput());
-		dilatedMask = copy;
-
-		showProgressValue(15 + static_cast<int>(
-			40.0 * (d + 1) / static_cast<double>(nDilations)));
-		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-	}
+	auto dilatedMask = vtkSmartPointer<vtkImageData>::New();
+	dilatedMask->DeepCopy(dilateFilter->GetOutput());
 
 	vtkDataArray* dilatedScalars = dilatedMask->GetPointData()->GetScalars();
 	if (!dilatedScalars)
@@ -2747,9 +2756,14 @@ void PrototypeMainWindow::onClean()
 	vtkIdType replacedIsland = 0;
 	vtkIdType replacedOrphan = 0;
 
+	// Direct typed pointer for the dilated mask (VTK_UNSIGNED_CHAR).
+	// Avoids one virtual GetTuple1 dispatch per voxel on the hot read path.
+	const auto* dilatedPtr = static_cast<const unsigned char*>(
+		dilatedMask->GetScalarPointer());
+
 	for (vtkIdType i = 0; i < totalVoxels; ++i)
 	{
-		if (dilatedScalars->GetTuple1(i) <= 0.5)
+		if (dilatedPtr[i] == 0u)
 			continue;
 
 		reslicedScalars->SetTuple1(i, bgMean);
@@ -2757,9 +2771,8 @@ void PrototypeMainWindow::onClean()
 		// Attribute each replaced voxel for the debug log.
 		// Voxels introduced purely by dilation expansion (not in any source
 		// mask) are counted with the island total as they border island tissue.
-		const int  lbl = static_cast<int>(labelScalars->GetTuple1(i));
-		const bool inIsland = removeSet.count(lbl) > 0;
-		const bool inOrphan = orphanScalars && orphanScalars->GetTuple1(i) > 0.5;
+		const bool inIsland = removeTable[labelPtr[i]];
+		const bool inOrphan = orphanPtr && orphanPtr[i] > 0u;
 		if (inOrphan && !inIsland) ++replacedOrphan;
 		else                       ++replacedIsland;
 	}
@@ -2956,6 +2969,7 @@ void PrototypeMainWindow::onExport()
 	resliceFilter->AutoCropOutputOn();
 	resliceFilter->SetOutputDimensionality(3);
 	resliceFilter->SetBackgroundLevel(bgMean);
+	resliceFilter->SetNumberOfThreads(QThread::idealThreadCount());
 	resliceFilter->Update();
 
 	// ── Step 3: cache the grayscale rotated image ─────────────────────────────
@@ -3071,11 +3085,9 @@ void PrototypeMainWindow::onExport()
 	showProgressValue(65);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	// ── Step 6: binarize the mask — 0 = background, 255 = bone ───────────────
-	// Use the label image's own extent as the authoritative iteration domain.
-	// GetDimensions() is avoided: it always returns non-negative counts from
-	// [0,0,0] and would produce wrong flat indices for images with a non-zero
-	// extent origin.
+	// ── Steps 6+7 fused: binarize and find tight bounding box in one pass ─────
+	// Fusing halves memory bandwidth vs two separate triple-nested loops.
+	// Direct unsigned char* pointer avoids one virtual GetTuple1 per voxel.
 	int lblExtent[6];
 	labelImage->GetExtent(lblExtent);
 
@@ -3092,31 +3104,11 @@ void PrototypeMainWindow::onExport()
 	maskImage->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
 
 	auto* maskPtr = static_cast<unsigned char*>(maskImage->GetScalarPointer());
-	vtkDataArray* lblScalars = labelImage->GetPointData()->GetScalars();
+	const auto* lblPtr = static_cast<const unsigned char*>(labelImage->GetScalarPointer());
+	const auto  lbl8 = static_cast<unsigned char>(largestLabel);
 
-	// Flat index is relative to the extent origin throughout.
-	for (int k = lblExtent[4]; k <= lblExtent[5]; ++k)
-		for (int j = lblExtent[2]; j <= lblExtent[3]; ++j)
-			for (int i = lblExtent[0]; i <= lblExtent[1]; ++i)
-			{
-				const vtkIdType flat =
-					static_cast<vtkIdType>(k - lblExtent[4]) * lblNY * lblNX
-					+ static_cast<vtkIdType>(j - lblExtent[2]) * lblNX
-					+ (i - lblExtent[0]);
-
-				maskPtr[flat] =
-					(lblScalars->GetTuple1(flat) == largestLabel) ? 255u : 0u;
-			}
-
-	maskImage->Modified();
-
-	showProgressValue(70);
-	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-
-
-	// ── Step 7: find tight bounding box of the binarized mask ────────────────
-	int boundsMin[3] = { lblExtent[1], lblExtent[3], lblExtent[5] };
-	int boundsMax[3] = { lblExtent[0], lblExtent[2], lblExtent[4] };
+	int  boundsMin[3] = { lblExtent[1], lblExtent[3], lblExtent[5] };
+	int  boundsMax[3] = { lblExtent[0], lblExtent[2], lblExtent[4] };
 	bool anyForeground = false;
 
 	for (int k = lblExtent[4]; k <= lblExtent[5]; ++k)
@@ -3128,9 +3120,13 @@ void PrototypeMainWindow::onExport()
 					+ static_cast<vtkIdType>(j - lblExtent[2]) * lblNX
 					+ (i - lblExtent[0]);
 
-				if (maskPtr[flat] == 0u)
+				if (lblPtr[flat] != lbl8)
+				{
+					maskPtr[flat] = 0u;
 					continue;
+				}
 
+				maskPtr[flat] = 255u;
 				anyForeground = true;
 				if (i < boundsMin[0]) boundsMin[0] = i;
 				if (j < boundsMin[1]) boundsMin[1] = j;
@@ -3139,6 +3135,8 @@ void PrototypeMainWindow::onExport()
 				if (j > boundsMax[1]) boundsMax[1] = j;
 				if (k > boundsMax[2]) boundsMax[2] = k;
 			}
+
+	maskImage->Modified();
 
 	if (!anyForeground)
 	{
@@ -3168,21 +3166,6 @@ void PrototypeMainWindow::onExport()
 		voiMinX, voiMinY, voiMinZ,
 		voiMaxX, voiMaxY, voiMaxZ);
 
-	// ── Step 9: crop grayscale rotated image and export NIfTI ─────────────────
-	auto extractGray = vtkSmartPointer<vtkExtractVOI>::New();
-	extractGray->SetInputData(rotatedImage);
-	extractGray->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
-	extractGray->Update();
-
-	// ── Step 10: crop binarized mask and export NIfTI ─────────────────────────
-	auto extractMask = vtkSmartPointer<vtkExtractVOI>::New();
-	extractMask->SetInputData(maskImage);
-	extractMask->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
-	extractMask->Update();
-
-	showProgressValue(85);
-	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
-
 	// ── Determine output paths ────────────────────────────────────────────────
 	QString grayPath, maskPath;
 	if (!m_sidecarPath.isEmpty() && !m_cropPath.isEmpty())
@@ -3200,17 +3183,44 @@ void PrototypeMainWindow::onExport()
 		maskPath = QDir::temp().filePath(QStringLiteral("export_mask.nii"));
 	}
 
-	// ── Write NIfTI files ─────────────────────────────────────────────────────
-	const auto writeNii = [](vtkImageData* img, const QString& path)
+	// ── Steps 9+10: concurrent VOI extract and NIfTI write ───────────────────
+	// Grayscale and mask crops are fully independent — extract and write both
+	// in parallel.  Each task owns its own VTK filter instances and writes to
+	// a separate output file, so there is no shared mutable state.
+	auto futureGray = QtConcurrent::run(
+		[rotatedImage, maskPath /*unused here*/,
+		 voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ,
+		 grayPath]()
 		{
-			auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
-			writer->SetInputData(img);
-			writer->SetFileName(path.toUtf8().constData());
-			writer->Write();
-		};
+			auto extract = vtkSmartPointer<vtkExtractVOI>::New();
+			extract->SetInputData(rotatedImage);
+			extract->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
+			extract->Update();
 
-	writeNii(extractGray->GetOutput(), grayPath);
-	writeNii(extractMask->GetOutput(), maskPath);
+			auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
+			writer->SetInputData(extract->GetOutput());
+			writer->SetFileName(grayPath.toUtf8().constData());
+			writer->Write();
+		});
+
+	auto futureMask = QtConcurrent::run(
+		[maskImage,
+		 voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ,
+		 maskPath]()
+		{
+			auto extract = vtkSmartPointer<vtkExtractVOI>::New();
+			extract->SetInputData(maskImage);
+			extract->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
+			extract->Update();
+
+			auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
+			writer->SetInputData(extract->GetOutput());
+			writer->SetFileName(maskPath.toUtf8().constData());
+			writer->Write();
+		});
+
+	futureGray.waitForFinished();
+	futureMask.waitForFinished();
 
 	showProgressEnd();
 
