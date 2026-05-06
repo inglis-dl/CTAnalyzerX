@@ -48,9 +48,9 @@ vtkImageCoordinateWidget::vtkImageCoordinateWidget()
 	this->MessageString = "NA";
 
 	this->PropCollection = vtkSmartPointer<vtkPropCollection>::New();
-	this->ImageData = 0;
-	this->Picker = 0;
-	this->UserTransform = 0;
+	this->ImageData = nullptr;
+	this->Picker = nullptr;
+	this->UserTransform = nullptr;
 
 	this->OutPD = vtkSmartPointer<vtkPointData>::New();
 	this->CachedNumScalarComponents = 0;
@@ -229,10 +229,12 @@ void vtkImageCoordinateWidget::SetEnabled(int enabling)
 			this->SetCurrentRenderer(this->Interactor->FindPokedRenderer(
 				this->Interactor->GetLastEventPosition()[0],
 				this->Interactor->GetLastEventPosition()[1]));
+
+			if (!this->CurrentRenderer && this->DefaultRenderer)
+				this->SetCurrentRenderer(this->DefaultRenderer);
+
 			if (!this->CurrentRenderer)
-			{
 				return;
-			}
 		}
 
 		this->Enabled = 1;
@@ -299,12 +301,20 @@ void vtkImageCoordinateWidget::ProcessEvents(
 	if (event == vtkCommand::EnterEvent)
 	{
 		self->State = vtkImageCoordinateWidget::Cursoring;
+
+		// Sample the cursor position immediately at entry so the InteractionEvent
+		// below carries fresh data rather than coordinates from a previous hover.
+		int X, Y;
+		self->Interactor->GetLastEventPosition(X, Y);
+		self->UpdateCursor(X, Y);
 	}
 	else if (event == vtkCommand::LeaveEvent)
 	{
 		self->State = vtkImageCoordinateWidget::Outside;
+		self->CurrentImageValue.clear();
 		self->MessageString = "Off Image";
 	}
+
 	self->EventCallbackCommand->SetAbortFlag(1);
 	self->InvokeEvent(vtkCommand::InteractionEvent, 0);
 }
@@ -312,13 +322,12 @@ void vtkImageCoordinateWidget::ProcessEvents(
 // -+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-
 void vtkImageCoordinateWidget::OnMouseMove()
 {
-	// See whether we're active
-	//
-	if (this->State == vtkImageCoordinateWidget::Outside ||
-		this->State == vtkImageCoordinateWidget::Start)
-	{
+	// Start means the widget was never fully enabled - nothing to do.
+	if (this->State == vtkImageCoordinateWidget::Start)
 		return;
-	}
+
+	if (this->State == vtkImageCoordinateWidget::Outside)
+		this->State = vtkImageCoordinateWidget::Cursoring;
 
 	int X, Y;
 	this->Interactor->GetLastEventPosition(X, Y);
@@ -339,6 +348,9 @@ void vtkImageCoordinateWidget::OnMouseMove()
 int vtkImageCoordinateWidget::GetCursorPosition(
 	double& x, double& y, double& z) const
 {
+	// Return 0 when the cursor is not in the Cursoring state OR when the last
+	// UpdateCursor() did not hit a registered prop.  This prevents callers
+	// from reading stale coordinates that were valid during a previous hover.
 	if (this->State != vtkImageCoordinateWidget::Cursoring)
 	{
 		return 0;
@@ -354,6 +366,8 @@ int vtkImageCoordinateWidget::GetCursorPosition(
 // -+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-
 int vtkImageCoordinateWidget::GetCursorDataN(double* v, const int& components) const
 {
+	// Mirror the guard in GetCursorPosition: stale CurrentImageValue must
+	// not be returned when the cursor is off the image.
 	if (this->State != vtkImageCoordinateWidget::Cursoring)
 	{
 		return 0;
@@ -363,14 +377,9 @@ int vtkImageCoordinateWidget::GetCursorDataN(double* v, const int& components) c
 	for (size_t c = 0; c < components; ++c)
 	{
 		if (c < currSize)
-		{
 			v[c] = this->CurrentImageValue[c];
-		}
 		else
-		{
-			// anything out of range gets the max double value
 			v[c] = VTK_DOUBLE_MAX;
-		}
 	}
 
 	return 1;
@@ -546,7 +555,9 @@ bool vtkImageCoordinateWidget::GetCursorPosition(int X, int Y, double& x, double
 // -+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-+#+-
 void vtkImageCoordinateWidget::UpdateCursor(int X, int Y)
 {
+	// Reset on every call so a miss never exposes last-valid data.
 	this->MessageString = "Off Image";
+	this->CurrentImageValue.clear();
 
 	if (this->GetNumberOfProps() == 0) return;
 

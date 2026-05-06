@@ -717,18 +717,15 @@ bool SliceView::eventFilter(QObject* watched, QEvent* event)
 		switch (event->type()) {
 			case QEvent::MouseButtonPress:
 			case QEvent::MouseButtonDblClick: {
-				// Select this frame so title highlights and interactor gating switches here.
 				if (!isSelected()) {
 					setSelected(true);
 				}
-				// Give focus to the slider for immediate drag. Do NOT queue a delayed focus restore.
 				if (!ui->sliderSlicePosition->hasFocus()) {
 					ui->sliderSlicePosition->setFocus(Qt::MouseFocusReason);
 				}
 				break;
 			}
 			case QEvent::FocusIn: {
-				// If slider gains focus (via click or Tab), ensure this frame is selected.
 				if (!isSelected()) {
 					setSelected(true);
 				}
@@ -743,26 +740,58 @@ bool SliceView::eventFilter(QObject* watched, QEvent* event)
 		return false;
 	}
 
-	if (watched == ui->renderArea && event->type() == QEvent::ShortcutOverride) {
-		// Allow VTK keys to be handled when either:
-		// - interaction is not restricted to selection, or
-		// - this frame is selected, or
-		// - the render widget itself currently has keyboard focus.
-		if (!restrictInteractionToSelection() || isSelected() ||
-			(ui->renderArea && ui->renderArea->hasFocus())) {
-			auto* ke = reinterpret_cast<QKeyEvent*>(event);
-			const Qt::KeyboardModifiers mods = ke->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
-			if (mods == Qt::NoModifier || mods == Qt::ShiftModifier) {
-				switch (ke->key()) {
-					case Qt::Key_R:
-					case Qt::Key_F:
-					case Qt::Key_X:
-					case Qt::Key_Y:
-					case Qt::Key_Z:
-					ke->accept();
-					return true;
-					default:
-					break;
+	if (watched == ui->renderArea)
+	{
+		if (event->type() == QEvent::Enter)
+		{
+			emit cursorDataChanged(QStringLiteral("Off Image"));
+			return false;
+		}
+
+		if (event->type() == QEvent::Leave)
+		{
+			emit cursorDataChanged(QString());
+			return false;
+		}
+
+		if (event->type() == QEvent::FocusIn)
+		{
+			// The render area just received keyboard focus (user clicked in it
+			// after focus was elsewhere).  The VTK EnterEvent fires before
+			// onSelectionChanged(true) re-enables the interactor, so it is
+			// silently dropped and State stays Outside.  Drive a manual cursor
+			// update here so the status bar reflects the current image coordinate
+			// immediately — before the user moves the mouse.
+			if (m_coordWidget && m_coordWidget->GetEnabled())
+			{
+				auto* iren = m_renderWindow ? m_renderWindow->GetInteractor() : nullptr;
+				if (iren)
+				{
+					const int* pos = iren->GetLastEventPosition();
+					m_coordWidget->UpdateCursor(pos[0], pos[1]);
+					m_coordWidget->InvokeEvent(vtkCommand::InteractionEvent);
+				}
+			}
+			return false;
+		}
+
+		if (event->type() == QEvent::ShortcutOverride) {
+			if (!restrictInteractionToSelection() || isSelected() ||
+				(ui->renderArea && ui->renderArea->hasFocus())) {
+				auto* ke = reinterpret_cast<QKeyEvent*>(event);
+				const Qt::KeyboardModifiers mods = ke->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+				if (mods == Qt::NoModifier || mods == Qt::ShiftModifier) {
+					switch (ke->key()) {
+						case Qt::Key_R:
+						case Qt::Key_F:
+						case Qt::Key_X:
+						case Qt::Key_Y:
+						case Qt::Key_Z:
+						ke->accept();
+						return true;
+						default:
+						break;
+					}
 				}
 			}
 		}
@@ -941,6 +970,12 @@ void SliceView::onInteractorWindowLevel(vtkObject* caller)
 
 	// Emit native-domain signal for bridge-controller
 	emit windowLevelChanged(nativeWindow, nativeLevel);
+
+	// Update status bar with live W/L while the coord widget is suspended.
+	emit cursorDataChanged(
+		QStringLiteral("W/L:  %1  /  %2")
+		.arg(nativeWindow, 0, 'f', 1)
+		.arg(nativeLevel, 0, 'f', 1));
 }
 
 void SliceView::onInteractorStartWindowLevel(vtkObject* caller)
@@ -957,6 +992,25 @@ void SliceView::onInteractorStartWindowLevel(vtkObject* caller)
 
 	m_windowLevelStartPosition[0] = style->GetWindowLevelStartPosition()[0];
 	m_windowLevelStartPosition[1] = style->GetWindowLevelStartPosition()[1];
+
+	// Suspend cursor coordinate readout for the duration of the drag so the
+	// coord widget does not fight for the status bar during WL adjustment.
+	if (m_coordWidget && m_coordWidget->GetEnabled())
+		m_coordWidget->Off();
+
+	// Show the starting window/level immediately so the user sees a value
+	// even before the first drag pixel.  Convert mapped → native domain.
+	if (std::isfinite(m_scalarScale) && m_scalarScale != 0.0)
+	{
+		const double mw = m_windowLevelInitial[0];
+		const double ml = m_windowLevelInitial[1];
+		const double lo = (ml - 0.5 * std::fabs(mw)) / m_scalarScale - m_scalarShift;
+		const double hi = (ml + 0.5 * std::fabs(mw)) / m_scalarScale - m_scalarShift;
+		emit cursorDataChanged(
+			QStringLiteral("W/L:  %1  /  %2")
+			.arg(std::max(hi - lo, 1.0), 0, 'f', 1)
+			.arg(0.5 * (hi + lo), 0, 'f', 1));
+	}
 }
 
 void SliceView::onInteractorEndWindowLevel(vtkObject* caller)
@@ -968,22 +1022,43 @@ void SliceView::onInteractorEndWindowLevel(vtkObject* caller)
 	vtkImageProperty* prop = style->GetCurrentImageProperty();
 	if (!prop || !m_imageData) return;
 
-	const double mappedWindow = prop->GetColorWindow();
-	const double mappedLevel = prop->GetColorLevel();
+	// Re-enable cursor coordinate readout now that WL adjustment is complete.
+	if (m_coordWidget && !m_coordWidget->GetEnabled())
+		m_coordWidget->On();
 
-	const double lowerMapped = mappedLevel - 0.5 * std::fabs(mappedWindow);
-	const double upperMapped = mappedLevel + 0.5 * std::fabs(mappedWindow);
-	const double lowerNative = (lowerMapped / m_scalarScale) - m_scalarShift;
-	const double upperNative = (upperMapped / m_scalarScale) - m_scalarShift;
-	const double nativeWindow = std::max(upperNative - lowerNative, 1.0);
-	const double nativeLevel = 0.5 * (upperNative + lowerNative);
+	const int* currentPos = style->GetInteractor()->GetLastEventPosition();
 
-	// DO NOT overwrite the original baseline here.
-	// We still emit the interactive result so controllers/bridges can react,
-	// but the retained baseline used by resetWindowLevel() must remain the
-	// original values computed in setImageData().
+	if (m_windowLevelStartPosition[0] != currentPos[0] || m_windowLevelStartPosition[1] != currentPos[1])
+	{
+		const double mappedWindow = prop->GetColorWindow();
+		const double mappedLevel = prop->GetColorLevel();
 
-	emit windowLevelChanged(nativeWindow, nativeLevel);
+		const double lowerMapped = mappedLevel - 0.5 * std::fabs(mappedWindow);
+		const double upperMapped = mappedLevel + 0.5 * std::fabs(mappedWindow);
+		const double lowerNative = (lowerMapped / m_scalarScale) - m_scalarShift;
+		const double upperNative = (upperMapped / m_scalarScale) - m_scalarShift;
+		const double nativeWindow = std::max(upperNative - lowerNative, 1.0);
+		const double nativeLevel = 0.5 * (upperNative + lowerNative);
+
+		// DO NOT overwrite the original baseline here.
+		// We still emit the interactive result so controllers/bridges can react,
+		// but the retained baseline used by resetWindowLevel() must remain the
+		// original values computed in setImageData().
+		emit windowLevelChanged(nativeWindow, nativeLevel);
+	}
+	else
+	{
+		m_coordWidget->UpdateCursor(currentPos[0], currentPos[1]);
+		const QString msg = QString::fromLatin1(m_coordWidget->GetMessageString());
+
+		if (msg.isEmpty() || msg == QLatin1String("NA"))
+		{
+			emit cursorDataChanged(QStringLiteral("Off Image"));
+			return;
+		}
+
+		emit cursorDataChanged(msg);
+	}
 }
 
 void SliceView::onEditorEditingFinished()
@@ -1353,33 +1428,20 @@ void SliceView::onCursorMoved(vtkObject* /*caller*/)
 	if (!m_coordWidget)
 		return;
 
-	double x = 0.0, y = 0.0, z = 0.0;
-	if (m_coordWidget->GetCursorPosition(x, y, z) == 0
-		|| !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+	// Delegate entirely to vtkImageCoordinateWidget::GetMessageString().
+	// The widget sets it to "Off Image" when the picker misses the vtkImageSlice,
+	// and to "Location: (x, y, z) [Value: v]" when the cursor is on the image.
+	// "NA" is the uninitialised sentinel from the widget constructor; treat it
+	// the same as "Off Image" so the status bar never shows a raw "NA".
+	const QString msg = QString::fromLatin1(m_coordWidget->GetMessageString());
+
+	if (msg.isEmpty() || msg == QLatin1String("NA"))
 	{
-		emit cursorDataChanged(QString());
+		emit cursorDataChanged(QStringLiteral("Off Image"));
 		return;
 	}
 
-	double val = VTK_DOUBLE_MAX;
-	const int nSet = m_coordWidget->GetCursorData1(val);
-	const bool hasScalar = (nSet > 0)
-		&& std::isfinite(val)
-		&& (val >= m_scalarRangeMin)
-		&& (val <= m_scalarRangeMax);
-
-	const QString text = hasScalar
-		? QStringLiteral("X:%1  Y:%2  Z:%3   Val: %4")
-		.arg(x, 9, 'f', 2)
-		.arg(y, 9, 'f', 2)
-		.arg(z, 9, 'f', 2)
-		.arg(val, 0, 'f', 1)
-		: QStringLiteral("X:%1  Y:%2  Z:%3")
-		.arg(x, 9, 'f', 2)
-		.arg(y, 9, 'f', 2)
-		.arg(z, 9, 'f', 2);
-
-	emit cursorDataChanged(text);
+	emit cursorDataChanged(msg);
 }
 
 void SliceView::resizeEvent(QResizeEvent* event)

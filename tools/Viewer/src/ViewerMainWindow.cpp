@@ -5,6 +5,7 @@
 #include "ImageLoader.h"
 #include "LightboxWidget.h"
 #include "ScalarOpacityFunctionWidget.h"
+#include "SliceView.h"
 #include "WindowLevelWidget.h"
 
 #include <vtkEventQtSlotConnect.h>
@@ -190,6 +191,26 @@ void ViewerMainWindow::wireConnections()
 	// Register the WindowLevelWidget with the Lightbox so it mediates all
 	// propagation (controller <-> slice views <-> volume view).
 	m_lightbox->setWindowLevelWidget(m_windowLevel);
+
+	// ── Cursor data → status bar ──────────────────────────────────────────────
+	// Forward cursor coordinate / scalar-value text from all three slice views
+	// to the main window status bar.  Each view emits cursorDataChanged with an
+	// empty string when the cursor leaves its render window, which clears the bar.
+	// Last-writer-wins: whichever view the cursor is currently in owns the bar.
+	const auto onCursorData = [this](const QString& text)
+		{
+			if (text.isEmpty())
+				statusBar()->clearMessage();
+			else
+				statusBar()->showMessage(text);
+		};
+
+	if (auto* yz = m_lightbox->getYZView())
+		connect(yz, &SliceView::cursorDataChanged, this, onCursorData);
+	if (auto* xz = m_lightbox->getXZView())
+		connect(xz, &SliceView::cursorDataChanged, this, onCursorData);
+	if (auto* xy = m_lightbox->getXYView())
+		connect(xy, &SliceView::cursorDataChanged, this, onCursorData);
 }
 
 // ── Slots ────────────────────────────────────────────────────────────────────

@@ -1396,6 +1396,14 @@ PrototypeMainWindow::PrototypeMainWindow(QWidget* parent)
 		else
 			statusBar()->showMessage(text);
 	});
+
+	// When SliceView is used outside LightboxWidget there is no coordinating
+	// parent to receive requestResetWindowLevel and dispatch a reset.
+	// Wire the signal back to the view itself so pressing 'r' resets its own
+	// window/level directly, matching what LightboxWidget::resetWindowLevel()
+	// does for the lightbox-hosted slices.
+	connect(ui->sliceView, &SliceView::requestResetWindowLevel,
+			ui->sliceView, &SliceView::resetWindowLevel);
 }
 
 PrototypeMainWindow::~PrototypeMainWindow()
