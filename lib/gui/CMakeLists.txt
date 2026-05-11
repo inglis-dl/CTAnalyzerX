@@ -13,27 +13,29 @@ target_sources(CTAXGui
     src/LandmarkHelper.cpp
     src/LandmarkWidget.cpp
     src/LightboxWidget.cpp
-    src/Logger.cpp
+#    src/Logger.cpp
     src/MenuButton.cpp
-    src/OtsuThresholdWorker.cpp
+#    src/OtsuThresholdWorker.cpp
     src/ProxyStyle.cpp
     src/RangeSlider.cpp
     src/ScalarOpacityFunctionWidget.cpp
     src/SelectionFrameWidget.cpp
     src/SliceView.cpp
     src/SunkenSliderStyle.cpp
+    src/VolumePlanesWidget.cpp
     src/VolumeRotationWidget.cpp
     src/VolumeView.cpp
     src/WindowLevelBridge.cpp
 #    src/WindowLevelBus.cpp
     src/WindowLevelWidget.cpp
-	src/VtkQtOutputWindow.cpp
+#	src/VtkQtOutputWindow.cpp
     resources/CropWidget.ui
     resources/ImageInfoWidget.ui
     resources/LandmarkWidget.ui
     resources/LightboxWidget.ui
     resources/ScalarOpacityFunctionWidget.ui
     resources/SliceView.ui
+    resources/VolumePlanesWidget.ui
     resources/VolumeRotationWidget.ui
     resources/VolumeView.ui
     resources/WindowLevelWidget.ui
@@ -50,21 +52,22 @@ target_sources(CTAXGui
     include/LandmarkHelper.h
     include/LandmarkWidget.h
     include/LightboxWidget.h
-    include/Logger.h
+#    include/Logger.h
     include/MenuButton.h
-    include/OtsuThresholdWorker.h
+#    include/OtsuThresholdWorker.h
     include/ProxyStyle.h
     include/RangeSlider.h
     include/ScalarOpacityFunctionWidget.h
     include/SelectionFrameWidget.h
     include/SliceView.h
     include/SunkenSliderStyle.h
+    include/VolumePlanesWidget.h
     include/VolumeRotationWidget.h
     include/VolumeView.h
     include/WindowLevelBridge.h
 #    include/WindowLevelBus.h
     include/WindowLevelWidget.h
-	include/VtkQtOutputWindow.h
+#	include/VtkQtOutputWindow.h
 )
 
 target_include_directories(CTAXGui

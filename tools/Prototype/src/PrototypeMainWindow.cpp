@@ -1,5 +1,4 @@
 ﻿#include "PrototypeMainWindow.h"
-#include "PrototypeHelpers.h"
 #include "ui_MainWindow.h"
 
 #include "VolumeView.h"
@@ -1173,8 +1172,6 @@ namespace {
 			m_iterationTable->scrollToBottom();
 		}
 
-
-
 		void setStatus(const QString& message, StatusState state)
 		{
 			struct StateStyle { const char* bg; const char* label; };
@@ -2141,12 +2138,13 @@ void PrototypeMainWindow::onReslice()
 	reslice->AutoCropOutputOn();
 	reslice->SetOutputDimensionality(3);
 	reslice->SetBackgroundLevel(bgMean);
+	reslice->SetNumberOfThreads(QThread::idealThreadCount());
 	reslice->Update();
 
 	showProgressValue(90);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	vtkImageData* resliced = reslice->GetOutput();
+	auto resliced = reslice->GetOutput();
 	if (!resliced)
 	{
 		qWarning("onReslice: vtkImageReslice produced null output.");
@@ -2899,7 +2897,7 @@ void PrototypeMainWindow::loadFromSidecarAsync(const QString& sidecarPath)
 //   1. Inverse-reslice cleaned image back into original space.
 //   2. PCA + rotate (reslice) the result so it is bone-aligned.
 //   3. Recompute PCA on the rotated image to get the centroid in rotated space.
-//   4. Find 6 surface landmark seeds on the rotated image.
+//   4. Find 6 surface landmark seeds on the rotated cleaned image.
 //   5. Region-grow from seeds at baseline threshold.
 //   6. Binarize the label mask: 0 = background, 255 = bone.
 //   7. Locate the tight bounding box of the binarized mask.
@@ -2981,8 +2979,7 @@ void PrototypeMainWindow::onExport()
 	resliceFilter->Update();
 
 	// ── Step 3: cache the grayscale rotated image ─────────────────────────────
-	auto rotatedImage = vtkSmartPointer<vtkImageData>::New();
-	rotatedImage->DeepCopy(resliceFilter->GetOutput());
+	auto rotatedImage = resliceFilter->GetOutput();
 
 	showProgressValue(35);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
@@ -3175,7 +3172,7 @@ void PrototypeMainWindow::onExport()
 		voiMaxX, voiMaxY, voiMaxZ);
 
 	// ── Determine output paths ────────────────────────────────────────────────
-	QString grayPath, maskPath;
+	QString grayPath, maskPath, invPath;
 	if (!m_sidecarPath.isEmpty() && !m_cropPath.isEmpty())
 	{
 		const QString cropBase = QFileInfo(m_cropPath).completeBaseName();
@@ -3184,29 +3181,36 @@ void PrototypeMainWindow::onExport()
 			cropBase + QStringLiteral("_export_grayscale.nii"));
 		maskPath = QDir(sidecarDir).filePath(
 			cropBase + QStringLiteral("_export_mask.nii"));
+		invPath = QDir(sidecarDir).filePath(
+			cropBase + QStringLiteral("_export_inv.nii"));
 	}
 	else
 	{
 		grayPath = QDir::temp().filePath(QStringLiteral("export_grayscale.nii"));
 		maskPath = QDir::temp().filePath(QStringLiteral("export_mask.nii"));
+		invPath = QDir::temp().filePath(QStringLiteral("export_inv.nii"));
 	}
-
+	/*
+	auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
+	writer->SetInputData(invResult);
+	writer->SetFileName(invPath.toUtf8().constData());
+	writer->Write();
+	*/
 	// ── Steps 9+10: concurrent VOI extract and NIfTI write ───────────────────
 	// Grayscale and mask crops are fully independent — extract and write both
 	// in parallel.  Each task owns its own VTK filter instances and writes to
 	// a separate output file, so there is no shared mutable state.
 	auto futureGray = QtConcurrent::run(
-		[rotatedImage, maskPath /*unused here*/,
+		[resliceFilter,
 		 voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ,
 		 grayPath]()
 		{
 			auto extract = vtkSmartPointer<vtkExtractVOI>::New();
-			extract->SetInputData(rotatedImage);
+			extract->SetInputConnection(resliceFilter->GetOutputPort());
 			extract->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
-			extract->Update();
 
 			auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
-			writer->SetInputData(extract->GetOutput());
+			writer->SetInputConnection(extract->GetOutputPort());
 			writer->SetFileName(grayPath.toUtf8().constData());
 			writer->Write();
 		});
@@ -3219,10 +3223,9 @@ void PrototypeMainWindow::onExport()
 			auto extract = vtkSmartPointer<vtkExtractVOI>::New();
 			extract->SetInputData(maskImage);
 			extract->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
-			extract->Update();
 
 			auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
-			writer->SetInputData(extract->GetOutput());
+			writer->SetInputConnection(extract->GetOutputPort());
 			writer->SetFileName(maskPath.toUtf8().constData());
 			writer->Write();
 		});

@@ -10,6 +10,7 @@
 class ImageLoader;
 class ImageInfoWidget;
 class LightboxWidget;
+class VolumePlanesWidget;
 class WindowLevelWidget;
 class vtkEventQtSlotConnect;
 class vtkImageData;
@@ -64,6 +65,7 @@ private:
 	QSplitter*                   m_splitter              = nullptr;
 	ImageInfoWidget*             m_imageInfo             = nullptr;
 	WindowLevelWidget*           m_windowLevel           = nullptr;
+	VolumePlanesWidget*          m_volumePlanes          = nullptr;
 	QProgressBar*                m_progressBar           = nullptr;
 	QMenu*                       m_recentFilesMenu       = nullptr;
 

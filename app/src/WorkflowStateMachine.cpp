@@ -107,7 +107,7 @@ void WorkflowStateMachine::setupWorkflowOrchestration()
 		}
 
 		// Ask MainWindow to compute Otsu; on completion MainWindow must call:
-		//   stateMachine->onThresholdComputed(value, "otsu");
+		// stateMachine->onThresholdComputed(value, "otsu");
 		emit requestComputeThreshold();
 	});
 
@@ -162,7 +162,7 @@ void WorkflowStateMachine::setupWorkflowOrchestration()
 			// IMPORTANT: do NOT requestPlaceLandmarks() until we are sure the crop is opened.
 			// MainWindow will emit croppedLoaded() when it opens lastDerivedPath; then we will re-enter
 			// this state only if you transition, so instead we simply queue enabling placement here
-			// after croppedLoaded() by using a connection once in ctor (see Patch 3).
+			// after croppedLoaded() by using a connection once in ctor.
 			return;
 		}
 
@@ -563,8 +563,8 @@ bool WorkflowStateMachine::loadProjectSidecarFile(const QString& sidecarPath)
 	emit projectLoaded(sidecarPath);
 
 	// Choose the best initial image:
-	// - Prefer an existing crop output if present in the sidecar.
-	// - Otherwise open the canonical source image.
+	// Prefer an existing crop output if present in the sidecar.
+	// Otherwise open the canonical source image.
 	QString initialPath = src;
 
 	const QJsonObject cropObj = obj.value(QStringLiteral("crop")).toObject();
@@ -660,7 +660,7 @@ bool WorkflowStateMachine::appendHistoryToSidecar(const QString& imagePath, cons
 {
 	if (imagePath.isEmpty() || stepName.isEmpty()) return false;
 
-	// Load existing sidecar (may return empty -> start a new one)
+	// Load existing sidecar (may return empty; start a new one)
 	QJsonObject meta = JsonUtils::readJsonSidecar(imagePath);
 
 	// Ensure minimal meta exists
@@ -739,9 +739,9 @@ bool WorkflowStateMachine::appendHistoryToSidecar(const QString& imagePath, cons
 		derived = params.value(QStringLiteral("output")).toString();
 
 	// Determine status:
-	// - If operation produced a derived path, mark completed.
-	// - Special-case: operations that record meaningful parameters (e.g., a computed threshold)
-	//   should be marked completed even if they don't produce a derived file.
+	// If operation produced a derived path, mark completed.
+	// Special-case: operations that record meaningful parameters (e.g., a computed threshold)
+	// should be marked completed even if they don't produce a derived file.
 	QString status;
 	if (!derived.isEmpty()) {
 		status = QStringLiteral("completed");
@@ -814,7 +814,7 @@ bool WorkflowStateMachine::appendHistoryToSidecar(const QString& imagePath, cons
 		return true;
 	}
 
-	// duplicate — treat as success but don't write again
+	// duplicate: treat as success but don't write again
 	return true;
 }
 

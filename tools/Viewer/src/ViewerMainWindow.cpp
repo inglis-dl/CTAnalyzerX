@@ -6,6 +6,7 @@
 #include "LightboxWidget.h"
 #include "ScalarOpacityFunctionWidget.h"
 #include "SliceView.h"
+#include "VolumePlanesWidget.h"
 #include "WindowLevelWidget.h"
 
 #include <vtkEventQtSlotConnect.h>
@@ -96,8 +97,17 @@ void ViewerMainWindow::buildUi()
 	windowLevelLayout->addWidget(m_windowLevel);
 	grpWindowLevel->setLayout(windowLevelLayout);
 
+	// Volume cropping planes section
+	m_volumePlanes = new VolumePlanesWidget(scrollContent);
+	auto* grpVolumePlanes = new CollapsibleGroupBox(tr("ROI Planes"), scrollContent);
+	auto* volumePlanesLayout = new QVBoxLayout;
+	volumePlanesLayout->setContentsMargins(0, 0, 0, 0);
+	volumePlanesLayout->addWidget(m_volumePlanes);
+	grpVolumePlanes->setLayout(volumePlanesLayout);
+
 	scrollLayout->addWidget(grpImageInfo);
 	scrollLayout->addWidget(grpWindowLevel);
+	scrollLayout->addWidget(grpVolumePlanes);
 	scrollLayout->addStretch();
 
 	auto* scrollArea = new QScrollArea;
@@ -105,8 +115,8 @@ void ViewerMainWindow::buildUi()
 	scrollArea->setWidget(scrollContent);
 	scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	scrollArea->setFrameShape(QFrame::NoFrame);
-	scrollArea->setMinimumWidth(260);
-	scrollArea->setMaximumWidth(340);
+	scrollArea->setMinimumWidth(280);
+	scrollArea->setMaximumWidth(400);
 
 	// ── Right panel (lightbox) placeholder ───────────────────────────────────
 	// LightboxWidget contains VolumeView which creates a vtkGPUVolumeRayCastMapper.
@@ -211,6 +221,18 @@ void ViewerMainWindow::wireConnections()
 		connect(xz, &SliceView::cursorDataChanged, this, onCursorData);
 	if (auto* xy = m_lightbox->getXYView())
 		connect(xy, &SliceView::cursorDataChanged, this, onCursorData);
+
+	auto* volumeView = m_lightbox->getVolumeView();
+
+	connect(volumeView, &VolumeView::imageExtentsChanged, m_volumePlanes, &VolumePlanesWidget::setRangeSliders);
+
+	// Connect the widget's signal to the view's slot for setting the region
+	connect(m_volumePlanes, &VolumePlanesWidget::croppingRegionChanged,
+			volumeView, &VolumeView::setCroppingRegion);
+
+	// Connect VolumeView's state to update VolumePlanesWidget's UI
+	connect(volumeView, &VolumeView::croppingEnabledChanged,
+			m_volumePlanes, &VolumePlanesWidget::onExternalCroppingChanged);
 }
 
 // ── Slots ────────────────────────────────────────────────────────────────────

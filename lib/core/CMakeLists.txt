@@ -10,6 +10,10 @@ target_sources(CTAXCore
     src/vtkTransformRepresentation.cxx
     src/vtkTransformWidget.cxx
 	src/vtkImageCoordinateWidget.cxx
+    src/ProcessHelpers.cpp
+    src/VtkQtOutputWindow.cpp
+    src/Logger.cpp
+    src/OtsuThresholdWorker.cpp
   PUBLIC
     include/ImageResliceHelper.h
     include/vtkImageOrthoPlanes.h
@@ -19,6 +23,10 @@ target_sources(CTAXCore
     include/vtkTransformRepresentation.h
     include/vtkTransformWidget.h
 	include/vtkImageCoordinateWidget.h
+    include/ProcessHelpers.h
+    include/VtkQtOutputWindow.h
+    include/Logger.h
+    include/OtsuThresholdWorker.h
 )
 
 target_include_directories(CTAXCore
@@ -52,6 +60,7 @@ message(STATUS "CTAXCore: linking ITK libs (filtered): ${CTAXCORE_ITK_LIBS}")
 
 target_link_libraries(CTAXCore
   PUBLIC
+    Qt${VTK_QT_VERSION}::Core
     ${CTAXCORE_VTK_LIBS}
   PRIVATE
     ${CTAXCORE_ITK_LIBS}
