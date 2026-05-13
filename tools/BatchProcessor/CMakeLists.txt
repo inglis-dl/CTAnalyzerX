@@ -4,8 +4,11 @@ target_sources(CTAXBatchProcessor
   PRIVATE
     src/main.cpp
     src/BatchProcessor.cpp
+    src/BatchProgressDialog.cpp
   PUBLIC
+    include/BatchProcessorTypes.h
     include/BatchProcessor.h
+    include/BatchProgressDialog.h
 )
 
 # Make sure generated ui_*.h is found and local headers are visible.
@@ -33,14 +36,7 @@ target_link_libraries(CTAXBatchProcessor
     Qt5::Concurrent
 )
 
-# Register the new VTK modules with the autoinit system so VTK's
-# object-factory overrides are correctly wired at runtime.
-#vtk_module_autoinit(
-#  TARGETS CTAXBatchProcessor
-#  MODULES ${CTAXBATCH_VTK_LIBS}
-#)
 
 set_property(TARGET CTAXBatchProcessor PROPERTY AUTOUIC_SEARCH_PATHS
-#  ${CMAKE_CURRENT_SOURCE_DIR}/resources
   ${CTAX_GUI_RESOURCES_DIR}
 )

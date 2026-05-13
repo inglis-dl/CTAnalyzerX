@@ -88,6 +88,7 @@ namespace {
             , m_startThreshold(baselineThreshold)
             , m_finalThreshold(baselineThreshold)
             , m_volumeThreshold(1.0)
+            , m_totalIterationsRun(0)
             , m_refinementApplied(false)
             , m_refinementAvailable(false)
         {
@@ -95,6 +96,17 @@ namespace {
 
         void setIterateCallback(IterateFunc fn) { m_iterateFunc = std::move(fn); }
         void setResetCallback(ResetFunc fn) { m_resetFunc = std::move(fn); }
+
+        // Returns the threshold at which the final iteration stopped.
+        // Returns the baseline threshold if no iterations ran.
+        double finalThreshold() const
+        {
+            return m_table.empty() ? m_baseThreshold : m_table.back().threshold;
+        }
+
+        // Returns the total number of iterations that completed across all
+        // runIterations() passes (initial + optional refinement pass).
+        int totalIterations() const { return m_totalIterationsRun; }
 
         // Public entry point — mirrors IterationProgressDialog::runAuto().
         void runAuto()
@@ -191,6 +203,10 @@ namespace {
             // Refinement is available when the target was reached, there are at least
             // two rows to bracket, and the volume change is above the threshold.
             m_refinementAvailable = targetReached && targetRowM >= 1 && !converged;
+
+            // Accumulate the count across passes so totalIterations() reflects
+            // both the initial run and any subsequent refinement pass.
+            m_totalIterationsRun += static_cast<int>(m_table.size());
         }
 
         void appendIterationRow(int iter, double threshold, double volumeMm3x1k,
@@ -265,6 +281,7 @@ namespace {
         double                  m_baseStdDev;
         double                  m_voxelVolMm3;
         double                  m_volumeThreshold;
+        int                     m_totalIterationsRun;
         bool                    m_refinementApplied;
         bool                    m_refinementAvailable;
         IterateFunc             m_iterateFunc;
@@ -289,58 +306,100 @@ BatchProcessor::~BatchProcessor() = default;
 // processSidecarFile
 // ---------------------------------------------------------------------------
 
-bool BatchProcessor::processSidecarFile(const QString& sidecarPath, const QString& outputFolderPath)
+ProcessingRunResult BatchProcessor::processSidecarFile(
+    const QString& sidecarPath,
+    const QString& outputFolderPath,
+    CropLoadedCallback    onCropLoaded,
+    StageProgressCallback onStageAdvanced)
 {
-    qDebug() << "Processing file:" << sidecarPath;
+    // Convenience: invoke onStageAdvanced only if it was provided.
+    auto reportStage = [&onStageAdvanced](ProcessingStage stage)
+        {
+            if (onStageAdvanced)
+                onStageAdvanced(stage);
+        };
 
+    ProcessingRunResult result;
+    result.inputRootDir = QFileInfo(sidecarPath).absolutePath();
+    result.sidecarBasename = QFileInfo(sidecarPath).baseName();
+
+    reportStage(ProcessingStage::Load);
     if (!loadSidecarAndImage(sidecarPath))
     {
         qWarning() << "Failed to load sidecar or image for:" << sidecarPath;
-        return false;
+        return result;
     }
 
-    // Determine the actual output directory for exported images and the processed sidecar.
-// If outputFolderPath is provided (not empty), use it. Otherwise, use the directory of the input sidecar.
-    QString actualOutputDir;
-    if (!outputFolderPath.isEmpty())
-    {
-        actualOutputDir = outputFolderPath;
-    }
-    else
-    {
-        actualOutputDir = QFileInfo(sidecarPath).absolutePath();
-    }
+    result.cropBasename = QFileInfo(m_cropPath).baseName();
+    if (onCropLoaded)
+        onCropLoaded(result.cropBasename);
 
-    // Ensure the output directory exists
+    result.baselineOtsuThreshold = m_baselineOtsuThreshold;
+
+    QString actualOutputDir = outputFolderPath.isEmpty()
+        ? QFileInfo(sidecarPath).absolutePath()
+        : outputFolderPath;
+
     QDir outputDirCreator(actualOutputDir);
-    if (!outputDirCreator.exists())
+    if (!outputDirCreator.exists() && !outputDirCreator.mkpath("."))
     {
-        qDebug() << "Creating output directory:" << actualOutputDir;
-        if (!outputDirCreator.mkpath("."))
-        {
-            qWarning() << "Failed to create output directory:" << actualOutputDir;
-            return false;
-        }
+        qWarning() << "Failed to create output directory:" << actualOutputDir;
+        return result;
     }
 
+    reportStage(ProcessingStage::Reslice);
     performReslicing();
+
+    reportStage(ProcessingStage::Landmark);
     performLandmarking();
+
+    reportStage(ProcessingStage::Segment);
     performSegmentation();
+
+    reportStage(ProcessingStage::Clean);
     performClean();
+
+    reportStage(ProcessingStage::Export);
     performExport(actualOutputDir);
 
-    QFileInfo inputFile(sidecarPath);
-    const QString outputFileName = inputFile.baseName() + QStringLiteral("_processed.json");
-    const QString outputPath = QDir(actualOutputDir).filePath(outputFileName);
+    result.finalThreshold = m_finalSegmentationThreshold;
+    result.totalIterations = m_iterationCount;
+    result.segmentedBoneVolumeMm3 = computeSegmentedBoneVolume(
+        m_reslicedImage ? m_reslicedImage.Get() : m_image.Get());
+
+    reportStage(ProcessingStage::Write);
+    const QString outputPath = QDir(actualOutputDir).filePath(
+        QFileInfo(sidecarPath).baseName() + QStringLiteral("_processed.json"));
 
     if (!writeOutputSidecar(outputPath))
     {
         qWarning() << "Failed to write output sidecar for:" << sidecarPath;
-        return false;
+        return result;
     }
 
-    qDebug() << "Successfully processed:" << sidecarPath << " -> " << outputPath;
-    return true;
+    result.success = true;
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// computeSegmentedBoneVolume
+// ---------------------------------------------------------------------------
+
+double BatchProcessor::computeSegmentedBoneVolume(vtkImageData* spacingRef) const
+{
+    if (!spacingRef || m_islands.empty())
+        return 0.0;
+
+    const auto largestIt = std::max_element(
+        m_islands.begin(), m_islands.end(),
+        [](const ProcessHelpers::BoneIsland& a, const ProcessHelpers::BoneIsland& b)
+        { return a.voxelCount < b.voxelCount; });
+
+    double sp[3];
+    spacingRef->GetSpacing(sp);
+    const double voxelVolume = sp[0] * sp[1] * sp[2]; // mm³ per voxel
+
+    return static_cast<double>(largestIt->voxelCount) * voxelVolume;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +452,7 @@ bool BatchProcessor::loadSidecarAndImage(const QString& sidecarPath)
     }
 
     m_threshold = threshold;
+    m_baselineOtsuThreshold = threshold;
     m_sidecarPath = sidecarPath;
     m_cropPath = cropPath;
 
@@ -691,6 +751,8 @@ void BatchProcessor::performSegmentation()
         });
 
     helper.runAuto();
+    m_iterationCount = helper.totalIterations();
+    m_finalSegmentationThreshold = helper.finalThreshold();
 }
 
 // ---------------------------------------------------------------------------
