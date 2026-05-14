@@ -27,6 +27,7 @@
 #include <vtkImageShiftScale.h>
 #include <vtkLine.h>
 #include <vtkMath.h>
+#include <vtkMatrix3x3.h>
 #include <vtkPoints.h>
 #include <vtkPointData.h>
 #include <vtkPolyData.h>
@@ -488,6 +489,148 @@ namespace ProcessHelpers
 
 		tExit = tFar;
 		return true;
+	}
+
+	void orientPcaAxesForCanonicalReslice(vtkImageData* image,
+										  double         threshold,
+										  PcaResult& pca)
+	{
+		if (!pca.valid || !image)
+			return;
+
+		// ── Constraint 1: axes[0] (+X output) points toward the bone tip ────
+		//
+		// Search the foreground surface in both ±axes[0] directions from the
+		// centroid.  The farther surface point is the bone tip.  Flip axes[0]
+		// when the negative-direction endpoint is farther so that increasing X
+		// always moves toward the tip (tip at extent[1], base at extent[0]).
+		{
+			const double negAxis0[3] = {
+				-pca.axes[0][0], -pca.axes[0][1], -pca.axes[0][2]
+			};
+
+			double tipPos[3] = {};
+			double tipNeg[3] = {};
+			findSurfacePointFromBoundary(
+				image, pca.centroid, pca.axes[0], threshold, tipPos);
+			findSurfacePointFromBoundary(
+				image, pca.centroid, negAxis0, threshold, tipNeg);
+
+			double distPosSq = 0.0;
+			double distNegSq = 0.0;
+			for (int d = 0; d < 3; ++d)
+			{
+				const double dp = tipPos[d] - pca.centroid[d];
+				const double dn = tipNeg[d] - pca.centroid[d];
+				distPosSq += dp * dp;
+				distNegSq += dn * dn;
+			}
+
+			if (distNegSq > distPosSq)
+			{
+				pca.axes[0][0] = -pca.axes[0][0];
+				pca.axes[0][1] = -pca.axes[0][1];
+				pca.axes[0][2] = -pca.axes[0][2];
+				qDebug("orientPcaAxesForCanonicalReslice: axes[0] flipped — "
+					   "tip was in negative direction "
+					   "(distPos=%.2f mm  distNeg=%.2f mm).",
+					   std::sqrt(distPosSq), std::sqrt(distNegSq));
+			}
+			else
+			{
+				qDebug("orientPcaAxesForCanonicalReslice: axes[0] retained — "
+					   "tip is in positive direction "
+					   "(distPos=%.2f mm  distNeg=%.2f mm).",
+					   std::sqrt(distPosSq), std::sqrt(distNegSq));
+			}
+		}
+
+		// ── Constraint 2: axes[1] aligns with the image's own visual-up direction ─
+		//
+		// The source NIfTI encodes its scan-frame "up" direction in column 1 of
+		// the direction matrix (= the direction of increasing j in world space).
+		// Different scanners / protocols store +j pointing superiorly or
+		// inferiorly, so hardcoding "world +Y = inferior" (axes[1][1] < 0)
+		// is correct for some datasets but inverts others.
+		//
+		// Reading column 1 of the image's direction matrix makes the constraint
+		// adaptive: axes[1] is always oriented so that output +Y matches the
+		// source image's own +j direction, which is the direction any standard
+		// viewer (including ViewerMainWindow) treats as "up" when displaying
+		// the image with its default camera view-up = [0, 1, 0].
+		//
+		// Fallback: if the image carries no direction matrix (nullptr or identity),
+		// upDir = [0, 1, 0] is used, which matches vtkImageData's default
+		// physical-Y convention.
+		{
+			// Extract the j-axis direction of the source image.
+			double upDir[3] = { 0.0, 1.0, 0.0 };   // safe default
+
+			const vtkMatrix3x3* dm = image->GetDirectionMatrix();
+			if (dm)
+			{
+				upDir[0] = dm->GetElement(0, 1);
+				upDir[1] = dm->GetElement(1, 1);
+				upDir[2] = dm->GetElement(2, 1);
+
+				// Guard against a degenerate or zero column.
+				const double len = std::sqrt(
+					upDir[0] * upDir[0] +
+					upDir[1] * upDir[1] +
+					upDir[2] * upDir[2]);
+
+				if (len > 1e-10)
+				{
+					upDir[0] /= len;
+					upDir[1] /= len;
+					upDir[2] /= len;
+				}
+				else
+				{
+					upDir[0] = 0.0; upDir[1] = 1.0; upDir[2] = 0.0;
+				}
+			}
+
+			qDebug("orientPcaAxesForCanonicalReslice: image up-dir "
+				   "(j-axis col-1) = (%.4f, %.4f, %.4f).",
+				   upDir[0], upDir[1], upDir[2]);
+
+			// Flip axes[1] when its projection onto upDir is negative so that
+			// the resliced output's +Y (increasing j) always matches the
+			// source image's visual-up direction.
+			const double dot = pca.axes[1][0] * upDir[0]
+				+ pca.axes[1][1] * upDir[1]
+				+ pca.axes[1][2] * upDir[2];
+
+			if (dot < 0.0)
+			{
+				pca.axes[1][0] = -pca.axes[1][0];
+				pca.axes[1][1] = -pca.axes[1][1];
+				pca.axes[1][2] = -pca.axes[1][2];
+				qDebug("orientPcaAxesForCanonicalReslice: axes[1] flipped — "
+					   "dot with image up-dir was %.4f (negative).", dot);
+			}
+			else
+			{
+				qDebug("orientPcaAxesForCanonicalReslice: axes[1] retained — "
+					   "dot with image up-dir is %.4f (positive).", dot);
+			}
+		}
+
+		// ── Constraint 3: axes[2] = cross(axes[0], axes[1]) — right-handed ────
+		//
+		// Always derived from the two independently constrained axes.
+		// The cross product of two orthonormal vectors is already unit-length.
+		pca.axes[2][0] = pca.axes[0][1] * pca.axes[1][2]
+			- pca.axes[0][2] * pca.axes[1][1];
+		pca.axes[2][1] = pca.axes[0][2] * pca.axes[1][0]
+			- pca.axes[0][0] * pca.axes[1][2];
+		pca.axes[2][2] = pca.axes[0][0] * pca.axes[1][1]
+			- pca.axes[0][1] * pca.axes[1][0];
+
+		qDebug("orientPcaAxesForCanonicalReslice: axes[2] recomputed as "
+			   "cross(axes[0], axes[1]) = (%.4f, %.4f, %.4f).",
+			   pca.axes[2][0], pca.axes[2][1], pca.axes[2][2]);
 	}
 
 	// -----------------------------------------------------------------------

@@ -97,7 +97,7 @@ namespace {
 	{
 	public:
 		explicit IslandCleanDialog(
-			const std::vector<PrototypeHelpers::BoneIsland>& islands,
+			const std::vector<ProcessHelpers::BoneIsland>& islands,
 			const double                                      voxelSpacing[3],
 			QWidget* parent = nullptr)
 			: QDialog(parent)
@@ -125,8 +125,8 @@ namespace {
 			// Largest island is retained by default.
 			const int largestLabel =
 				std::max_element(islands.begin(), islands.end(),
-					[](const PrototypeHelpers::BoneIsland& a,
-				const PrototypeHelpers::BoneIsland& b)
+					[](const ProcessHelpers::BoneIsland& a,
+				const ProcessHelpers::BoneIsland& b)
 					{ return a.voxelCount < b.voxelCount; })->label;
 
 			// ── Island table ──────────────────────────────────────────────────
@@ -278,7 +278,7 @@ namespace {
 	{
 	public:
 		using IterateFunc = std::function<
-			std::vector<PrototypeHelpers::BoneIsland>(double threshold, bool firstIteration)
+			std::vector<ProcessHelpers::BoneIsland>(double threshold, bool firstIteration)
 		>;
 		using ResetFunc = std::function<void()>;
 
@@ -1064,7 +1064,7 @@ namespace {
 		// per-island volume cells and derive per-cell background colours from the
 		// same cool-to-warm TF used by the VolumeView legend.
 		void appendIterationRow(int iter, double threshold, double volumeMm3x1k,
-			const std::vector<PrototypeHelpers::BoneIsland>& islands)
+			const std::vector<ProcessHelpers::BoneIsland>& islands)
 		{
 			const int row = m_iterationTable->rowCount();
 			m_iterationTable->insertRow(row);
@@ -1570,7 +1570,7 @@ void PrototypeMainWindow::clearGraphCutSeedActors()
 // ---------------------------------------------------------------------------
 
 // static
-QJsonObject PrototypeMainWindow::pcaResultToJson(const PrototypeHelpers::PcaResult& pca)
+QJsonObject PrototypeMainWindow::pcaResultToJson(const ProcessHelpers::PcaResult& pca)
 {
 	auto packVec3 = [](const double v[3]) -> QJsonArray
 		{
@@ -1656,13 +1656,13 @@ bool PrototypeMainWindow::writePrototypeSidecar() const
 
 void PrototypeMainWindow::loadFromSidecar(const QString& sidecarPath)
 {
-	const QJsonObject sidecar = PrototypeHelpers::readJsonObjectFileOrThrow(sidecarPath);
+	const QJsonObject sidecar = ProcessHelpers::readJsonObjectFileOrThrow(sidecarPath);
 
-	const QString cropPath = PrototypeHelpers::cropPathFromSidecarOrThrow(sidecar);
+	const QString cropPath = ProcessHelpers::cropPathFromSidecarOrThrow(sidecar);
 	qDebug("Project:   %s", qUtf8Printable(sidecarPath));
 	qDebug("Crop path: %s", qUtf8Printable(cropPath));
 
-	m_threshold = PrototypeHelpers::thresholdFromSidecar(sidecar);
+	m_threshold = ProcessHelpers::thresholdFromSidecar(sidecar);
 
 	if (!QFileInfo::exists(cropPath))
 	{
@@ -1761,7 +1761,7 @@ void PrototypeMainWindow::setImage(vtkSmartPointer<vtkImageData> image)
 		? m_threshold
 		: std::numeric_limits<double>::quiet_NaN();
 
-	m_imageStats = PrototypeHelpers::computeScalarThresholdStats(image, effectiveThreshold);
+	m_imageStats = ProcessHelpers::computeScalarThresholdStats(image, effectiveThreshold);
 
 	qDebug("setImage: imageStats - mean=%.4f  stdDev=%.4f  "
 		   "meanFg=%.4f  stdDevFg=%.4f  meanBg=%.4f  stdDevBg=%.4f",
@@ -1807,7 +1807,7 @@ void PrototypeMainWindow::setImage(vtkSmartPointer<vtkImageData> image)
 			QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 		};
 
-	const bool ok = PrototypeHelpers::computePca(image, m_threshold, m_pca, pcaProgress);
+	const bool ok = ProcessHelpers::computePca(image, m_threshold, m_pca, pcaProgress);
 	showProgressEnd();
 
 	if (!ok)
@@ -2006,10 +2006,10 @@ void PrototypeMainWindow::onLandmark()
 		const double axisDirPos[3] = { m_pca.axes[i][0],  m_pca.axes[i][1],  m_pca.axes[i][2] };
 		const double axisDirNeg[3] = { -m_pca.axes[i][0], -m_pca.axes[i][1], -m_pca.axes[i][2] };
 
-		PrototypeHelpers::findSurfacePointFromBoundary(
+		ProcessHelpers::findSurfacePointFromBoundary(
 			m_image, m_pca.centroid, axisDirPos, m_threshold,
 			m_landmarkPoints[static_cast<std::size_t>(i)][0].data());
-		PrototypeHelpers::findSurfacePointFromBoundary(
+		ProcessHelpers::findSurfacePointFromBoundary(
 			m_image, m_pca.centroid, axisDirNeg, m_threshold,
 			m_landmarkPoints[static_cast<std::size_t>(i)][1].data());
 
@@ -2189,7 +2189,7 @@ void PrototypeMainWindow::onReslice()
 // ---------------------------------------------------------------------------
 
 void PrototypeMainWindow::applyIslandSegmentationResult(
-	const std::vector<PrototypeHelpers::BoneIsland>& islands,
+	const std::vector<ProcessHelpers::BoneIsland>& islands,
 	vtkSmartPointer<vtkImageData>                    labelImage)
 {
 	// Clear actors registered under old island keys BEFORE m_islands is replaced,
@@ -2206,7 +2206,7 @@ void PrototypeMainWindow::applyIslandSegmentationResult(
 	}
 
 	const auto [minIt, maxIt] = std::minmax_element(islands.begin(), islands.end(),
-		[](const PrototypeHelpers::BoneIsland& a, const PrototypeHelpers::BoneIsland& b)
+		[](const ProcessHelpers::BoneIsland& a, const ProcessHelpers::BoneIsland& b)
 		{ return a.voxelCount < b.voxelCount; });
 
 	auto colorTF = PrototypeHelpers::makeIslandColorTF(
@@ -2314,12 +2314,12 @@ void PrototypeMainWindow::onRegions()
 	vtkSmartPointer<vtkImageData> labelImage;
 
 #ifdef PARALLEL_ISLANDS
-	std::vector<PrototypeHelpers::BoneIsland> islands =
-		PrototypeHelpers::segmentBoneIslandsParallel(
+	std::vector<ProcessHelpers::BoneIsland> islands =
+		ProcessHelpers::segmentBoneIslandsParallel(
 			m_reslicedImage, m_threshold, seeds, labelImage, makeProgress);
 #else
-	std::vector<PrototypeHelpers::BoneIsland> islands =
-		PrototypeHelpers::segmentBoneIslands(
+	std::vector<ProcessHelpers::BoneIsland> islands =
+		ProcessHelpers::segmentBoneIslands(
 			m_reslicedImage, m_threshold, seeds, labelImage, makeProgress);
 #endif
 
@@ -2342,10 +2342,10 @@ void PrototypeMainWindow::onRegions()
 	// ------------------------------------------------------------------
 	// Step 3: compute baseline stats to populate the iteration dialog.
 	// ------------------------------------------------------------------
-	const PrototypeHelpers::RegionStats baseStats =
-		PrototypeHelpers::computeRegionStats(m_reslicedImage, labelImage);
+	const ProcessHelpers::RegionStats baseStats =
+		ProcessHelpers::computeRegionStats(m_reslicedImage, labelImage);
 	const double baseVolume =
-		PrototypeHelpers::computeRegionVolumeMm3(labelImage);
+		ProcessHelpers::computeRegionVolumeMm3(labelImage);
 
 	qDebug("onRegions: baseline region stats — mean=%d  stdDev=%d  volume=%.3f x 10^-3 mm^3",
 		   int(baseStats.mean), int(baseStats.stdDev), baseVolume * 1000);
@@ -2367,7 +2367,7 @@ void PrototypeMainWindow::onRegions()
 		this);
 
 	progressDlg->setIterateCallback(
-		[this, seeds](double threshold, bool firstIteration) -> std::vector<PrototypeHelpers::BoneIsland>
+		[this, seeds](double threshold, bool firstIteration) -> std::vector<ProcessHelpers::BoneIsland>
 		{
 			const auto progress = [this](int pct)
 				{
@@ -2377,17 +2377,17 @@ void PrototypeMainWindow::onRegions()
 				};
 
 			const std::vector<std::array<double, 3>> adjustedSeeds =
-				PrototypeHelpers::computeInwardAdjustedSeeds(
+				ProcessHelpers::computeInwardAdjustedSeeds(
 					m_reslicedImage, threshold, seeds, m_pca);
 
 			showProgressStart();
 			vtkSmartPointer<vtkImageData> iterLabel;
 
 #ifdef PARALLEL_ISLANDS
-			auto iterIslands = PrototypeHelpers::segmentBoneIslandsParallel(
+			auto iterIslands = ProcessHelpers::segmentBoneIslandsParallel(
 				m_reslicedImage, threshold, adjustedSeeds, iterLabel, progress);
 #else
-			auto iterIslands = PrototypeHelpers::segmentBoneIslands(
+			auto iterIslands = ProcessHelpers::segmentBoneIslands(
 				m_reslicedImage, threshold, adjustedSeeds, iterLabel, progress);
 #endif
 
@@ -2410,7 +2410,7 @@ void PrototypeMainWindow::onRegions()
 			if (m_reslicedImage)
 			{
 				vtkSmartPointer<vtkImageData> iterOrphanMask;
-				PrototypeHelpers::identifyOrphanIslands(
+				ProcessHelpers::identifyOrphanIslands(
 					m_reslicedImage, threshold, adjustedSeeds,
 					iterOrphanMask, /*progressCb=*/nullptr);
 
@@ -2556,7 +2556,7 @@ void PrototypeMainWindow::onRegionsGraphCut()
 	// Run graph-cut segmentation
 	// ------------------------------------------------------------------
 	vtkSmartPointer<vtkImageData> labelImage;
-	const std::vector<PrototypeHelpers::BoneIsland> islands =
+	const std::vector<ProcessHelpers::BoneIsland> islands =
 		PrototypeHelpers::segmentBoneIslandsGraphCut(
 			m_reslicedImage,
 			m_threshold,
@@ -2939,8 +2939,8 @@ void PrototypeMainWindow::onExport()
 	}
 
 	// ── Step 2a: PCA on the inverse-resliced result ───────────────────────────
-	PrototypeHelpers::PcaResult exportPca;
-	const bool pcaOk = PrototypeHelpers::computePca(
+	ProcessHelpers::PcaResult exportPca;
+	const bool pcaOk = ProcessHelpers::computePca(
 		invResult, m_threshold, exportPca, nullptr);
 
 	if (!pcaOk || !exportPca.valid)
@@ -2950,6 +2950,13 @@ void PrototypeMainWindow::onExport()
 		showProgressEnd();
 		return;
 	}
+
+	// Canonicalise axes before building the export reslice matrix:
+	//   axes[0] -> tip direction (+X = tip, −X = base)
+	//   axes[1] -> positive world-Y ("right-side up" in SliceView XY)
+	//   axes[2] -> cross(axes[0], axes[1])  right-handed, derived
+	ProcessHelpers::orientPcaAxesForCanonicalReslice(
+		invResult, m_threshold, exportPca);
 
 	showProgressValue(25);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
@@ -2985,8 +2992,8 @@ void PrototypeMainWindow::onExport()
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
 	// ── Step 3b: recompute PCA on the rotated image (centroid in rotated space)─
-	PrototypeHelpers::PcaResult rotatedPca;
-	const bool rotPcaOk = PrototypeHelpers::computePca(
+	ProcessHelpers::PcaResult rotatedPca;
+	const bool rotPcaOk = ProcessHelpers::computePca(
 		rotatedImage, m_threshold, rotatedPca, nullptr);
 
 	if (!rotPcaOk || !rotatedPca.valid)
@@ -3013,10 +3020,10 @@ void PrototypeMainWindow::onExport()
 			-rotatedPca.axes[i][0], -rotatedPca.axes[i][1], -rotatedPca.axes[i][2]
 		};
 
-		PrototypeHelpers::findSurfacePointFromBoundary(
+		ProcessHelpers::findSurfacePointFromBoundary(
 			rotatedImage, rotatedPca.centroid, axisDirPos, m_threshold,
 			landmarkPos[i].data());
-		PrototypeHelpers::findSurfacePointFromBoundary(
+		ProcessHelpers::findSurfacePointFromBoundary(
 			rotatedImage, rotatedPca.centroid, axisDirNeg, m_threshold,
 			landmarkNeg[i].data());
 
@@ -3048,10 +3055,10 @@ void PrototypeMainWindow::onExport()
 	vtkSmartPointer<vtkImageData> labelImage;
 
 #ifdef PARALLEL_ISLANDS
-	const auto islands = PrototypeHelpers::segmentBoneIslandsParallel(
+	const auto islands = ProcessHelpers::segmentBoneIslandsParallel(
 		rotatedImage, m_threshold, seeds, labelImage, growProgress);
 #else
-	const auto islands = PrototypeHelpers::segmentBoneIslands(
+	const auto islands = ProcessHelpers::segmentBoneIslands(
 		rotatedImage, m_threshold, seeds, labelImage, growProgress);
 #endif
 
@@ -3076,8 +3083,8 @@ void PrototypeMainWindow::onExport()
 	// unambiguous bone region regardless of how many islands the grow found.
 	const auto largestIslandIt = std::max_element(
 		islands.begin(), islands.end(),
-		[](const PrototypeHelpers::BoneIsland& a,
-		const PrototypeHelpers::BoneIsland& b)
+		[](const ProcessHelpers::BoneIsland& a,
+		const ProcessHelpers::BoneIsland& b)
 		{ return a.voxelCount < b.voxelCount; });
 
 	const int largestLabel = largestIslandIt->label;
@@ -3427,7 +3434,7 @@ void PrototypeMainWindow::onInitialize()
 		};
 
 	m_orphanMaskImage = nullptr;
-	PrototypeHelpers::identifyOrphanIslands(
+	ProcessHelpers::identifyOrphanIslands(
 		m_reslicedImage, m_threshold, seeds,
 		m_orphanMaskImage, orphanProgress);
 

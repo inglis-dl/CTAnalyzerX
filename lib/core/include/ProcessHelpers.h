@@ -6,7 +6,6 @@
 
 #include <vtkSmartPointer.h>
 
-#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 
@@ -53,6 +52,27 @@ namespace ProcessHelpers
 	bool computePca(vtkImageData* image, double threshold,
 					PcaResult& result,
 					const std::function<void(int)>& progressCb = nullptr);
+
+	// -----------------------------------------------------------------------
+	// PCA axis canonicalisation
+	//
+	// Enforces a canonical orientation on a PcaResult before it is used to
+	// build a vtkImageReslice ResliceAxes matrix:
+	//
+	//   1. axes[0] is signed so +X in the resliced output points from the
+	//      centroid toward the farthest foreground surface point along that
+	//      axis (the bone tip).  In SliceView XY the tip appears on the
+	//      right; in VolumeView the bone long-axis runs left-to-right.
+	//
+	//   2. axes[2] is recomputed as cross(axes[0], axes[1]) to guarantee a
+	//      right-handed output coordinate frame after any sign flip.
+	//      Without this a flipped axes[0] produces a mirrored output image.
+	//
+	// This is a no-op when pca.valid is false or image is nullptr.
+	// -----------------------------------------------------------------------
+	void orientPcaAxesForCanonicalReslice(vtkImageData* image,
+										  double         threshold,
+										  PcaResult& pca);
 
 	// -----------------------------------------------------------------------
 	// Ray-AABB intersection (slab method)

@@ -499,7 +499,13 @@ void BatchProcessor::performReslicing()
     if (!m_reslicedImage)
         m_originalPcaJson = pcaResultToJson(m_pca);
 
-    // Step 2: build reslice axes from PCA result.
+    // Canonicalise axes before building the reslice matrix:
+    //   axes[0] -> tip direction (+X = tip, −X = base)
+    //   axes[1] -> positive world-Y ("right-side up" in SliceView XY)
+    //   axes[2] -> cross(axes[0], axes[1])  right-handed, derived
+    ProcessHelpers::orientPcaAxesForCanonicalReslice(m_image, m_threshold, m_pca);
+
+    // Step 2: build reslice axes from the corrected PCA result.
     m_lastResliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
     m_lastResliceAxes->Identity();
 
@@ -1165,7 +1171,12 @@ void BatchProcessor::performExport(const QString& outputPath)
         return;
     }
 
-    // Step 2b: rotate the image using the PCA axes.
+    // Apply identical canonical orientation to the export reslice so the
+    // output grayscale and mask NIfTIs share the same tip-right, top-up
+    // convention as the processing reslice.
+    ProcessHelpers::orientPcaAxesForCanonicalReslice(invResult, m_threshold, exportPca);
+
+    // Step 2b: rotate the image using the corrected PCA axes.
     auto resliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
     resliceAxes->Identity();
     for (int row = 0; row < 3; ++row)

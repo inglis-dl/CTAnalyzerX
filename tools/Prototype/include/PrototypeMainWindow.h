@@ -96,7 +96,7 @@ private:
 	WorkflowStep m_workflowStep = WorkflowStep::Idle;
 	int          m_resliceCount = 0;
 
-	PrototypeHelpers::PcaResult m_pca;
+	ProcessHelpers::PcaResult m_pca;
 
 	std::array<std::array<std::array<double, 3>, 2>, 3> m_landmarkPoints{};
 
@@ -108,13 +108,13 @@ private:
 	vtkSmartPointer<vtkImageData> m_orphanMaskImage;
 	vtkSmartPointer<vtkMatrix4x4> m_lastResliceAxes;
 
-	std::vector<PrototypeHelpers::BoneIsland> m_islands;
+	std::vector<ProcessHelpers::BoneIsland> m_islands;
 
 	QJsonObject m_originalPcaJson;
 	QJsonObject m_reslicedPcaJson;
 	QJsonObject m_imageStats;
 
-	static QJsonObject pcaResultToJson(const PrototypeHelpers::PcaResult& pca);
+	static QJsonObject pcaResultToJson(const ProcessHelpers::PcaResult& pca);
 	QString prototypeOutputPath() const;
 	bool    writePrototypeSidecar() const;
 
@@ -135,7 +135,7 @@ private:
 #endif
 
 	void applyIslandSegmentationResult(
-		const std::vector<PrototypeHelpers::BoneIsland>& islands,
+		const std::vector<ProcessHelpers::BoneIsland>& islands,
 		vtkSmartPointer<vtkImageData>                    labelImage);
 
 	void alignCameraToMediumAxis();

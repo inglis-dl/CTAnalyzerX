@@ -4,14 +4,9 @@
 // PrototypeHelpers.h
 // ---------------------------------------------------------------------------
 
+#include "ProcessHelpers.h"
+
 #include <vtkSmartPointer.h>
-
-#include <QJsonArray>
-#include <QJsonObject>
-#include <QString>
-
-#include <functional>
-#include <vector>
 
 class vtkActor;
 class vtkColorTransferFunction;
@@ -20,130 +15,6 @@ class vtkScalarBarActor;
 
 namespace PrototypeHelpers
 {
-	// -----------------------------------------------------------------------
-	// JSON / sidecar I/O
-	// -----------------------------------------------------------------------
-
-	QJsonObject readJsonObjectFileOrThrow(const QString& path);
-	QString     cropPathFromSidecarOrThrow(const QJsonObject& obj);
-	double      thresholdFromSidecar(const QJsonObject& obj);
-
-	// -----------------------------------------------------------------------
-	// Image statistics
-	// -----------------------------------------------------------------------
-
-	double computeScalarStdDev(vtkImageData* image);
-	QJsonObject computeScalarThresholdStats(vtkImageData* image, double threshold);
-
-	// -----------------------------------------------------------------------
-	// PCA result
-	// -----------------------------------------------------------------------
-
-	struct PcaResult
-	{
-		double centroid[3];
-		double axes[3][3];
-		double eigenvalues[3];
-		double circumRadius;
-		bool   valid = false;
-	};
-
-	// -----------------------------------------------------------------------
-	// PCA
-	// -----------------------------------------------------------------------
-
-	bool computePca(vtkImageData* image, double threshold,
-					PcaResult& result,
-					const std::function<void(int)>& progressCb = nullptr);
-
-	// -----------------------------------------------------------------------
-	// Ray-AABB intersection (slab method)
-	// -----------------------------------------------------------------------
-
-	bool rayAabbIntersect(const double rayOrigin[3], const double rayDir[3],
-						  const double bbMin[3], const double bbMax[3],
-						  double& tEntry, double& tExit);
-
-	bool rayAabbExit(const double rayOrigin[3], const double rayDir[3],
-					 const double bbMin[3], const double bbMax[3],
-					 double& tExit);
-
-	// -----------------------------------------------------------------------
-	// Surface search
-	// -----------------------------------------------------------------------
-
-	void findSurfacePointFromBoundary(vtkImageData* image,
-									  const double centroid[3],
-									  const double axisDir[3],
-									  double threshold,
-									  double outWorld[3]);
-
-	// -----------------------------------------------------------------------
-	// Bone island segmentation
-	// -----------------------------------------------------------------------
-
-	struct BoneIsland
-	{
-		int         label;        // unique integer label (1-based)
-		vtkIdType   voxelCount;   // number of voxels in the island
-		double      seedWorld[3]; // world-space seed point
-		int         seedVoxel[3]; // nearest voxel index of seedWorld
-		QJsonObject json;         // serialised summary
-	};
-
-	std::vector<BoneIsland> segmentBoneIslands(
-		vtkImageData* reslicedImage,
-		double                                   threshold,
-		const std::vector<std::array<double, 3>>& seedsWorld,
-		vtkSmartPointer<vtkImageData>& outLabelImage,
-		const std::function<void(int)>& progressCb = nullptr);
-
-	// Parallel version of segmentBoneIslands.
-	// Identical signature and output contract; uses QtConcurrent for the
-	// binary mask and per-seed BFS, with a union-find merge pass to collapse
-	// seeds that landed on the same physical bone.
-	std::vector<BoneIsland> segmentBoneIslandsParallel(
-		vtkImageData* reslicedImage,
-		double                                     threshold,
-		const std::vector<std::array<double, 3>>& seedsWorld,
-		vtkSmartPointer<vtkImageData>& outLabelImage,
-		const std::function<void(int)>& progressCb = nullptr);
-
-	// Walk each seed inward toward the PCA centroid along its eigen-axis direction
-	// until the first voxel that satisfies scalar >= threshold is found.
-	// Seeds that already satisfy the threshold at their original position are
-	// returned unchanged.  Seeds for which no qualifying voxel is found before
-	// reaching the centroid are also returned unchanged as a safe fallback.
-	//
-	// seedsWorld layout (mirrors the 6-element vector built in onRegions):
-	//   s = 0,1  ->  axis 0  (positive tip, negative tip)
-	//   s = 2,3  ->  axis 1  (positive tip, negative tip)
-	//   s = 4,5  ->  axis 2  (positive tip, negative tip)
-	std::vector<std::array<double, 3>> computeInwardAdjustedSeeds(
-		vtkImageData* image,
-		double                                     threshold,
-		const std::vector<std::array<double, 3>>& originalSeedsWorld,
-		const PcaResult& pca);
-
-	// -----------------------------------------------------------------------
-	// Orphan island identification
-	//
-	// Performs an unseeded 26-connected BFS over all above-threshold voxels
-	// to label every connected foreground component.  Components that contain
-	// at least one seed world point are marked as seeded; all others are
-	// written as 1 into outOrphanMask (0 elsewhere).
-	//
-	// The result is cached in PrototypeMainWindow::m_orphanMaskImage after
-	// onInitialize() step 3 and consumed by onClean() to include orphan
-	// regions in the removal mask without a second threshold pass.
-	// -----------------------------------------------------------------------
-	void identifyOrphanIslands(
-		vtkImageData* reslicedImage,
-		double                                     threshold,
-		const std::vector<std::array<double, 3>>& seedsWorld,
-		vtkSmartPointer<vtkImageData>& outOrphanMask,
-		const std::function<void(int)>& progressCb = nullptr);
-
 	// -----------------------------------------------------------------------
 	// Bone island segmentation - VTK morphological pipeline
 	// -----------------------------------------------------------------------
@@ -159,7 +30,7 @@ namespace PrototypeHelpers
 	// smoothStdDev   : Gaussian standard deviation in voxel units (default 1.0).
 	// morphKernelSize: half-width of the erode/dilate structuring element
 	//                    (default 1  3x3x3 kernel).
-	std::vector<BoneIsland> segmentBoneIslandsAlternate(
+	std::vector<ProcessHelpers::BoneIsland> segmentBoneIslandsAlternate(
 		vtkImageData* reslicedImage,
 		double                                   threshold,
 		const std::vector<std::array<double, 3>>& seedsWorld,
@@ -253,19 +124,5 @@ namespace PrototypeHelpers
 		vtkColorTransferFunction* colorTF,
 		vtkIdType                 minVoxels,
 		vtkIdType                 maxVoxels);
-
-	// -----------------------------------------------------------------------
-	// Region statistics helpers  (used by onRegions iterative loop)
-	// -----------------------------------------------------------------------
-
-	// Mean and standard deviation of reslicedImage intensities at all voxels
-	// where labelImage scalar > 0.  Returns {0, 0} when no labelled voxels exist.
-	struct RegionStats { double mean = 0.0; double stdDev = 0.0; };
-
-	RegionStats computeRegionStats(vtkImageData* reslicedImage,
-								   vtkImageData* labelImage);
-
-	// Total volume (mm^3) of all above-zero voxels in labelImage.
-	double computeRegionVolumeMm3(vtkImageData* labelImage);
 
 } // namespace PrototypeHelpers
