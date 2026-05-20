@@ -358,6 +358,18 @@ QString WorkflowStateMachine::stateToString(State s)
 
 void WorkflowStateMachine::start()
 {
+	// If the Qt state machine reached QFinalState, it stops running.
+	// Restart engine first, then emit started so Idle->Loading transition is processed.
+	if (m_machine && !m_machine->isRunning()) {
+		m_machine->start();
+
+		// Defer started emission to next turn so the machine has entered Idle.
+		QMetaObject::invokeMethod(this, [this]() {
+			emit started();
+		}, Qt::QueuedConnection);
+		return;
+	}
+
 	emit started();
 }
 

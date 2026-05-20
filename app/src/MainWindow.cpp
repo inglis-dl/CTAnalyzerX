@@ -335,24 +335,23 @@ void MainWindow::onActionOpen()
 
 	if (!m_workflowStateMachine)
 	{
-		openFile(fileName);   // no state machine: bare load
+		openFile(fileName);
 		return;
 	}
 
-	if (!m_workflowStateMachine->isWorkflowActive())
+	// If machine is active, cancel current run first.
+	if (m_workflowStateMachine->isWorkflowActive())
 	{
-		m_workflowStateMachine->setInputFilePath(fileName);
-		m_workflowStateMachine->start();
-		statusBar()->showMessage(tr("Opening: %1").arg(fileName), 2000);
+		m_pendingOpenFile = fileName;
+		m_workflowStateMachine->cancel();
+		statusBar()->showMessage(tr("Canceling current job..."), 2000);
 		return;
 	}
 
-	// Machine is active: stage the file and request a cancel.
-	// onCancelAndStartPendingFile (connected in ctor) will pick up m_pendingOpenFile
-	// when canceled() fires and start the new workflow.
-	m_pendingOpenFile = fileName;
-	m_workflowStateMachine->cancel();
-	statusBar()->showMessage(tr("Canceling current job..."), 2000);
+	// Idle or completed: start a fresh run.
+	m_workflowStateMachine->setInputFilePath(fileName);
+	m_workflowStateMachine->start();
+	statusBar()->showMessage(tr("Opening: %1").arg(fileName), 2000);
 }
 
 void MainWindow::onActionResume()
