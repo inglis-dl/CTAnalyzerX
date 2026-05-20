@@ -125,6 +125,19 @@ void vtkImageOrthoPlanes::SetInputData(vtkImageData* image)
 	}
 }
 
+int vtkImageOrthoPlanes::GetNumberOfInputConnections(int port) const
+{
+	if (port < 0) {
+		return 0;
+	}
+
+	const int nx = this->m_mapperX ? this->m_mapperX->GetNumberOfInputConnections(port) : 0;
+	const int ny = this->m_mapperY ? this->m_mapperY->GetNumberOfInputConnections(port) : 0;
+	const int nz = this->m_mapperZ ? this->m_mapperZ->GetNumberOfInputConnections(port) : 0;
+
+	return std::max(nx, std::max(ny, nz));
+}
+
 void vtkImageOrthoPlanes::SetSharedImageProperty(vtkImageProperty* prop)
 {
 	if (prop)
@@ -270,6 +283,9 @@ vtkActor* vtkImageOrthoPlanes::GetOutlineActorZ() { return this->m_outlineActorZ
 
 void vtkImageOrthoPlanes::Update()
 {
+	if (this->GetNumberOfInputConnections(0) == 0)
+		return;
+
 	// update each mapper
 	if (this->m_mapperX) this->m_mapperX->Update();
 	if (this->m_mapperY) this->m_mapperY->Update();
@@ -277,6 +293,8 @@ void vtkImageOrthoPlanes::Update()
 
 	// Try to obtain underlying image data to compute accurate outlines using index->physical transforms
 	vtkImageData* img = this->GetImageDataFromMappers();
+	if (!img)
+		return;
 
 	// Use vtkBoundingBox to aggregate per-plane bounds
 	vtkBoundingBox bbox;

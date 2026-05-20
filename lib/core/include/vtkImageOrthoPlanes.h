@@ -54,6 +54,10 @@ public:
 	void SetInputConnection(vtkAlgorithmOutput* port);
 	void SetInputData(vtkImageData* image);
 
+	// Query input connection count on internal slice mappers (port 0 expected).
+	// Returns the maximum count across X/Y/Z mappers for robustness.
+	int GetNumberOfInputConnections(int port) const;
+
 	// Shared property support
 	void SetSharedImageProperty(vtkImageProperty* prop);
 	vtkImageProperty* GetSharedImageProperty();

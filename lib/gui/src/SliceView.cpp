@@ -114,7 +114,6 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	m_sliceMapper = vtkSmartPointer<vtkImageSliceMapper>::New();
 
 	m_imageSlice = vtkSmartPointer<vtkImageSlice>::New();
-	m_imageSlice->SetMapper(m_sliceMapper);
 
 	m_imageProperty = m_imageSlice->GetProperty();
 	m_imageProperty->SetInterpolationTypeToLinear();
@@ -123,7 +122,6 @@ SliceView::SliceView(QWidget* parent, ViewOrientation initialOrientation)
 	// Enable automatic camera-facing for the slice
 	m_sliceMapper->SliceFacesCameraOff();
 	m_sliceMapper->SliceAtFocalPointOff();
-	m_sliceMapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
 
 	m_pointPlacer = vtkSmartPointer<vtkImageSlicePointPlacer>::New();
 	m_pointPlacer->SetImageSliceMapper(m_sliceMapper);
@@ -419,6 +417,13 @@ void SliceView::updateData()
 {
 	if (!m_imageData) return;
 
+	// Defer mapper wiring until input image exists.
+	if (m_sliceMapper && m_shiftScaleFilter &&
+		m_sliceMapper->GetNumberOfInputConnections(0) == 0) {
+		m_sliceMapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+		m_imageSlice->SetMapper(m_sliceMapper);
+	}
+
 	// Compute mapping and connect the shared filter
 	computeShiftScaleFromInput();
 	cacheImageGeometry();
@@ -430,7 +435,6 @@ void SliceView::updateData()
 		m_requestedCroppingRegion[3] = m_extent[3];
 		m_requestedCroppingRegion[4] = m_extent[4];
 		m_requestedCroppingRegion[5] = m_extent[5];
-
 	}
 	m_requestedCroppingEnabled = false;
 
@@ -611,7 +615,11 @@ void SliceView::updateSliceRange() {
 }
 
 void SliceView::updateSlice() {
+
 	if (!m_imageData) return;
+
+	if (!m_sliceMapper || m_sliceMapper->GetNumberOfInputConnections(0) == 0)
+		return;
 
 	m_sliceMapper->SetSliceNumber(m_currentSlice);
 

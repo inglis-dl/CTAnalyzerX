@@ -70,8 +70,6 @@ VolumeView::VolumeView(QWidget* parent)
 	m_mapper->AutoAdjustSampleDistancesOn(); // for faster rendering turn auto adjust on and set a desired frame rate
 	m_mapper->LockSampleDistanceToInputSpacingOn();
 
-	m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-
 	m_volumeProperty = vtkSmartPointer<vtkVolumeProperty>::New();
 	m_volumeProperty->ShadeOff();
 	m_volumeProperty->SetInterpolationTypeToLinear();
@@ -104,9 +102,7 @@ VolumeView::VolumeView(QWidget* parent)
 
 	// inside VolumeView::VolumeView after creating m_imageSliceXY / m_sliceMappers
 	m_orthoPlanes = vtkSmartPointer<vtkImageOrthoPlanes>::New();
-	if (m_shiftScaleFilter) {
-		m_orthoPlanes->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
-	}
+
 	// keep ortho planes hidden initially (will be toggled via setOrthoPlanesVisible)
 	m_orthoPlanes->SetPlaneVisibility(false, false, false);
 
@@ -306,6 +302,17 @@ void VolumeView::initializeDefaultTransferFunctions()
 void VolumeView::updateData()
 {
 	if (!m_imageData) return;
+
+	// Defer pipeline wiring until input image exists.
+	if (m_mapper && m_shiftScaleFilter &&
+		m_mapper->GetNumberOfInputConnections(0) == 0) {
+		m_mapper->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	}
+
+	if (m_orthoPlanes && m_shiftScaleFilter &&
+		m_orthoPlanes->GetNumberOfInputConnections(0) == 0) {
+		m_orthoPlanes->SetInputConnection(m_shiftScaleFilter->GetOutputPort());
+	}
 
 	m_shiftScaleFilter->Update();
 
