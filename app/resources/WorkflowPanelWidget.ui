@@ -125,37 +125,63 @@
          </layout>
         </widget>
        </item>
-       <item>
-        <widget class="CollapsibleGroupBox" name="grpLandmark">
-         <property name="title">
-          <string>Landmarks</string>
-         </property>
-         <layout class="QVBoxLayout" name="landmarkLayout">
-          <property name="leftMargin">
-           <number>6</number>
-          </property>
-          <property name="topMargin">
-           <number>6</number>
-          </property>
-          <property name="rightMargin">
-           <number>6</number>
-          </property>
-          <property name="bottomMargin">
-           <number>6</number>
-          </property>
-          <item>
-           <widget class="LandmarkWidget" name="landmarkWidget" native="true">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
+		  <item>
+			  <widget class="CollapsibleGroupBox" name="grpThreshold">
+				  <property name="title">
+					  <string>Threshold</string>
+				  </property>
+				  <layout class="QVBoxLayout" name="thresholdLayout">
+					  <property name="leftMargin">
+						  <number>6</number>
+					  </property>
+					  <property name="topMargin">
+						  <number>6</number>
+					  </property>
+					  <property name="rightMargin">
+						  <number>6</number>
+					  </property>
+					  <property name="bottomMargin">
+						  <number>6</number>
+					  </property>
+					  <item>
+						  <layout class="QHBoxLayout" name="thresholdValueRow">
+							  <item>
+								  <widget class="QLabel" name="lblThresholdValue">
+									  <property name="text">
+										  <string>Value</string>
+									  </property>
+								  </widget>
+							  </item>
+							  <item>
+								  <widget class="QLineEdit" name="editThreshold">
+									  <property name="placeholderText">
+										  <string>Enter threshold...</string>
+									  </property>
+								  </widget>
+							  </item>
+						  </layout>
+					  </item>
+					  <item>
+						  <layout class="QHBoxLayout" name="thresholdButtonsRow">
+							  <item>
+								  <widget class="QPushButton" name="btnThresholdOtsu">
+									  <property name="text">
+										  <string>Otsu</string>
+									  </property>
+								  </widget>
+							  </item>
+							  <item>
+								  <widget class="QPushButton" name="btnThresholdSave">
+									  <property name="text">
+										  <string>Save</string>
+									  </property>
+								  </widget>
+							  </item>
+						  </layout>
+					  </item>
+				  </layout>
+			  </widget>
+		  </item>
        <item>
         <widget class="CollapsibleGroupBox" name="grpWindowLevel">
          <property name="title">

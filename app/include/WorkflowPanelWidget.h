@@ -11,7 +11,6 @@ namespace Ui { class WorkflowPanelWidget; }
 #include <QWidget>
 
 class ImageInfoWidget;
-class LandmarkWidget;
 class LightboxWidget;
 class WindowLevelWidget;
 
@@ -27,9 +26,6 @@ public:
 	void setCroppingEnabled(bool on);
 	bool isCroppingEnabled() const;
 
-	void setLandmarkingEnabled(bool on);
-	bool isLandmarkingEnabled() const;
-
 	// Appearance group is logically always available; this is kept for API compatibility.
 	void setWindowLevellingEnabled(bool on);
 	bool isWindowLevellingEnabled() const;
@@ -37,7 +33,10 @@ public:
 	// Accessors for widgets defined in the .ui
 	WindowLevelWidget* windowLevelWidget() const;
 	ImageInfoWidget* imageInfoWidget() const;
-	LandmarkWidget* landmarkWidget() const;
+
+	void setThresholdEnabled(bool on);
+	bool isThresholdEnabled() const;
+	void setThresholdFromSidecar(bool present, double value);
 
 	// Let the panel own/drive real-time cropping updates to a LightboxWidget.
 	// Panel does NOT take ownership of the lightbox; it merely connects its
@@ -56,12 +55,11 @@ signals:
 	void croppingRegionChanged(int xMin, int xMax,
 							   int yMin, int yMax,
 							   int zMin, int zMax);
-
-	void placeLandmarksRequested();
-
-	void windowLevelAdjusted();
-
 	void resetCropRequested();
+
+	void otsuThresholdRequested();
+	void thresholdSaveRequested(double threshold);
+	void windowLevelAdjusted();
 
 public slots:
 	void notifyWorkflowRestored(WorkflowStateMachine::State restoredState);
@@ -81,7 +79,7 @@ private:
 	// Group boxes defined in the .ui
 	CollapsibleGroupBox* m_grpImageInfo = nullptr;
 	CollapsibleGroupBox* m_grpCrop = nullptr;
-	CollapsibleGroupBox* m_grpLandmark = nullptr;
+	CollapsibleGroupBox* m_grpThreshold = nullptr;
 	CollapsibleGroupBox* m_grpWindowLevel = nullptr;
 
 	// Panel-owned reference to Lightbox (not owner)

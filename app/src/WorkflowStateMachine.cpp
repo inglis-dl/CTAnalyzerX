@@ -33,7 +33,7 @@ WorkflowStateMachine::WorkflowStateMachine(QObject* parent)
 	m_computingThreshold = new QState(m_machine);
 	m_definingCrop = new QState(m_machine);
 	m_loadingCropped = new QState(m_machine);
-	m_definingLandmarks = new QState(m_machine);
+	m_replacingThreshold = new QState(m_machine);
 	m_final = new QFinalState(m_machine);
 
 	// Transitions (linearized + explicit gates)
@@ -46,15 +46,22 @@ WorkflowStateMachine::WorkflowStateMachine(QObject* parent)
 	m_computingThreshold->addTransition(this, &WorkflowStateMachine::thresholdReady, m_definingCrop);
 
 	m_definingCrop->addTransition(this, &WorkflowStateMachine::cropApplied, m_loadingCropped);
-	m_loadingCropped->addTransition(this, &WorkflowStateMachine::croppedLoaded, m_definingLandmarks);
+	m_loadingCropped->addTransition(this, &WorkflowStateMachine::croppedLoaded, m_replacingThreshold);
 
-	m_definingLandmarks->addTransition(this, &WorkflowStateMachine::landmarksPlaced, m_final);
+	m_replacingThreshold->addTransition(this, &WorkflowStateMachine::thresholdReplaced, m_final);
 
 	// crop reset self-loop (stay in DefiningCrop, but can be used by UI to show feedback)
 	m_definingCrop->addTransition(this, &WorkflowStateMachine::cropReset, m_definingCrop);
 
 	// Cancel transitions
-	QList<QState*> cancellable = { m_loading, m_loadingSidecar, m_computingThreshold, m_definingCrop, m_loadingCropped, m_definingLandmarks };
+	QList<QState*> cancellable = {
+		m_loading,
+		m_loadingSidecar,
+		m_computingThreshold,
+		m_definingCrop,
+		m_loadingCropped,
+		m_replacingThreshold
+	};
 	for (QState* s : cancellable) {
 		s->addTransition(this, &WorkflowStateMachine::canceled, m_idle);
 	}
@@ -79,8 +86,6 @@ void WorkflowStateMachine::setupWorkflowOrchestration()
 {
 	connect(m_loading, &QState::entered, this, [this]() {
 		qDebug() << "WorkflowStateMachine: Entering LoadingImage state";
-
-		// This loads the source image. MainWindow will emit imageLoaded() when done.
 		emit requestLoadImage();
 	});
 
@@ -89,7 +94,7 @@ void WorkflowStateMachine::setupWorkflowOrchestration()
 
 		if (!ensureSidecarForSource()) {
 			emit failed(QStringLiteral("Could not create/read sidecar"));
-			emit canceled(); // conservative: return to Idle
+			emit canceled();
 			return;
 		}
 
@@ -106,15 +111,12 @@ void WorkflowStateMachine::setupWorkflowOrchestration()
 			return;
 		}
 
-		// Ask MainWindow to compute Otsu; on completion MainWindow must call:
-		// stateMachine->onThresholdComputed(value, "otsu");
 		emit requestComputeThreshold();
 	});
 
 	connect(m_definingCrop, &QState::entered, this, [this]() {
 		qDebug() << "WorkflowStateMachine: Entering DefiningCrop state";
 
-		// If crop already exists in sidecar, go directly to loading cropped image.
 		QString cropPath;
 		if (sidecarHasCropOutput(&cropPath) && !cropPath.isEmpty() && QFile::exists(cropPath)) {
 			m_lastDerivedPath = cropPath;
@@ -125,7 +127,6 @@ void WorkflowStateMachine::setupWorkflowOrchestration()
 			return;
 		}
 
-		// Otherwise let UI define crop
 		emit requestDefineCrop();
 	});
 
@@ -133,42 +134,16 @@ void WorkflowStateMachine::setupWorkflowOrchestration()
 		qDebug() << "WorkflowStateMachine: Entering LoadingCropped state";
 
 		if (!m_lastDerivedPath.isEmpty() && QFile::exists(m_lastDerivedPath)) {
-			// MainWindow should open it via requestOpenImage already; else request explicit load
 			return;
 		}
 
 		emit requestLoadCropped();
 	});
 
-	// DefiningLandmarks left as-is for now (rotation/segmentation later)
-	connect(m_definingLandmarks, &QState::entered, this, [this]() {
-		qDebug() << "WorkflowStateMachine: Entering DefiningLandmarks state";
-
-		// Enforce invariant: landmarks must be placed on the cropped image.
-		const QString desiredCrop = croppedImagePathFromSidecar();
-
-		if (!desiredCrop.isEmpty() && QFile::exists(desiredCrop)) {
-			// If we are not already showing the cropped image, switch to it now.
-			// MainWindow will call croppedLoaded() when it opens a path == lastDerivedPath.
-			if (m_lastDerivedPath != desiredCrop) {
-				m_lastDerivedPath = desiredCrop;
-			}
-
-			// If the UI is currently showing source, request opening the crop.
-			// We can't directly query Lightbox current file here, so we always request the crop
-			// and rely on MainWindow open dedup / fast path.
-			emit requestOpenImage(desiredCrop);
-
-			// IMPORTANT: do NOT requestPlaceLandmarks() until we are sure the crop is opened.
-			// MainWindow will emit croppedLoaded() when it opens lastDerivedPath; then we will re-enter
-			// this state only if you transition, so instead we simply queue enabling placement here
-			// after croppedLoaded() by using a connection once in ctor.
-			return;
-		}
-
-		// No crop found: fall back (should not happen in a normal resume-to-landmarks)
-		qWarning() << "DefiningLandmarks entered but no cropped image path found in sidecar";
-		emit requestPlaceLandmarks();
+	connect(m_replacingThreshold, &QState::entered, this, [this]() {
+		qDebug() << "WorkflowStateMachine: Entering ReplacingThreshold state";
+		// Cropped image should already be loaded before entering this state.
+		emit requestReplaceThreshold();
 	});
 
 	connect(m_final, &QFinalState::entered, this, [this]() {
@@ -181,33 +156,32 @@ void WorkflowStateMachine::configureStateProperties()
 {
 	m_idle->assignProperty(this, "canDefineCrop", false);
 	m_idle->assignProperty(this, "canSaveCrop", false);
-	m_idle->assignProperty(this, "canPlaceLandmarks", false);
+	m_idle->assignProperty(this, "canReplaceThreshold", false);
 
 	m_loading->assignProperty(this, "canDefineCrop", false);
 	m_loading->assignProperty(this, "canSaveCrop", false);
-	m_loading->assignProperty(this, "canPlaceLandmarks", false);
+	m_loading->assignProperty(this, "canReplaceThreshold", false);
 
 	m_loadingSidecar->assignProperty(this, "canDefineCrop", false);
 	m_loadingSidecar->assignProperty(this, "canSaveCrop", false);
-	m_loadingSidecar->assignProperty(this, "canPlaceLandmarks", false);
+	m_loadingSidecar->assignProperty(this, "canReplaceThreshold", false);
 
 	m_computingThreshold->assignProperty(this, "canDefineCrop", false);
 	m_computingThreshold->assignProperty(this, "canSaveCrop", false);
-	m_computingThreshold->assignProperty(this, "canPlaceLandmarks", false);
+	m_computingThreshold->assignProperty(this, "canReplaceThreshold", false);
 
 	m_definingCrop->assignProperty(this, "canDefineCrop", true);
 	m_definingCrop->assignProperty(this, "canSaveCrop", true);
-	m_definingCrop->assignProperty(this, "canPlaceLandmarks", false);
+	m_definingCrop->assignProperty(this, "canReplaceThreshold", false);
 
 	m_loadingCropped->assignProperty(this, "canDefineCrop", false);
 	m_loadingCropped->assignProperty(this, "canSaveCrop", false);
-	m_loadingCropped->assignProperty(this, "canPlaceLandmarks", false);
+	m_loadingCropped->assignProperty(this, "canReplaceThreshold", false);
 
-	m_definingLandmarks->assignProperty(this, "canDefineCrop", false);
-	m_definingLandmarks->assignProperty(this, "canSaveCrop", false);
-	m_definingLandmarks->assignProperty(this, "canPlaceLandmarks", true);
+	m_replacingThreshold->assignProperty(this, "canDefineCrop", false);
+	m_replacingThreshold->assignProperty(this, "canSaveCrop", false);
+	m_replacingThreshold->assignProperty(this, "canReplaceThreshold", true);
 }
-
 // Internal setters that emit change signals when Qt property system updates values
 void WorkflowStateMachine::setCanDefineCrop(bool can)
 {
@@ -225,11 +199,11 @@ void WorkflowStateMachine::setCanSaveCrop(bool can)
 	}
 }
 
-void WorkflowStateMachine::setCanPlaceLandmarks(bool can)
+void WorkflowStateMachine::setCanReplaceThreshold(bool can)
 {
-	if (m_canPlaceLandmarks != can) {
-		m_canPlaceLandmarks = can;
-		emit canPlaceLandmarksChanged(can);
+	if (m_canReplaceThreshold != can) {
+		m_canReplaceThreshold = can;
+		emit canReplaceThresholdChanged(can);
 	}
 }
 
@@ -261,7 +235,7 @@ bool WorkflowStateMachine::computeWorkflowActive(State s) const
 		case WorkflowStateMachine::ComputingThreshold:
 		case WorkflowStateMachine::DefiningCrop:
 		case WorkflowStateMachine::LoadingCropped:
-		case WorkflowStateMachine::DefiningLandmarks:
+		case WorkflowStateMachine::ReplacingThreshold:
 		return true;
 		case WorkflowStateMachine::Idle:
 		case WorkflowStateMachine::Completed:
@@ -297,7 +271,7 @@ WorkflowStateMachine::State WorkflowStateMachine::deriveCurrentState() const
 	if (config.contains(m_computingThreshold)) return ComputingThreshold;
 	if (config.contains(m_definingCrop)) return DefiningCrop;
 	if (config.contains(m_loadingCropped)) return LoadingCropped;
-	if (config.contains(m_definingLandmarks)) return DefiningLandmarks;
+	if (config.contains(m_replacingThreshold)) return ReplacingThreshold;
 	if (config.contains(m_final)) return Completed;
 
 	return Idle;
@@ -338,7 +312,7 @@ void WorkflowStateMachine::connectStateChangeNotifications()
 	connectState(m_loading, LoadingImage);
 	connectState(m_definingCrop, DefiningCrop);
 	connectState(m_loadingCropped, LoadingCropped);
-	connectState(m_definingLandmarks, DefiningLandmarks);
+	connectState(m_replacingThreshold, ReplacingThreshold);
 	connectState(m_loadingSidecar, LoadingSidecar);
 	connectState(m_computingThreshold, ComputingThreshold);
 
@@ -359,7 +333,7 @@ QAbstractState* WorkflowStateMachine::stateForEnum(State s) const
 	case ComputingThreshold:   return m_computingThreshold;
 	case DefiningCrop:         return m_definingCrop;
 	case LoadingCropped:       return m_loadingCropped;
-	case DefiningLandmarks:    return m_definingLandmarks;
+	case ReplacingThreshold:   return m_replacingThreshold;
 	case Completed:            return m_final;
 	case ErrorState:           return m_idle;
 	default:                   return nullptr;
@@ -375,7 +349,7 @@ QString WorkflowStateMachine::stateToString(State s)
 	case ComputingThreshold: return QStringLiteral("ComputingThreshold");
 	case DefiningCrop: return QStringLiteral("DefiningCrop");
 	case LoadingCropped: return QStringLiteral("LoadingCropped");
-	case DefiningLandmarks: return QStringLiteral("DefiningLandmarks");
+	case ReplacingThreshold: return QStringLiteral("ReplacingThreshold");
 	case Completed: return QStringLiteral("Completed");
 	case ErrorState: return QStringLiteral("ErrorState");
 	default: return QStringLiteral("Unknown");
@@ -474,7 +448,7 @@ QJsonObject WorkflowStateMachine::serializeWorkflowState() const
 	QJsonObject capabilities;
 	capabilities.insert(QStringLiteral("canDefineCrop"), m_canDefineCrop);
 	capabilities.insert(QStringLiteral("canSaveCrop"), m_canSaveCrop);
-	capabilities.insert(QStringLiteral("canPlaceLandmarks"), m_canPlaceLandmarks);
+	capabilities.insert(QStringLiteral("canReplaceThreshold"), m_canReplaceThreshold);
 	obj.insert(QStringLiteral("capabilities"), capabilities);
 
 	obj.insert(QStringLiteral("savedAt"), QDateTime::currentDateTime().toString(Qt::ISODate));
@@ -504,7 +478,7 @@ bool WorkflowStateMachine::deserializeWorkflowState(const QJsonObject& stateObj)
 		QJsonObject caps = stateObj.value(QStringLiteral("capabilities")).toObject();
 		setCanDefineCrop(caps.value(QStringLiteral("canDefineCrop")).toBool());
 		setCanSaveCrop(caps.value(QStringLiteral("canSaveCrop")).toBool());
-		setCanPlaceLandmarks(caps.value(QStringLiteral("canPlaceLandmarks")).toBool());
+		setCanReplaceThreshold(caps.value(QStringLiteral("canReplaceThreshold")).toBool());
 	}
 
 	int stateInt = stateObj.value(QStringLiteral("currentState")).toInt();
@@ -595,67 +569,49 @@ bool WorkflowStateMachine::readSidecarForInput()
 	m_derivedFrom.clear();
 	m_lastDerivedPath.clear();
 
-	if (m_inputFile.isEmpty()) return false;
+	if (m_inputFile.isEmpty()) {
+		return false;
+	}
 
-	// Use canonical sidecar location logic from JsonUtils (AppData/projects/<base>.json)
 	QJsonObject side = JsonUtils::readJsonSidecar(m_inputFile);
 	if (side.isEmpty()) {
-		// No sidecar found for this image -> not derived
 		m_isDerived = false;
 		return false;
 	}
 
-	// Store sidecar in state machine
 	m_sidecar = side;
 
-	// Emit threshold presence/state for the newly-read sidecar
-	auto [present, val] = parseThreshold(m_sidecar);
-	emit thresholdChanged(present, val);
-
-	// Two canonical cases:
-	// 1) Sidecar that describes a derived image: JsonUtils::writeCropSidecar writes "source" at top-level.
-	//    In this case the sidecar file is associated with the derived image and contains "source".
-	// 2) Sidecar that is a project for a source image: no top-level "source" key (or it may carry operations).
-	//
-	// Use presence of "source" to decide derived vs non-derived.
-	if (m_sidecar.contains(QStringLiteral("source")) && m_sidecar.value(QStringLiteral("source")).isString()) {
-		m_isDerived = true;
-		m_derivedFrom = m_sidecar.value(QStringLiteral("source")).toString();
-		// record that this sidecar belongs to the current input file
-		m_lastDerivedPath = m_inputFile;
+	// Emit threshold presence/state from canonical+fallback parsing.
+	{
+		const auto [present, val] = parseThreshold(m_sidecar);
+		emit thresholdChanged(present, val);
 	}
-	else {
-		// Not a derived-image sidecar; treat as project sidecar for the source image.
-		m_isDerived = false;
 
-		// Optionally record lastDerivedPath if project's operations reference derived outputs.
-		// Look for operations[].derived equal to some known value (not required for derived detection).
-		if (m_sidecar.contains(QStringLiteral("operations")) && m_sidecar.value(QStringLiteral("operations")).isArray()) {
-			QJsonArray ops = m_sidecar.value(QStringLiteral("operations")).toArray();
-			for (const QJsonValue& v : ops) {
-				if (!v.isObject()) continue;
-				QJsonObject op = v.toObject();
-				if (op.contains(QStringLiteral("derived")) && op.value(QStringLiteral("derived")).isString()) {
-					// remember last derived path referenced (useful bookkeeping)
-					m_lastDerivedPath = op.value(QStringLiteral("derived")).toString();
-					// do NOT mark m_isDerived true because the current input is the project/source image
-					// (we only mark derived when the sidecar itself indicates "source").>
-				}
-			}
+	// Determine source and crop output from sidecar content.
+	const QString sourcePath = m_sidecar.value(QStringLiteral("source")).toString();
+	QString cropPath;
+	if (sidecarHasCropOutput(&cropPath) && !cropPath.isEmpty()) {
+		m_lastDerivedPath = cropPath;
+	}
+
+	// Infer derived status by comparing current input path to crop output path.
+	if (!cropPath.isEmpty()) {
+		const QString inputAbs = QFileInfo(m_inputFile).absoluteFilePath();
+		const QString cropAbs = QFileInfo(cropPath).absoluteFilePath();
+		if (!inputAbs.isEmpty() && inputAbs == cropAbs) {
+			m_isDerived = true;
+			m_derivedFrom = sourcePath;
 		}
 	}
 
-	// Optionally notify listeners that a project-sidecar is present for this image.
-	// Keep decision conservative: emit projectLoaded only when this sidecar looks like a project (i.e., not "source")
+	// Treat as project-sidecar when current input is not the derived crop output.
 	if (!m_isDerived) {
-		// Emit projectLoaded with the canonical sidecar path so MainWindow can add to recents.
 		const QString sidecarPath = JsonUtils::sidecarPathForImage(m_inputFile);
 		emit projectLoaded(sidecarPath);
 	}
 
 	return true;
 }
-
 bool WorkflowStateMachine::appendHistoryToSidecar(const QString& imagePath, const QString& stepName, const QJsonObject& params)
 {
 	if (imagePath.isEmpty() || stepName.isEmpty()) return false;
@@ -820,13 +776,18 @@ bool WorkflowStateMachine::appendHistoryToSidecar(const QString& imagePath, cons
 
 bool WorkflowStateMachine::writeCropSidecarForOutput(const QString& outPath, const QJsonObject& params)
 {
-	if (outPath.isEmpty()) return false;
-	if (m_inputFile.isEmpty()) return false;
+	if (outPath.isEmpty()) {
+		return false;
+	}
+	if (m_inputFile.isEmpty()) {
+		return false;
+	}
 
 	QJsonObject side = JsonUtils::readJsonSidecar(m_inputFile);
-	if (side.isEmpty()) return false;
+	if (side.isEmpty()) {
+		return false;
+	}
 
-	// Expect CropExporter params to contain crop_extents array
 	const QJsonArray ext = params.value(QStringLiteral("crop_extents")).toArray();
 	if (ext.size() != 6) {
 		emit sidecarWriteFailed(outPath, QStringLiteral("Missing/invalid crop_extents"));
@@ -844,7 +805,7 @@ bool WorkflowStateMachine::writeCropSidecarForOutput(const QString& outPath, con
 	QJsonObject completed = workflow.value(QStringLiteral("completed")).toObject();
 	completed.insert(QStringLiteral("crop"), true);
 	workflow.insert(QStringLiteral("completed"), completed);
-	workflow.insert(QStringLiteral("currentStep"), QStringLiteral("landmarks"));
+	workflow.insert(QStringLiteral("currentStep"), QStringLiteral("replace_threshold"));
 	side.insert(QStringLiteral("workflow"), workflow);
 
 	side.insert(QStringLiteral("updated"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
@@ -854,11 +815,9 @@ bool WorkflowStateMachine::writeCropSidecarForOutput(const QString& outPath, con
 		return false;
 	}
 
-	// Update internal provenance
 	m_lastDerivedPath = outPath;
 	m_isDerived = true;
 	m_derivedFrom = QFileInfo(m_inputFile).absoluteFilePath();
-
 	m_sidecar = JsonUtils::readJsonSidecar(m_inputFile);
 
 	emit sidecarWritten(JsonUtils::sidecarPathForImage(m_inputFile));
@@ -867,62 +826,75 @@ bool WorkflowStateMachine::writeCropSidecarForOutput(const QString& outPath, con
 
 std::pair<bool, double> WorkflowStateMachine::parseThreshold(const QJsonObject& side) const
 {
-	if (!side.contains(QStringLiteral("operations")) || !side.value(QStringLiteral("operations")).isArray())
-		return { false, std::numeric_limits<double>::quiet_NaN() };
-	QJsonArray ops = side.value(QStringLiteral("operations")).toArray();
-	for (const QJsonValue& v : ops) {
-		if (!v.isObject()) continue;
-		QJsonObject op = v.toObject();
-		QJsonObject params = op.value(QStringLiteral("parameters")).toObject();
-		if (params.contains(QStringLiteral("threshold"))) {
-			const QJsonValue tv = params.value(QStringLiteral("threshold"));
-			if (tv.isDouble()) return { true, tv.toDouble() };
-			if (tv.isString()) {
-				bool ok = false;
-				double val = tv.toString().toDouble(&ok);
-				if (ok) return { true, val };
+	// 1) Canonical threshold object first.
+	const QJsonObject thr = side.value(QStringLiteral("threshold")).toObject();
+	if (!thr.isEmpty()) {
+		const QJsonValue v = thr.value(QStringLiteral("value"));
+		if (v.isDouble()) {
+			return { true, v.toDouble() };
+		}
+		if (v.isString()) {
+			bool ok = false;
+			const double dv = v.toString().toDouble(&ok);
+			if (ok) {
+				return { true, dv };
 			}
 		}
 	}
+
+	// 2) Backward-compatible fallback to operations[].parameters.threshold
+	if (!side.contains(QStringLiteral("operations")) || !side.value(QStringLiteral("operations")).isArray()) {
+		return { false, std::numeric_limits<double>::quiet_NaN() };
+	}
+
+	const QJsonArray ops = side.value(QStringLiteral("operations")).toArray();
+	for (const QJsonValue& v : ops) {
+		if (!v.isObject()) {
+			continue;
+		}
+		const QJsonObject op = v.toObject();
+		const QJsonObject params = op.value(QStringLiteral("parameters")).toObject();
+		if (!params.contains(QStringLiteral("threshold"))) {
+			continue;
+		}
+
+		const QJsonValue tv = params.value(QStringLiteral("threshold"));
+		if (tv.isDouble()) {
+			return { true, tv.toDouble() };
+		}
+		if (tv.isString()) {
+			bool ok = false;
+			const double dv = tv.toString().toDouble(&ok);
+			if (ok) {
+				return { true, dv };
+			}
+		}
+	}
+
 	return { false, std::numeric_limits<double>::quiet_NaN() };
 }
 
 bool WorkflowStateMachine::sidecarHasThreshold() const
 {
-	// If no input file known, nothing to check
-	if (m_inputFile.isEmpty()) return false;
+	if (m_inputFile.isEmpty()) {
+		return false;
+	}
 
-	// Prefer cached in-memory sidecar if present, otherwise read the canonical sidecar on disk.
 	QJsonObject side;
 	if (!m_sidecar.isEmpty()) {
 		side = m_sidecar;
-
 	}
 	else {
 		side = JsonUtils::readJsonSidecar(m_inputFile);
-
 	}
 
-	if (side.isEmpty()) return false;
-
-	if (!side.contains(QStringLiteral("operations")) || !side.value(QStringLiteral("operations")).isArray())
+	if (side.isEmpty()) {
 		return false;
-
-	QJsonArray ops = side.value(QStringLiteral("operations")).toArray();
-	for (const QJsonValue& v : ops) {
-		if (!v.isObject()) continue;
-		QJsonObject op = v.toObject();
-		// Check explicit name + threshold param
-		const QString name = op.value(QStringLiteral("name")).toString().toLower();
-		const QJsonObject params = op.value(QStringLiteral("parameters")).toObject();
-		if (name == QStringLiteral("compute_threshold") && params.contains(QStringLiteral("threshold")))
-			return true;
-		// Accept any op that records a 'threshold' parameter (conservative)
-		if (params.contains(QStringLiteral("threshold")))
-			return true;
-
 	}
-	return false;
+
+	const auto [present, _] = parseThreshold(side);
+	Q_UNUSED(_);
+	return present;
 }
 
 bool WorkflowStateMachine::ensureSidecarForSource()
@@ -1020,10 +992,14 @@ bool WorkflowStateMachine::sidecarHasCropOutput(QString* outPath) const
 
 bool WorkflowStateMachine::writeThresholdToSidecar(double val, const QString& method)
 {
-	if (m_inputFile.isEmpty()) return false;
+	if (m_inputFile.isEmpty()) {
+		return false;
+	}
 
 	QJsonObject side = JsonUtils::readJsonSidecar(m_inputFile);
-	if (side.isEmpty()) return false;
+	if (side.isEmpty()) {
+		return false;
+	}
 
 	QJsonObject thr;
 	thr.insert(QStringLiteral("value"), val);
@@ -1036,12 +1012,23 @@ bool WorkflowStateMachine::writeThresholdToSidecar(double val, const QString& me
 	QJsonObject completed = workflow.value(QStringLiteral("completed")).toObject();
 	completed.insert(QStringLiteral("threshold"), true);
 	workflow.insert(QStringLiteral("completed"), completed);
-	workflow.insert(QStringLiteral("currentStep"), QStringLiteral("crop"));
-	side.insert(QStringLiteral("workflow"), workflow);
 
+	// Initial threshold compute => next stage is crop.
+	// Threshold replacement on cropped image => workflow completed.
+	const State s = currentState();
+	if (s == WorkflowStateMachine::ReplacingThreshold) {
+		workflow.insert(QStringLiteral("currentStep"), QStringLiteral("completed"));
+	}
+	else {
+		workflow.insert(QStringLiteral("currentStep"), QStringLiteral("crop"));
+	}
+
+	side.insert(QStringLiteral("workflow"), workflow);
 	side.insert(QStringLiteral("updated"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
 
-	if (!JsonUtils::writeJsonSidecar(m_inputFile, side)) return false;
+	if (!JsonUtils::writeJsonSidecar(m_inputFile, side)) {
+		return false;
+	}
 
 	m_sidecar = JsonUtils::readJsonSidecar(m_inputFile);
 	return !m_sidecar.isEmpty();
@@ -1055,7 +1042,18 @@ void WorkflowStateMachine::onThresholdComputed(double threshold, const QString& 
 	}
 
 	emit thresholdChanged(true, threshold);
-	emit thresholdReady();
+
+	const State s = currentState();
+	if (s == WorkflowStateMachine::ComputingThreshold) {
+		emit thresholdReady();
+	}
+	else if (s == WorkflowStateMachine::ReplacingThreshold) {
+		emit thresholdReplaced();
+	}
+	else {
+		// Fallback for out-of-band calls
+		emit thresholdReady();
+	}
 }
 
 QString WorkflowStateMachine::croppedImagePathFromSidecar() const

@@ -23,7 +23,7 @@ class WorkflowStateMachine : public QObject
 	// Make these writable so QState::assignProperty reliably updates + triggers your setters.
 	Q_PROPERTY(bool canDefineCrop READ canDefineCrop WRITE setCanDefineCrop NOTIFY canDefineCropChanged)
 	Q_PROPERTY(bool canSaveCrop READ canSaveCrop WRITE setCanSaveCrop NOTIFY canSaveCropChanged)
-	Q_PROPERTY(bool canPlaceLandmarks READ canPlaceLandmarks WRITE setCanPlaceLandmarks NOTIFY canPlaceLandmarksChanged)
+	Q_PROPERTY(bool canReplaceThreshold READ canReplaceThreshold WRITE setCanReplaceThreshold NOTIFY canReplaceThresholdChanged)
 
 public:
 	enum State {
@@ -33,7 +33,7 @@ public:
 		ComputingThreshold,
 		DefiningCrop,
 		LoadingCropped,
-		DefiningLandmarks,
+		ReplacingThreshold,
 		Completed,
 		ErrorState
 	};
@@ -58,7 +58,7 @@ public:
 	// State-dependent capability accessors (managed by assignProperty)
 	bool canDefineCrop() const { return m_canDefineCrop; }
 	bool canSaveCrop() const { return m_canSaveCrop; }
-	bool canPlaceLandmarks() const { return m_canPlaceLandmarks; }
+	bool canReplaceThreshold() const { return m_canReplaceThreshold; }
 
 	// Sidecar / provenance helpers (owned by state machine)
 	bool readSidecarForInput();
@@ -100,7 +100,7 @@ signals:
 	void cropDefined();
 	void cropApplied();
 	void croppedLoaded();
-	void landmarksPlaced();
+	void thresholdReplaced();
 	void thresholdComputed();
 	void saved();
 	void failed(const QString& reason);
@@ -111,10 +111,8 @@ signals:
 	void requestDefineCrop();
 	void requestSaveCropped();
 	void requestLoadCropped();
-	void requestPlaceLandmarks();
+	void requestReplaceThreshold();
 	void requestComputeThreshold();
-	void requestLoadLandmarks(const QJsonObject& landmarksData);
-	void requestSaveLandmarks(const QJsonArray& landmarks);
 
 	// Terminal notifications
 	void finished();
@@ -132,7 +130,7 @@ signals:
 	// State-dependent capability change signals
 	void canDefineCropChanged(bool can);
 	void canSaveCropChanged(bool can);
-	void canPlaceLandmarksChanged(bool can);
+	void canReplaceThresholdChanged(bool can);
 
 	// Sidecar persistence notifications (emitted when async write completes or fails)
 	void sidecarWritten(const QString& sidecarPath);
@@ -166,7 +164,7 @@ private:
 	QState* m_loading = nullptr;
 	QState* m_definingCrop = nullptr;
 	QState* m_loadingCropped = nullptr;
-	QState* m_definingLandmarks = nullptr;
+	QState* m_replacingThreshold = nullptr;
 	QFinalState* m_final = nullptr;
 
 	// Deep history state for workflow resumption
@@ -185,7 +183,7 @@ private:
 	// State-dependent capabilities (managed by QState::assignProperty)
 	bool m_canDefineCrop = false;
 	bool m_canSaveCrop = false;
-	bool m_canPlaceLandmarks = false;
+	bool m_canReplaceThreshold = false;
 
 	// states
 	QState* m_loadingSidecar = nullptr;
@@ -217,7 +215,7 @@ private:
 	// Internal setters for state-dependent capabilities (called by Qt property system)
 	void setCanDefineCrop(bool can);
 	void setCanSaveCrop(bool can);
-	void setCanPlaceLandmarks(bool can);
+	void setCanReplaceThreshold(bool can);
 
 	// State persistence
 	QJsonObject serializeWorkflowState() const;
@@ -228,5 +226,4 @@ private:
 	bool computeWorkflowActive(State s) const;
 
 	QString croppedImagePathFromSidecar() const;
-
 };

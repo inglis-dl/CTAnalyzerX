@@ -54,6 +54,7 @@ private slots:
 	void showProgressValue(int percent);
 	void showProgressStart();
 	void showProgressEnd();
+	void onThresholdSaveRequested(double threshold);
 
 	void resumeProjectWorkflow(const QString& projectPath);
 
@@ -69,9 +70,6 @@ private slots:
 	//void onProcessingRequestDefineCrop();
 	void onProcessingRequestSaveCropped();
 	void onProcessingRequestLoadCropped();
-	//void onProcessingRequestPlaceLandmarks();
-	void onProcessingRequestSaveLandmarks(const QJsonArray& landmarks);
-	void onProcessingRequestLoadLandmarks(const QJsonObject& landmarksData);
 	void onProcessingRequestComputeThreshold();
 
 private:
