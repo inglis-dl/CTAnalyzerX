@@ -14,6 +14,7 @@ target_sources(CTAXCore
     src/VtkQtOutputWindow.cpp
     src/Logger.cpp
     src/OtsuThresholdWorker.cpp
+    src/VoxelLineIterator.cpp
   PUBLIC
     include/ImageResliceHelper.h
     include/vtkImageOrthoPlanes.h
@@ -27,6 +28,7 @@ target_sources(CTAXCore
     include/VtkQtOutputWindow.h
     include/Logger.h
     include/OtsuThresholdWorker.h
+    include/VoxelLineIterator.h
 )
 
 target_include_directories(CTAXCore
