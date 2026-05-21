@@ -143,6 +143,7 @@ for (auto v : VoxelLine(image, p1, p2, stop))
 */
 
 #include <vtkVector.h>
+#include <vtkWeakPointer.h>
 
 #include <cmath>
 #include <functional>
@@ -152,7 +153,6 @@ class vtkImageData;
 using Vec3i = vtkVector3i;
 using Vec3d = vtkVector3d;
 using StopPredicate = std::function<bool(const Vec3i&)>;
-
 
 class VoxelLineIterator
 {
@@ -205,7 +205,7 @@ private:
     bool finished = false;
     const int* dims = nullptr;
 
-    vtkImageData* image = nullptr;
+    vtkWeakPointer<vtkImageData> image;
 
     enum Axis { X, Y, Z } dominant;
 

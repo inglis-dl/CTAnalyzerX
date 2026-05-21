@@ -4,6 +4,9 @@
 #include <vtkImageData.h>
 #include <vtkPointData.h>
 #include <vtkVectorOperators.h>
+
+#include <algorithm>
+#include <limits>
  
 vtkVector3d VoxelLineIterator::ToIndex(vtkImageData* image, const vtkVector3d& p)
 {
@@ -21,8 +24,14 @@ VoxelLineIterator::VoxelLineIterator(
     const Vec3d& p1_world,
     const Vec3d& p2_world,
     StopPredicate stop)
-    : image(img), stopFunc(stop)
+    : image(img), stopFunc(std::move(stop))
 {
+    if (!image) {
+        finished = true;
+        dims = nullptr;
+        return;
+    }
+
     dims = image->GetDimensions();
 
     Vec3d p1 = ToIndex(image, p1_world);
@@ -87,14 +96,17 @@ VoxelLineIterator::VoxelLineIterator(
         image,
         Vec3d(p1_world[0], p1_world[1], p1_world[2]),
         Vec3d(p2_world[0], p2_world[1], p2_world[2]),
-        stop)
+        std::move(stop))
 {
 }
 
 // --- increment ---
 VoxelLineIterator& VoxelLineIterator::operator++()
 {
-    if (finished) return *this;
+    if (finished || !image) {
+        finished = true;
+        return *this;
+    }
 
     if (vcurrent == vend || stepCount >= maxSteps)
     {
@@ -107,30 +119,24 @@ VoxelLineIterator& VoxelLineIterator::operator++()
         case X:
         if (err1 > 0) { vcurrent[1] += sy; err1 -= 2 * dx; }
         if (err2 > 0) { vcurrent[2] += sz; err2 -= 2 * dx; }
-
         err1 += 2 * dy;
         err2 += 2 * dz;
-
         vcurrent[0] += sx;
         break;
 
         case Y:
         if (err1 > 0) { vcurrent[0] += sx; err1 -= 2 * dy; }
         if (err2 > 0) { vcurrent[2] += sz; err2 -= 2 * dy; }
-
         err1 += 2 * dx;
         err2 += 2 * dz;
-
         vcurrent[1] += sy;
         break;
 
         case Z:
         if (err1 > 0) { vcurrent[0] += sx; err1 -= 2 * dz; }
         if (err2 > 0) { vcurrent[1] += sy; err2 -= 2 * dz; }
-
         err1 += 2 * dx;
         err2 += 2 * dy;
-
         vcurrent[2] += sz;
         break;
     }
@@ -157,7 +163,17 @@ VoxelLineIterator& VoxelLineIterator::operator++()
 
 bool VoxelLineIterator::operator==(const VoxelLineIterator& other) const
 {
-    return finished == other.finished;
+    if (finished != other.finished) {
+        return false;
+    }
+
+    if (finished) {
+        return true;
+    }
+
+    return image == other.image &&
+        vcurrent == other.vcurrent &&
+        vend == other.vend;
 }
 
 bool VoxelLineIterator::operator!=(const VoxelLineIterator& other) const
@@ -167,13 +183,17 @@ bool VoxelLineIterator::operator!=(const VoxelLineIterator& other) const
 
 VoxelLineIterator VoxelLineIterator::End()
 {
-    VoxelLineIterator it(nullptr, Vec3d(0,0,0), Vec3d(0,0,0));
+    VoxelLineIterator it(nullptr, Vec3d(0, 0, 0), Vec3d(0, 0, 0));
     it.finished = true;
     return it;
 }
 
 bool VoxelLineIterator::InBounds() const
 {
+    if (!image || !dims) {
+        return false;
+    }
+
     return vcurrent[0] >= 0 &&
         vcurrent[1] >= 0 &&
         vcurrent[2] >= 0 &&
@@ -192,20 +212,12 @@ bool VoxelLineIterator::IsInside(const double& threshold) const
     return InBounds() && IsAbove(threshold);
 }
 
-bool VoxelLineIterator::AdvanceToFirst(const double& threshold)
-{
-    while (*this != End())
-    {
-        if (IsInside(threshold))
-            return true;
-
-        ++(*this);
-    }
-    return false;
-}
-
 vtkVector3d VoxelLineIterator::ToWorld() const
 {
+    if (!image) {
+        return vtkVector3d(0.0, 0.0, 0.0);
+    }
+
     const double* origin = image->GetOrigin();
     const double* spacing = image->GetSpacing();
 
@@ -217,6 +229,10 @@ vtkVector3d VoxelLineIterator::ToWorld() const
 
 vtkVector3d VoxelLineIterator::ToIndex() const
 {
+    if (!image) {
+        return vtkVector3d(0.0, 0.0, 0.0);
+    }
+
     const double* origin = image->GetOrigin();
     const double* spacing = image->GetSpacing();
 
@@ -228,26 +244,53 @@ vtkVector3d VoxelLineIterator::ToIndex() const
 
 vtkIdType VoxelLineIterator::ToFlatIndex() const
 {
+    if (!dims) {
+        return 0;
+    }
+
     return static_cast<vtkIdType>(vcurrent[2]) * dims[1] * dims[0] +
         static_cast<vtkIdType>(vcurrent[1]) * dims[0] +
         vcurrent[0];
 }
-
-double VoxelLineIterator::Scalar() const
-{
-    auto scalars = image->GetPointData()->GetScalars();
-    return scalars->GetTuple1(ToFlatIndex());
-}\
-
 
 double VoxelLine::Length() const
 {
     return (vend - vstart).Norm();
 }
 
+bool VoxelLineIterator::AdvanceToFirst(const double& threshold)
+{
+    while (!finished)
+    {
+        if (IsInside(threshold)) {
+            return true;
+        }
+
+        ++(*this);
+    }
+
+    return false;
+}
+
+double VoxelLineIterator::Scalar() const
+{
+    if (!image || !dims) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    auto* scalars = image->GetPointData() ? image->GetPointData()->GetScalars() : nullptr;
+    if (!scalars) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    return scalars->GetTuple1(ToFlatIndex());
+}
+
 Vec3d VoxelLine::Direction() const
 {
     Vec3d d = vend - vstart;
-    d.Normalize();
+    if (d.Normalize() <= 0.0) {
+        return Vec3d(0.0, 0.0, 0.0);
+    }
     return d;
 }
