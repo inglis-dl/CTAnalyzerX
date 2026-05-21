@@ -44,8 +44,8 @@ For each voxel along the line:
 
   1. The iterator computes voxel indices (x,y,z)
   2. The stop predicate is evaluated
-  3. If TRUE → iteration terminates immediately
-  4. If FALSE → voxel is yielded and iteration continues
+  3. If TRUE -> iteration terminates immediately
+  4. If FALSE -> voxel is yielded and iteration continues
 
 This avoids unnecessary traversal and improves performance.
 
@@ -149,18 +149,23 @@ for (auto v : VoxelLine(image, p1, p2, stop))
 
 class vtkImageData;
 
+using Vec3i = vtkVector3i;
+using Vec3d = vtkVector3d;
+using StopPredicate = std::function<bool(const Vec3i&)>;
+
+
 class VoxelLineIterator
 {
 public:
-    using Vec3i = vtkVector3i;
-    using Vec3d = vtkVector3d;
-
-    using StopPredicate = std::function<bool(const Vec3i&)>;
-
     VoxelLineIterator(vtkImageData* image,
                       const Vec3d& p1_world,
                       const Vec3d& p2_world,
                       StopPredicate stop = nullptr);
+
+    VoxelLineIterator(vtkImageData* image,
+                      const std::array<double, 3>& p1_world,
+                      const std::array<double, 3>& p2_world,
+                      StopPredicate stop = nullptr);    
 
     // STL-style iterator
     const Vec3i& operator*() const { return vcurrent; }
@@ -210,9 +215,7 @@ private:
 class VoxelLine
 {
 public:
-    using Vec3d = vtkVector3d;
-    using StopPredicate = VoxelLineIterator::StopPredicate;
-
+    // --- Constructor (vtkVector inputs) ---
     VoxelLine(vtkImageData* img,
               const Vec3d& p1,
               const Vec3d& p2,
@@ -221,18 +224,41 @@ public:
     {
     }
 
+    // --- Constructor (std::array inputs) ---
+    VoxelLine(vtkImageData* img,
+              const std::array<double, 3>& p1,
+              const std::array<double, 3>& p2,
+              StopPredicate stop = nullptr)
+        : VoxelLine(img,
+                    Vec3d(p1[0], p1[1], p1[2]),
+                    Vec3d(p2[0], p2[1], p2[2]),
+                    stop)
+    {
+    }
+
+    // --- STL-style begin() ---
     VoxelLineIterator begin() const
     {
         return VoxelLineIterator(image, vstart, vend, stopFunc);
     }
 
+    // --- STL-style end() ---
     VoxelLineIterator end() const
     {
         return VoxelLineIterator::End();
     }
 
+    double Length() const;
+
+    Vec3d Direction() const;
+
+    const Vec3d& Start() const { return vstart; }
+
+    const Vec3d& End() const { return vend; }
+
 private:
-    vtkImageData* image;
-    Vec3d vstart, vend;
+    vtkImageData* image = nullptr;
+    Vec3d vstart;
+    Vec3d vend;
     StopPredicate stopFunc;
 };

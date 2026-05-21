@@ -78,6 +78,19 @@ VoxelLineIterator::VoxelLineIterator(
     finished = false;
 }
 
+VoxelLineIterator::VoxelLineIterator(
+    vtkImageData* image,
+    const std::array<double, 3>& p1_world,
+    const std::array<double, 3>& p2_world,
+    StopPredicate stop)
+    : VoxelLineIterator(
+        image,
+        Vec3d(p1_world[0], p1_world[1], p1_world[2]),
+        Vec3d(p2_world[0], p2_world[1], p2_world[2]),
+        stop)
+{
+}
+
 // --- increment ---
 VoxelLineIterator& VoxelLineIterator::operator++()
 {
@@ -154,7 +167,7 @@ bool VoxelLineIterator::operator!=(const VoxelLineIterator& other) const
 
 VoxelLineIterator VoxelLineIterator::End()
 {
-    VoxelLineIterator it(nullptr, { 0,0,0 }, { 0,0,0 });
+    VoxelLineIterator it(nullptr, Vec3d(0,0,0), Vec3d(0,0,0));
     it.finished = true;
     return it;
 }
@@ -224,4 +237,17 @@ double VoxelLineIterator::Scalar() const
 {
     auto scalars = image->GetPointData()->GetScalars();
     return scalars->GetTuple1(ToFlatIndex());
+}\
+
+
+double VoxelLine::Length() const
+{
+    return (vend - vstart).Norm();
+}
+
+Vec3d VoxelLine::Direction() const
+{
+    Vec3d d = vend - vstart;
+    d.Normalize();
+    return d;
 }
