@@ -1,4 +1,5 @@
 ﻿#include "ProcessHelpers.h"
+#include "VoxelLineIterator.h"
 
 #include <QDebug>
 #include <QFile>
@@ -23,8 +24,11 @@
 #include <vtkCellArray.h>
 #include <vtkDataArray.h>
 #include <vtkDiscreteFlyingEdges3D.h>
+#include <vtkImageContinuousDilate3D.h>
 #include <vtkImageData.h>
+#include <vtkImageGaussianSmooth.h>
 #include <vtkImageShiftScale.h>
+#include <vtkImageThresholdConnectivity.h>
 #include <vtkLine.h>
 #include <vtkMath.h>
 #include <vtkMatrix3x3.h>
@@ -35,12 +39,32 @@
 #include <vtkTextProperty.h>
 #include <vtkThreshold.h>
 #include <vtkUnsignedCharArray.h>
-#include <vtkImageContinuousDilate3D.h>
-#include <vtkImageGaussianSmooth.h>
-#include <vtkImageThresholdConnectivity.h>
 
 namespace ProcessHelpers
 {
+	namespace
+	{
+		Vec3 ToVec3(const double v[3])
+		{
+			return Vec3(v[0], v[1], v[2]);
+		}
+
+		void ToArray(const Vec3& v, double out[3])
+		{
+			out[0] = v.GetX();
+			out[1] = v.GetY();
+			out[2] = v.GetZ();
+		}
+	}
+
+	vtkIdType flatten(const int& ix, const int& iy, const int& iz, const int dims[3])
+	{
+		return
+			static_cast<vtkIdType>(iz) * dims[1] * dims[0] +
+			static_cast<vtkIdType>(iy) * dims[0] +
+			static_cast<vtkIdType>(ix);
+	}
+
 	// -----------------------------------------------------------------------
 	// JSON / sidecar I/O
 	// -----------------------------------------------------------------------
@@ -118,7 +142,7 @@ namespace ProcessHelpers
 		return std::sqrt(std::max(variance, 0.0));
 	}
 
-	QJsonObject computeScalarThresholdStats(vtkImageData* image, double threshold)
+	QJsonObject computeScalarThresholdStats(vtkImageData* image, const double& threshold)
 	{
 		QJsonObject result;
 		if (!image)
@@ -248,7 +272,7 @@ namespace ProcessHelpers
 	// PCA
 	// -----------------------------------------------------------------------
 
-	bool computePca(vtkImageData* image, double threshold,
+	bool computePca(vtkImageData* image, const double& threshold,
 					PcaResult& result,
 					const std::function<void(int)>& progressCb)
 	{
@@ -263,11 +287,9 @@ namespace ProcessHelpers
 		if (!scalars)
 			return false;
 
-		// Report 0 % at the start of the first pass.
 		if (progressCb) progressCb(0);
 
-		// --- Pass 1: centroid and count ---
-		double sumX = 0.0, sumY = 0.0, sumZ = 0.0;
+		Vec3 sum(0.0);
 		vtkIdType count = 0;
 
 		for (int k = 0; k < dims[2]; ++k)
@@ -276,25 +298,20 @@ namespace ProcessHelpers
 			{
 				for (int i = 0; i < dims[0]; ++i)
 				{
-					const vtkIdType idx = static_cast<vtkIdType>(k) * dims[1] * dims[0]
-						+ static_cast<vtkIdType>(j) * dims[0]
-						+ i;
+					const vtkIdType idx = flatten(i, j, k, dims);
 					if (scalars->GetTuple1(idx) < threshold)
 						continue;
 
-					const double wx = origin[0] + i * spacing[0];
-					const double wy = origin[1] + j * spacing[1];
-					const double wz = origin[2] + k * spacing[2];
+					sum += Vec3(
+						origin[0] + i * spacing[0],
+						origin[1] + j * spacing[1],
+						origin[2] + k * spacing[2]);
 
-					sumX += wx;
-					sumY += wy;
-					sumZ += wz;
 					++count;
 				}
 			}
 		}
 
-		// Pass 1 complete: 40 %
 		if (progressCb) progressCb(40);
 
 		if (count < 3)
@@ -304,22 +321,18 @@ namespace ProcessHelpers
 			return false;
 		}
 
-		const double n = static_cast<double>(count);
-		result.centroid[0] = sumX / n;
-		result.centroid[1] = sumY / n;
-		result.centroid[2] = sumZ / n;
+		const double invCount = 1.0 / static_cast<double>(count);
+		const Vec3 centroid = sum * invCount;
+		result.centroid[0] = centroid.GetX();
+		result.centroid[1] = centroid.GetY();
+		result.centroid[2] = centroid.GetZ();
 
-		// --- Pass 2: 3x3 covariance (upper-triangle, population formula) ---
 		double c00 = 0.0, c01 = 0.0, c02 = 0.0;
 		double c11 = 0.0, c12 = 0.0;
 		double c22 = 0.0;
 
-		double bbMin[3] = { std::numeric_limits<double>::max(),
-							std::numeric_limits<double>::max(),
-							std::numeric_limits<double>::max() };
-		double bbMax[3] = { std::numeric_limits<double>::lowest(),
-							std::numeric_limits<double>::lowest(),
-							std::numeric_limits<double>::lowest() };
+		Vec3 bbMin(std::numeric_limits<double>::max());
+		Vec3 bbMax(std::numeric_limits<double>::lowest());
 
 		for (int k = 0; k < dims[2]; ++k)
 		{
@@ -327,36 +340,36 @@ namespace ProcessHelpers
 			{
 				for (int i = 0; i < dims[0]; ++i)
 				{
-					const vtkIdType idx = static_cast<vtkIdType>(k) * dims[1] * dims[0]
-						+ static_cast<vtkIdType>(j) * dims[0]
-						+ i;
+					const vtkIdType idx = flatten(i, j, k, dims);
 					if (scalars->GetTuple1(idx) < threshold)
 						continue;
 
-					const double wx = origin[0] + i * spacing[0] - result.centroid[0];
-					const double wy = origin[1] + j * spacing[1] - result.centroid[1];
-					const double wz = origin[2] + k * spacing[2] - result.centroid[2];
+					const Vec3 p(
+						origin[0] + i * spacing[0],
+						origin[1] + j * spacing[1],
+						origin[2] + k * spacing[2]);
 
-					c00 += wx * wx;  c01 += wx * wy;  c02 += wx * wz;
-					c11 += wy * wy;  c12 += wy * wz;
-					c22 += wz * wz;
+					const Vec3 d = p - centroid;
 
-					const double awx = wx + result.centroid[0];
-					const double awy = wy + result.centroid[1];
-					const double awz = wz + result.centroid[2];
-					bbMin[0] = std::min(bbMin[0], awx); bbMax[0] = std::max(bbMax[0], awx);
-					bbMin[1] = std::min(bbMin[1], awy); bbMax[1] = std::max(bbMax[1], awy);
-					bbMin[2] = std::min(bbMin[2], awz); bbMax[2] = std::max(bbMax[2], awz);
+					c00 += d[0] * d[0];  c01 += d[0] * d[1];  c02 += d[0] * d[2];
+					c11 += d[1] * d[1];  c12 += d[1] * d[2];
+					c22 += d[2] * d[2];
+
+					bbMin[0] = std::min(bbMin[0], p[0]);
+					bbMin[1] = std::min(bbMin[1], p[1]);
+					bbMin[2] = std::min(bbMin[2], p[2]);
+					bbMax[0] = std::max(bbMax[0], p[0]);
+					bbMax[1] = std::max(bbMax[1], p[1]);
+					bbMax[2] = std::max(bbMax[2], p[2]);
 				}
 			}
 		}
 
-		// Pass 2 complete: 80 %
 		if (progressCb) progressCb(80);
 
-		c00 /= n; c01 /= n; c02 /= n;
-		c11 /= n; c12 /= n;
-		c22 /= n;
+		c00 *= invCount; c01 *= invCount; c02 *= invCount;
+		c11 *= invCount; c12 *= invCount;
+		c22 *= invCount;
 
 		double row0[3] = { c00, c01, c02 };
 		double row1[3] = { c01, c11, c12 };
@@ -365,14 +378,10 @@ namespace ProcessHelpers
 
 		double evecData[3][3];
 		double* evecs[3] = { evecData[0], evecData[1], evecData[2] };
-		double  evals[3];
+		double evals[3];
 
 		vtkMath::Jacobi(cov, evals, evecs);
 
-		// Copy eigenvectors from Jacobi output columns into result.axes rows,
-		// then normalise and store eigenvalues.
-		// vtkMath::Jacobi stores eigenvectors as columns of the evecs matrix,
-		// so evecs[row][col] ? result.axes[col][row].
 		for (int i = 0; i < 3; ++i)
 		{
 			result.axes[i][0] = evecs[0][i];
@@ -382,14 +391,8 @@ namespace ProcessHelpers
 			result.eigenvalues[i] = evals[i];
 		}
 
-		// Fix eigenvector sign convention so orientation is stable across runs.
-		// vtkMath::Jacobi returns eigenvectors with arbitrary sign (both +v and
-		// -v are valid eigenvectors).  Flip each axis so its largest-magnitude
-		// component is positive, giving a consistent "positive dominant" direction
-		// that prevents the resliced volume from flipping between calls.
 		for (int i = 0; i < 3; ++i)
 		{
-			// Find the component with the largest absolute value
 			int dominantComponent = 0;
 			double maxAbs = 0.0;
 			for (int d = 0; d < 3; ++d)
@@ -398,7 +401,6 @@ namespace ProcessHelpers
 				if (a > maxAbs) { maxAbs = a; dominantComponent = d; }
 			}
 
-			// Flip the entire axis if its dominant component points negative
 			if (result.axes[i][dominantComponent] < 0.0)
 			{
 				result.axes[i][0] = -result.axes[i][0];
@@ -407,14 +409,8 @@ namespace ProcessHelpers
 			}
 		}
 
-		const double dx = bbMax[0] - bbMin[0];
-		const double dy = bbMax[1] - bbMin[1];
-		const double dz = bbMax[2] - bbMin[2];
-		result.circumRadius = 0.5 * std::sqrt(dx * dx + dy * dy + dz * dz);
-
-		qDebug("PCA centroid: (%.2f, %.2f, %.2f)", result.centroid[0], result.centroid[1], result.centroid[2]);
-		qDebug("PCA eigenvalues: %.4f  %.4f  %.4f", evals[0], evals[1], evals[2]);
-		qDebug("PCA circumsphere radius: %.2f", result.circumRadius);
+		const Vec3 span = bbMax - bbMin;
+		result.circumRadius = 0.5 * std::sqrt(span[0] * span[0] + span[1] * span[1] + span[2] * span[2]);
 
 		if (progressCb) progressCb(100);
 
@@ -432,11 +428,11 @@ namespace ProcessHelpers
 	{
 		double tMin = -std::numeric_limits<double>::max();
 		double tMax = std::numeric_limits<double>::max();
-
+		const double tol = 1e-12;
 		for (int a = 0; a < 3; ++a)
 		{
 			const double d = rayDir[a];
-			if (std::abs(d) < 1e-12)
+			if (std::abs(d) < tol)
 			{
 				if (rayOrigin[a] < bbMin[a] || rayOrigin[a] > bbMax[a])
 					return false;
@@ -464,12 +460,12 @@ namespace ProcessHelpers
 					 double& tExit)
 	{
 		double tFar = std::numeric_limits<double>::max();
-
+		const double tol = 1e-12;
 		for (int a = 0; a < 3; ++a)
 		{
 			const double d = rayDir[a];
 
-			if (std::abs(d) < 1e-12)
+			if (std::abs(d) < tol)
 			{
 				if (rayOrigin[a] < bbMin[a] || rayOrigin[a] > bbMax[a])
 					return false;
@@ -491,146 +487,210 @@ namespace ProcessHelpers
 		return true;
 	}
 
+	bool rayAabbIntersect(const Vec3& rayOrigin, const Vec3& rayDir,
+					  const Vec3& bbMin, const Vec3& bbMax,
+					  double& tEntry, double& tExit)
+	{
+		return rayAabbIntersect(rayOrigin.GetData(), rayDir.GetData(),
+			bbMin.GetData(), bbMax.GetData(), tEntry, tExit);
+	}
+
+	bool rayAabbExit(const Vec3& rayOrigin, const Vec3& rayDir,
+					 const Vec3& bbMin, const Vec3& bbMax,
+					 double& tExit)
+	{
+		return rayAabbExit(rayOrigin.GetData(), rayDir.GetData(),
+			bbMin.GetData(), bbMax.GetData(), tExit);
+	}
+
+	bool IntersectLineWithBox(const vtkVector3d& c,	const vtkVector3d& e,
+		vtkImageData* image, vtkVector3d& p0, vtkVector3d& p1)
+	{
+		const double* origin = image->GetOrigin();
+		const double* spacing = image->GetSpacing();
+		const int* dims = image->GetDimensions();
+
+		double bounds[6];
+		bounds[0] = origin[0];
+		bounds[1] = origin[0] + spacing[0] * (dims[0] - 1);
+		bounds[2] = origin[1];
+		bounds[3] = origin[1] + spacing[1] * (dims[1] - 1);
+		bounds[4] = origin[2];
+		bounds[5] = origin[2] + spacing[2] * (dims[2] - 1);
+
+		double tmin = -std::numeric_limits<double>::infinity();
+		double tmax = std::numeric_limits<double>::infinity();
+		const double tol = 1e-12;
+		for (int d = 0; d < 3; ++d)
+		{
+			double c_d = c[d];
+			double e_d = e[d];
+
+			double bmin = bounds[2 * d];
+			double bmax = bounds[2 * d + 1];
+
+			if (std::abs(e_d) < tol)
+			{
+				// line parallel to slab -> must already be inside
+				if (c_d < bmin || c_d > bmax)
+					return false;
+				continue;
+			}
+
+			double t1 = (bmin - c_d) / e_d;
+			double t2 = (bmax - c_d) / e_d;
+
+			if (t1 > t2) std::swap(t1, t2);
+
+			tmin = std::max(tmin, t1);
+			tmax = std::min(tmax, t2);
+
+			if (tmin > tmax)
+				return false;
+		}
+
+		// Compute actual intersection points
+		p0 = c + tmin * e;
+		p1 = c + tmax * e;
+
+		return true;
+	}
+
 	void orientPcaAxesForCanonicalReslice(vtkImageData* image,
-										  double         threshold,
+										  const double& threshold,
 										  PcaResult& pca)
 	{
 		if (!pca.valid || !image)
 			return;
 
-		// ── Constraint 1: axes[0] (+X output) points toward the bone tip ────
-		//
-		// Search the foreground surface in both ±axes[0] directions from the
-		// centroid.  The farther surface point is the bone tip.  Flip axes[0]
-		// when the negative-direction endpoint is farther so that increasing X
-		// always moves toward the tip (tip at extent[1], base at extent[0]).
+		vtkDataArray* const scalars = image->GetPointData()->GetScalars();
+		if (!scalars)
+			return;
+
+		const double* const spacing = image->GetSpacing();
+		const double* const origin = image->GetOrigin();
+		const int* const dims = image->GetDimensions();
+
+		const Vec3 centroid(pca.centroid);
+
+		// ------------------------------------------------------------------
+		// Mandatory primary-axis decision.
+		// Pick +e0 or -e0 first, and never let secondary-axis alignment alter
+		// the chosen primary direction.
+		// ------------------------------------------------------------------
+		Vec3 axis0(pca.axes[0]);
+		const double tol = 1e-12;
+		if (axis0.Normalize() <= tol)
+			return;
+
+		const Vec3 negAxis0 = -axis0;
+
+		Vec3 tipPos;
+		Vec3 tipNeg;
+		findSurfacePointFromBoundary(image, centroid, axis0, threshold, tipPos);
+		findSurfacePointFromBoundary(image, centroid, negAxis0, threshold, tipNeg);
+
+		const Vec3 dPos = tipPos - centroid;
+		const Vec3 dNeg = tipNeg - centroid;
+		if (dNeg.SquaredNorm() > dPos.SquaredNorm())
 		{
-			const double negAxis0[3] = {
-				-pca.axes[0][0], -pca.axes[0][1], -pca.axes[0][2]
-			};
-
-			double tipPos[3] = {};
-			double tipNeg[3] = {};
-			findSurfacePointFromBoundary(
-				image, pca.centroid, pca.axes[0], threshold, tipPos);
-			findSurfacePointFromBoundary(
-				image, pca.centroid, negAxis0, threshold, tipNeg);
-
-			double distPosSq = 0.0;
-			double distNegSq = 0.0;
-			for (int d = 0; d < 3; ++d)
-			{
-				const double dp = tipPos[d] - pca.centroid[d];
-				const double dn = tipNeg[d] - pca.centroid[d];
-				distPosSq += dp * dp;
-				distNegSq += dn * dn;
-			}
-
-			if (distNegSq > distPosSq)
-			{
-				pca.axes[0][0] = -pca.axes[0][0];
-				pca.axes[0][1] = -pca.axes[0][1];
-				pca.axes[0][2] = -pca.axes[0][2];
-				qDebug("orientPcaAxesForCanonicalReslice: axes[0] flipped — "
-					   "tip was in negative direction "
-					   "(distPos=%.2f mm  distNeg=%.2f mm).",
-					   std::sqrt(distPosSq), std::sqrt(distNegSq));
-			}
-			else
-			{
-				qDebug("orientPcaAxesForCanonicalReslice: axes[0] retained — "
-					   "tip is in positive direction "
-					   "(distPos=%.2f mm  distNeg=%.2f mm).",
-					   std::sqrt(distPosSq), std::sqrt(distNegSq));
-			}
+			axis0 = negAxis0;
 		}
 
-		// ── Constraint 2: axes[1] aligns with the image's own visual-up direction ─
-		//
-		// The source NIfTI encodes its scan-frame "up" direction in column 1 of
-		// the direction matrix (= the direction of increasing j in world space).
-		// Different scanners / protocols store +j pointing superiorly or
-		// inferiorly, so hardcoding "world +Y = inferior" (axes[1][1] < 0)
-		// is correct for some datasets but inverts others.
-		//
-		// Reading column 1 of the image's direction matrix makes the constraint
-		// adaptive: axes[1] is always oriented so that output +Y matches the
-		// source image's own +j direction, which is the direction any standard
-		// viewer (including ViewerMainWindow) treats as "up" when displaying
-		// the image with its default camera view-up = [0, 1, 0].
-		//
-		// Fallback: if the image carries no direction matrix (nullptr or identity),
-		// upDir = [0, 1, 0] is used, which matches vtkImageData's default
-		// physical-Y convention.
+		// Cached axis-aligned bounds.
+		double bounds[6] = {};
+		image->GetBounds(bounds);
+
+		const Vec3 bbMin(bounds[0], bounds[2], bounds[4]);
+		const Vec3 bbMax(bounds[1], bounds[3], bounds[5]);
+
+		// Secondary axis is aligned only after axis0 is finalized.
+		Vec3 axis1(pca.axes[1]);
+		axis1 -= axis0 * axis0.Dot(axis1);
+		if (axis1.Normalize() <= tol)
 		{
-			// Extract the j-axis direction of the source image.
-			double upDir[3] = { 0.0, 1.0, 0.0 };   // safe default
-
-			const vtkMatrix3x3* dm = image->GetDirectionMatrix();
-			if (dm)
-			{
-				upDir[0] = dm->GetElement(0, 1);
-				upDir[1] = dm->GetElement(1, 1);
-				upDir[2] = dm->GetElement(2, 1);
-
-				// Guard against a degenerate or zero column.
-				const double len = std::sqrt(
-					upDir[0] * upDir[0] +
-					upDir[1] * upDir[1] +
-					upDir[2] * upDir[2]);
-
-				if (len > 1e-10)
-				{
-					upDir[0] /= len;
-					upDir[1] /= len;
-					upDir[2] /= len;
-				}
-				else
-				{
-					upDir[0] = 0.0; upDir[1] = 1.0; upDir[2] = 0.0;
-				}
-			}
-
-			qDebug("orientPcaAxesForCanonicalReslice: image up-dir "
-				   "(j-axis col-1) = (%.4f, %.4f, %.4f).",
-				   upDir[0], upDir[1], upDir[2]);
-
-			// Flip axes[1] when its projection onto upDir is negative so that
-			// the resliced output's +Y (increasing j) always matches the
-			// source image's visual-up direction.
-			const double dot = pca.axes[1][0] * upDir[0]
-				+ pca.axes[1][1] * upDir[1]
-				+ pca.axes[1][2] * upDir[2];
-
-			if (dot < 0.0)
-			{
-				pca.axes[1][0] = -pca.axes[1][0];
-				pca.axes[1][1] = -pca.axes[1][1];
-				pca.axes[1][2] = -pca.axes[1][2];
-				qDebug("orientPcaAxesForCanonicalReslice: axes[1] flipped — "
-					   "dot with image up-dir was %.4f (negative).", dot);
-			}
-			else
-			{
-				qDebug("orientPcaAxesForCanonicalReslice: axes[1] retained — "
-					   "dot with image up-dir is %.4f (positive).", dot);
-			}
+			axis1 = Vec3(pca.axes[2]);
+			axis1 -= axis0 * axis0.Dot(axis1);
+			if (axis1.Normalize() <= tol)
+				return;
 		}
 
-		// ── Constraint 3: axes[2] = cross(axes[0], axes[1]) — right-handed ────
-		//
-		// Always derived from the two independently constrained axes.
-		// The cross product of two orthonormal vectors is already unit-length.
-		pca.axes[2][0] = pca.axes[0][1] * pca.axes[1][2]
-			- pca.axes[0][2] * pca.axes[1][1];
-		pca.axes[2][1] = pca.axes[0][2] * pca.axes[1][0]
-			- pca.axes[0][0] * pca.axes[1][2];
-		pca.axes[2][2] = pca.axes[0][0] * pca.axes[1][1]
-			- pca.axes[0][1] * pca.axes[1][0];
+		// Third axis (smallest eigenvalue) before alignment.
+		Vec3 axis2(pca.axes[2]);
+		axis2 -= axis0 * axis0.Dot(axis2);
+		axis2 -= axis1 * axis1.Dot(axis1);
+		if (axis2.Normalize() <= tol)
+			return;
 
-		qDebug("orientPcaAxesForCanonicalReslice: axes[2] recomputed as "
-			   "cross(axes[0], axes[1]) = (%.4f, %.4f, %.4f).",
-			   pca.axes[2][0], pca.axes[2][1], pca.axes[2][2]);
+		// ------------------------------------------------------------------
+		// Secondary axis (e1) alignment using the revised algorithm.
+		//
+		// 1. Compute nearest bone voxels p_e2_1, p_e2_2 from image bounds
+		//    to PCA centroid along e2 and -e2 (smallest eigenvalue vector).
+		// 2. Compute distance d between p_e2_1, p_e2_2.
+		// 3. Establish point c2 at distance -d from c along corrected axis e0.
+		// 4. Establish voxel line v_c2_c from c2 to c along corrected axis e0.
+		// 5. For each voxel k on v_c2_c:
+		//      - compute nearest bone voxels p_e1_1_k, p_e1_2_k from image
+		//        bounds along e1 and -e1 (middle eigenvalue vector e1).
+		// 6. Compute maximum distance dmax_pos of all p_e1_1_k voxels.
+		// 7. Compute maximum distance dmax_neg of all p_e1_2_k voxels.
+		// 8. Align axis e1 to point in the direction of max(dmax_pos, dmax_neg).
+		// 9. Update e2 as cross product of revised e0 × revised e1.
+		// ------------------------------------------------------------------
+
+		// Step 1: find nearest bone voxels along ±axis2 (smallest eigenvalue).
+		Vec3 p_e2_1;
+		Vec3 p_e2_2;
+		findSurfacePointFromBoundary(image, centroid, axis2, threshold, p_e2_1);
+		findSurfacePointFromBoundary(image, centroid, -axis2, threshold, p_e2_2);
+
+		// Step 2: compute distance d between p_e2_1 and p_e2_2.
+		const Vec3 delta_e2 = p_e2_2 - p_e2_1;
+		const double d = delta_e2.Norm();
+
+		// Step 3: establish point c2 at distance -d from c along corrected axis e0.
+		const Vec3 c2 = centroid - (axis0 * d);
+
+		// Step 4: establish voxel line v_c2_c from c2 to c along corrected axis e0.
+		VoxelLine line(image, c2, centroid);
+
+		// Step 5-7: probe ±axis1 for each voxel k on v_c2_c.
+		double dmax_pos = -1.0;
+		double dmax_neg = -1.0;
+
+		for (VoxelLineIterator it = line.begin(); it != line.end(); ++it)
+		{
+			if (!it.InBounds())
+				continue;
+
+			const Vec3d voxelWorld = it.ToWorld();
+			const Vec3 samplePt(voxelWorld[0], voxelWorld[1], voxelWorld[2]);
+
+			Vec3 p_e1_1_k;
+			Vec3 p_e1_2_k;
+			findSurfacePointFromBoundary(image, samplePt, axis1, threshold, p_e1_1_k);
+			findSurfacePointFromBoundary(image, samplePt, -axis1, threshold, p_e1_2_k);
+
+			const double dist_pos = (p_e1_1_k - samplePt).Norm();
+			const double dist_neg = (p_e1_2_k - samplePt).Norm();
+
+			dmax_pos = std::max(dmax_pos, dist_pos);
+			dmax_neg = std::max(dmax_neg, dist_neg);
+		}
+
+		// Step 8: align axis e1 to point in the direction of max(dmax_pos, dmax_neg).
+		if (dmax_neg > dmax_pos)
+			axis1 = -axis1;
+
+		// Step 9: update e2 as cross product of revised e0 × revised e1.
+		axis2 = axis0.Cross(axis1);
+		if (axis2.Normalize() <= tol)
+			return;
+
+		ToArray(axis0, pca.axes[0]);
+		ToArray(axis1, pca.axes[1]);
+		ToArray(axis2, pca.axes[2]);
 	}
 
 	// -----------------------------------------------------------------------
@@ -643,96 +703,53 @@ namespace ProcessHelpers
 									  double threshold,
 									  double outWorld[3])
 	{
-		const double* spacing = image->GetSpacing();
-		const double* origin = image->GetOrigin();
-		const int* dims = image->GetDimensions();
-		vtkDataArray* scalars = image->GetPointData()->GetScalars();
+		const Vec3 c(centroid);
+		const Vec3 d(axisDir);
 
-		// World-space AABB of the image volume
-		const double bbMin[3] = {
-			origin[0],
-			origin[1],
-			origin[2]
-		};
-		const double bbMax[3] = {
-			origin[0] + (dims[0] - 1) * spacing[0],
-			origin[1] + (dims[1] - 1) * spacing[1],
-			origin[2] + (dims[2] - 1) * spacing[2]
-		};
+		double bounds[6] = {};
+		image->GetBounds(bounds);
 
-		// Step 1 & 2: find the exit distance from centroid to the far AABB face
+		const Vec3 bbMin(bounds[0], bounds[2], bounds[4]);
+		const Vec3 bbMax(bounds[1], bounds[3], bounds[5]);
+
 		double tExit = 0.0;
-		if (!rayAabbExit(centroid, axisDir, bbMin, bbMax, tExit))
+		if (!rayAabbExit(c, d, bbMin, bbMax, tExit))
 		{
-			// Centroid is outside the image entirely (degenerate case)
-			qWarning("findSurfacePointFromBoundary: ray does not intersect image AABB; "
-					 "returning centroid as fallback.");
 			outWorld[0] = centroid[0];
 			outWorld[1] = centroid[1];
 			outWorld[2] = centroid[2];
 			return;
 		}
 
-		// Step 2 result: the point on the far AABB face in the axisDir direction
-		const double startWorld[3] = {
-			centroid[0] + tExit * axisDir[0],
-			centroid[1] + tExit * axisDir[1],
-			centroid[2] + tExit * axisDir[2]
-		};
+		// Walk from the far image boundary back toward the centroid.
+		const Vec3 startWorld = c + (d * tExit);
+		VoxelLine line(image, startWorld, c);
 
-		qDebug("findSurfacePointFromBoundary: tExit=%.3f  start=(%.2f, %.2f, %.2f)",
-			   tExit, startWorld[0], startWorld[1], startWorld[2]);
-
-		// Step 3: walk inward along -axisDir (back toward centroid)
-		// Step size = smallest voxel spacing so no voxel is ever skipped
-		const double step = std::min({ spacing[0], spacing[1], spacing[2] });
-
-		// Maximum distance to walk: tExit (bbox face ? centroid) + one extra step
-		// so the centroid voxel itself is always sampled.
-		const double maxDist = tExit + step;
-
-		double cur[3] = { startWorld[0], startWorld[1], startWorld[2] };
-		double walked = 0.0;
-
-		while (walked <= maxDist)
+		VoxelLineIterator it = line.begin();
+		if (it.AdvanceToFirst(threshold))
 		{
-			// World ? nearest voxel index
-			const int ix = static_cast<int>((cur[0] - origin[0]) / spacing[0] + 0.5);
-			const int iy = static_cast<int>((cur[1] - origin[1]) / spacing[1] + 0.5);
-			const int iz = static_cast<int>((cur[2] - origin[2]) / spacing[2] + 0.5);
-
-			// Only sample voxels that lie within the image extent
-			if (ix >= 0 && ix < dims[0] &&
-				iy >= 0 && iy < dims[1] &&
-				iz >= 0 && iz < dims[2])
-			{
-				const vtkIdType idx = static_cast<vtkIdType>(iz) * dims[1] * dims[0]
-					+ static_cast<vtkIdType>(iy) * dims[0]
-					+ ix;
-
-				// Step 4: first above-threshold voxel is the surface entry point
-				if (scalars->GetTuple1(idx) >= threshold)
-				{
-					outWorld[0] = cur[0];
-					outWorld[1] = cur[1];
-					outWorld[2] = cur[2];
-					return;
-				}
-			}
-
-			// Advance one step back toward the centroid
-			cur[0] -= axisDir[0] * step;
-			cur[1] -= axisDir[1] * step;
-			cur[2] -= axisDir[2] * step;
-			walked += step;
+			const auto world = it.ToWorld();
+			outWorld[0] = world[0];
+			outWorld[1] = world[1];
+			outWorld[2] = world[2];
+			return;
 		}
 
-		// No above-threshold voxel found; centroid is the safe fallback
-		qWarning("findSurfacePointFromBoundary: no above-threshold voxel found; "
-				 "returning centroid as fallback.");
+		// Fallback: return centroid if no qualifying voxel is found.
 		outWorld[0] = centroid[0];
 		outWorld[1] = centroid[1];
 		outWorld[2] = centroid[2];
+	}
+
+	void findSurfacePointFromBoundary(vtkImageData* image,
+								  const Vec3& centroid,
+								  const Vec3& axisDir,
+								  double threshold,
+								  Vec3& outWorld)
+	{
+		double out[3] = { centroid.GetX(), centroid.GetY(), centroid.GetZ() };
+		findSurfacePointFromBoundary(image, centroid.GetData(), axisDir.GetData(), threshold, out);
+		outWorld = Vec3(out);
 	}
 
 	// -----------------------------------------------------------------------
@@ -1593,7 +1610,7 @@ namespace ProcessHelpers
 	// -----------------------------------------------------------------------
 	void identifyOrphanIslands(
 		vtkImageData* reslicedImage,
-		double                                     threshold,
+		double threshold,
 		const std::vector<std::array<double, 3>>& seedsWorld,
 		vtkSmartPointer<vtkImageData>& outOrphanMask,
 		const std::function<void(int)>& progressCb)
@@ -1786,116 +1803,72 @@ namespace ProcessHelpers
 		if (progressCb) progressCb(100);
 	}
 
-	// -----------------------------------------------------------------------
-	// Inward seed adjustment for iterative region growing
-	//
-	// At higher thresholds the original landmark surface tips may fall below
-	// the threshold criterion, causing the BFS to find no island.  This helper
-	// walks each seed one voxel-step at a time toward the PCA centroid along
-	// its known eigen-axis direction and returns the position of the first
-	// voxel whose scalar value satisfies scalar >= threshold.
-	//
-	// Step size is half the smallest voxel spacing so no voxel is skipped.
-	// -----------------------------------------------------------------------
 	std::vector<std::array<double, 3>> computeInwardAdjustedSeeds(
-		vtkImageData* image,
-		double                                     threshold,
-		const std::vector<std::array<double, 3>>& originalSeedsWorld,
-		const PcaResult& pca)
+	vtkImageData* image,
+	double threshold,
+	const std::vector<std::array<double, 3>>& originalSeedsWorld,
+	const PcaResult& pca)
 	{
-		// Start with a copy — any seed that cannot be adjusted is returned unchanged.
 		std::vector<std::array<double, 3>> adjusted = originalSeedsWorld;
 
 		if (!image || originalSeedsWorld.empty() || !pca.valid)
 			return adjusted;
 
-		vtkDataArray* scalars = image->GetPointData()->GetScalars();
-		if (!scalars)
-			return adjusted;
-
-		const double* spacing = image->GetSpacing();
-		const int* dims = image->GetDimensions();
-
-		// Sub-voxel step: half the smallest dimension spacing.
-		const double stepSize = 0.5 * std::min({ spacing[0], spacing[1], spacing[2] });
-
 		const int nSeeds = static_cast<int>(originalSeedsWorld.size());
 
 		for (int s = 0; s < nSeeds; ++s)
 		{
-			// Determine which eigen axis and which tip this seed represents.
-			// Seeds are packed as: axis=s/2, tip=s%2 (0=positive, 1=negative).
-			const int    axis = s / 2;
-			const int    tip = s % 2;
+			// Keep the existing seed packing convention:
+			// axis = s / 2, tip = s % 2 (0 = positive, 1 = negative).
+			const int axis = s / 2;
+			const int tip = s % 2;
 
 			// Inward direction toward the centroid:
-			//   positive tip sits at  centroid + R*axes[axis]  -> inward = -axes[axis]
-			//   negative tip sits at  centroid - R*axes[axis]  -> inward = +axes[axis]
+			//   positive tip sits at centroid + R * axes[axis] -> inward = -axes[axis]
+			//   negative tip sits at centroid - R * axes[axis] -> inward = +axes[axis]
 			const double sign = (tip == 0) ? -1.0 : +1.0;
-			const double inward[3] = {
+			const Vec3d inward(
 				sign * pca.axes[axis][0],
 				sign * pca.axes[axis][1],
-				sign * pca.axes[axis][2]
+				sign * pca.axes[axis][2]);
+
+			const std::array<double, 3> start = originalSeedsWorld[static_cast<std::size_t>(s)];
+			const std::array<double, 3> end =
+			{
+				pca.centroid[0],
+				pca.centroid[1],
+				pca.centroid[2]
 			};
 
-			const auto& sw = originalSeedsWorld[static_cast<std::size_t>(s)];
-
-			// Maximum walk distance: from the seed to the centroid.
-			const double dx = pca.centroid[0] - sw[0];
-			const double dy = pca.centroid[1] - sw[1];
-			const double dz = pca.centroid[2] - sw[2];
-			const double distToCentroid = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-			if (distToCentroid < stepSize)
-				continue; // seed is essentially at the centroid; leave unchanged
-
-			const int maxSteps = static_cast<int>(std::ceil(distToCentroid / stepSize));
-			bool      found = false;
-
-			for (int step = 0; step <= maxSteps; ++step)
+			// VoxelLine defines the segment; VoxelLineIterator walks it.
+			VoxelLine line(image, start, end);
+			bool found = false;
+			for (VoxelLineIterator it = line.begin(); it != line.end(); ++it)
 			{
-				const double t = static_cast<double>(step) * stepSize;
-				const double pos[3] = {
-					sw[0] + t * inward[0],
-					sw[1] + t * inward[1],
-					sw[2] + t * inward[2]
-				};
-
-				// Map world position to nearest voxel index.
-				double contIdx[3] = { 0.0, 0.0, 0.0 };
-				image->TransformPhysicalPointToContinuousIndex(pos, contIdx);
-
-				const int ix = static_cast<int>(std::lround(contIdx[0]));
-				const int iy = static_cast<int>(std::lround(contIdx[1]));
-				const int iz = static_cast<int>(std::lround(contIdx[2]));
-
-				if (ix < 0 || ix >= dims[0] ||
-					iy < 0 || iy >= dims[1] ||
-					iz < 0 || iz >= dims[2])
+				// Use the iterator's scalar helpers for the threshold test.
+				if (!it.IsAbove(threshold))
 					continue;
 
-				const vtkIdType flat =
-					static_cast<vtkIdType>(iz) * dims[1] * dims[0]
-					+ static_cast<vtkIdType>(iy) * dims[0]
-					+ static_cast<vtkIdType>(ix);
-
-				if (scalars->GetTuple1(flat) >= threshold)
+				const auto world = it.ToWorld();
+				adjusted[static_cast<std::size_t>(s)] =
 				{
-					adjusted[static_cast<std::size_t>(s)] = { pos[0], pos[1], pos[2] };
-					qDebug("computeInwardAdjustedSeeds: seed %d adjusted after %d steps "
-						   "(%.2f, %.2f, %.2f) -> (%.2f, %.2f, %.2f)",
-						   s, step,
-						   sw[0], sw[1], sw[2],
-						   pos[0], pos[1], pos[2]);
-					found = true;
-					break;
-				}
+					world[0],
+					world[1],
+					world[2]
+				};
+
+				qDebug("computeInwardAdjustedSeeds: seed %d adjusted to "
+					   "(%.2f, %.2f, %.2f)",
+					   s, world[0], world[1], world[2]);
+
+				found = true;
+				break;
 			}
 
 			if (!found)
 			{
 				qDebug("computeInwardAdjustedSeeds: seed %d — no qualifying voxel found "
-					   "along inward walk; original position retained.", s);
+					   "toward centroid; original position retained.", s);
 			}
 		}
 

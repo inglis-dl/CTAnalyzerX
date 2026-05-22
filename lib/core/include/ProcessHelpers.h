@@ -5,6 +5,8 @@
 // ---------------------------------------------------------------------------
 
 #include <vtkSmartPointer.h>
+#include <vtkVector.h>
+#include <vtkVectorOperators.h>
 
 #include <QJsonObject>
 #include <QString>
@@ -17,6 +19,8 @@ class vtkImageData;
 
 namespace ProcessHelpers
 {
+	using Vec3 = vtkVector3d;
+
 	// -----------------------------------------------------------------------
 	// JSON / sidecar I/O
 	// -----------------------------------------------------------------------
@@ -30,7 +34,7 @@ namespace ProcessHelpers
 	// -----------------------------------------------------------------------
 
 	double computeScalarStdDev(vtkImageData* image);
-	QJsonObject computeScalarThresholdStats(vtkImageData* image, double threshold);
+	QJsonObject computeScalarThresholdStats(vtkImageData* image, const double& threshold);
 
 	// -----------------------------------------------------------------------
 	// PCA result
@@ -49,7 +53,7 @@ namespace ProcessHelpers
 	// PCA
 	// -----------------------------------------------------------------------
 
-	bool computePca(vtkImageData* image, double threshold,
+	bool computePca(vtkImageData* image, const double& threshold,
 					PcaResult& result,
 					const std::function<void(int)>& progressCb = nullptr);
 
@@ -71,7 +75,7 @@ namespace ProcessHelpers
 	// This is a no-op when pca.valid is false or image is nullptr.
 	// -----------------------------------------------------------------------
 	void orientPcaAxesForCanonicalReslice(vtkImageData* image,
-										  double         threshold,
+										  const double& threshold,
 										  PcaResult& pca);
 
 	// -----------------------------------------------------------------------
@@ -82,9 +86,22 @@ namespace ProcessHelpers
 						  const double bbMin[3], const double bbMax[3],
 						  double& tEntry, double& tExit);
 
+	bool rayAabbIntersect(const Vec3& rayOrigin, const Vec3& rayDir,
+						  const Vec3& bbMin, const Vec3& bbMax,
+						  double& tEntry, double& tExit);
+
 	bool rayAabbExit(const double rayOrigin[3], const double rayDir[3],
 					 const double bbMin[3], const double bbMax[3],
 					 double& tExit);
+
+	bool rayAabbExit(const Vec3& rayOrigin, const Vec3& rayDir,
+					 const Vec3& bbMin, const Vec3& bbMax,
+					 double& tExit);
+
+	vtkIdType flatten(const int& ix, const int& iy, const int& iz, const int dims[3]);
+
+	bool IntersectLineWithBox(const vtkVector3d& c, const vtkVector3d& e,
+		vtkImageData* image, vtkVector3d& p0, vtkVector3d& p1);
 
 	// -----------------------------------------------------------------------
 	// Surface search
@@ -95,6 +112,12 @@ namespace ProcessHelpers
 									  const double axisDir[3],
 									  double threshold,
 									  double outWorld[3]);
+
+	void findSurfacePointFromBoundary(vtkImageData* image,
+									  const Vec3& centroid,
+									  const Vec3& axisDir,
+									  double threshold,
+									  Vec3& outWorld);
 
 	// -----------------------------------------------------------------------
 	// Bone island segmentation
