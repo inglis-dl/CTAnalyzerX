@@ -1,5 +1,6 @@
 ﻿#include "BatchProcessor.h"
 #include "ImageLoader.h"
+#include "vtkFillFullyEnclosedVoxelFilter.h"
 
 #include <QDebug>
 #include <QFileInfo>
@@ -1174,7 +1175,7 @@ void BatchProcessor::performExport(const QString& outputPath)
     // Apply identical canonical orientation to the export reslice so the
     // output grayscale and mask NIfTIs share the same tip-right, top-up
     // convention as the processing reslice.
-    ProcessHelpers::orientPcaAxesForCanonicalReslice(invResult, m_threshold, exportPca);
+    ProcessHelpers::orientPcaAxesForCanonicalReslice(invResult, m_threshold, exportPca, true);
 
     // Step 2b: rotate the image using the corrected PCA axes.
     auto resliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
@@ -1251,6 +1252,11 @@ void BatchProcessor::performExport(const QString& outputPath)
         return;
     }
 
+    // Step 5b: identify orphan islands.
+    vtkSmartPointer<vtkImageData> orphanMask;
+    ProcessHelpers::identifyOrphanIslands(
+        rotatedImage, m_threshold, seeds, orphanMask, nullptr);
+
     const auto largestIslandIt = std::max_element(
         islands.begin(), islands.end(),
         [](const ProcessHelpers::BoneIsland& a,
@@ -1284,6 +1290,11 @@ void BatchProcessor::performExport(const QString& outputPath)
     const auto* lblPtr = static_cast<const unsigned char*>(labelImage->GetScalarPointer());
     const auto  lbl8 = static_cast<unsigned char>(largestLabel);
 
+    // Access orphan mask scalars if available.
+    vtkDataArray* orphanScalars = nullptr;
+    if (orphanMask)
+        orphanScalars = orphanMask->GetPointData()->GetScalars();
+
     int  boundsMin[3] = { lblExtent[1], lblExtent[3], lblExtent[5] };
     int  boundsMax[3] = { lblExtent[0], lblExtent[2], lblExtent[4] };
     bool anyForeground = false;
@@ -1298,6 +1309,13 @@ void BatchProcessor::performExport(const QString& outputPath)
                     + (i - lblExtent[0]);
 
                 if (lblPtr[flat] != lbl8)
+                {
+                    maskPtr[flat] = 0u;
+                    continue;
+                }
+
+                // Exclude orphan voxels from the exported mask.
+                if (orphanScalars && orphanScalars->GetTuple1(flat) > 0.5)
                 {
                     maskPtr[flat] = 0u;
                     continue;
@@ -1390,8 +1408,11 @@ void BatchProcessor::performExport(const QString& outputPath)
             extract->SetInputData(maskImage);
             extract->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
 
+            auto fill = vtkSmartPointer<vtkFillFullyEnclosedVoxelFilter>::New();
+            fill->SetInputConnection(extract->GetOutputPort());
+
             auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
-            writer->SetInputConnection(extract->GetOutputPort());
+            writer->SetInputConnection(fill->GetOutputPort());
             writer->SetFileName(maskPath.toUtf8().constData());
             writer->Write();
         });

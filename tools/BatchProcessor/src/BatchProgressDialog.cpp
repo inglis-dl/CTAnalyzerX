@@ -32,7 +32,7 @@ BatchProgressDialog::BatchProgressDialog(int totalFiles, QWidget* parent)
     m_progressBar->setTextVisible(true);
     m_progressBar->setFormat(QStringLiteral("%v / %m files"));
 
-    // Secondary bar — stages within the current file
+    // Secondary bar - stages within the current file
     const int stageCount = static_cast<int>(ProcessingStage::StageCount);
     m_stageProgressBar->setRange(0, stageCount);
     m_stageProgressBar->setValue(0);
@@ -45,7 +45,7 @@ BatchProgressDialog::BatchProgressDialog(int totalFiles, QWidget* parent)
     m_abortButton->setEnabled(true);
     m_closeButton->setEnabled(false);
 
-    // --- "Current file" group box ---
+    // Current file group box
     auto* groupBox = new QGroupBox(QStringLiteral("Current file"), this);
     auto* groupLayout = new QVBoxLayout(groupBox);
 
@@ -67,13 +67,13 @@ BatchProgressDialog::BatchProgressDialog(int totalFiles, QWidget* parent)
     groupLayout->addSpacing(4);
     groupLayout->addWidget(m_stageProgressBar);
 
-    // --- Button row ---
+    // Button row
     auto* buttonRow = new QHBoxLayout();
     buttonRow->addStretch(1);
     buttonRow->addWidget(m_abortButton);
     buttonRow->addWidget(m_closeButton);
 
-    // --- Main layout ---
+    // Main layout
     auto* mainLayout = new QVBoxLayout(this);
     mainLayout->addWidget(m_statusLabel);
     mainLayout->addWidget(m_progressBar);

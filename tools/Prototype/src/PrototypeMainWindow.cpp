@@ -1,5 +1,6 @@
 ﻿#include "PrototypeMainWindow.h"
 #include "ui_MainWindow.h"
+#include "vtkFillFullyEnclosedVoxelFilter.h"
 
 #include "VolumeView.h"
 #include "SliceView.h"
@@ -81,18 +82,18 @@ QT_CHARTS_USE_NAMESPACE   // expands to: using namespace QtCharts; (Qt5 only)
 namespace {
 
 	// ---------------------------------------------------------------------------
-// IslandCleanDialog
-//
-// Modal dialog presented by onClean().  One row per segmented island shows:
-//   Col 0  Coloured swatch + "Island N" label, matched to the VolumeView
-//          legend via makeIslandColorTF.
-//   Col 1  Volume in ×10³ mm³.
-//   Col 2  Remove checkbox.
-//
-// Default selection: largest island unchecked (retained); all others checked.
-// A spin box controls the number of 3×3×3 dilation passes applied to the
-// binary island mask before its voxels are replaced with background noise.
-// ---------------------------------------------------------------------------
+	// IslandCleanDialog
+	//
+	// Modal dialog presented by onClean().  One row per segmented island shows:
+	//   Col 0  Coloured swatch + "Island N" label, matched to the VolumeView
+	//          legend via makeIslandColorTF.
+	//   Col 1  Volume in x10³ mm³.
+	//   Col 2  Remove checkbox.
+	//
+	// Default selection: largest island unchecked (retained); all others checked.
+	// A spin box controls the number of 3x3x3 dilation passes applied to the
+	// binary island mask before its voxels are replaced with background noise.
+	// ---------------------------------------------------------------------------
 	class IslandCleanDialog : public QDialog
 	{
 	public:
@@ -129,7 +130,7 @@ namespace {
 				const ProcessHelpers::BoneIsland& b)
 					{ return a.voxelCount < b.voxelCount; })->label;
 
-			// ── Island table ──────────────────────────────────────────────────
+			// Island table
 			auto* table = new QTableWidget(
 				static_cast<int>(islands.size()), 3, this);
 			table->setHorizontalHeaderLabels(
@@ -193,7 +194,7 @@ namespace {
 				m_checkboxes.push_back({ isl.label, chk });
 			}
 
-			// ── Dilation passes spin box ──────────────────────────────────────
+			// Dilation passes spin box
 			m_spinDilations = new QSpinBox(this);
 
 			// Size the spin box to fit exactly 2 digits (e.g. "99").
@@ -222,13 +223,13 @@ namespace {
 			auto* form = new QFormLayout;
 			form->addRow(tr("Dilation passes:"), spinRow);
 
-			// ── Buttons ───────────────────────────────────────────────────────
+			// Buttons
 			auto* buttons = new QDialogButtonBox(
 				QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
 			connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
 			connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
-			// ── Root layout: table (stretches) / form / buttons ───────────────
+			// Root layout: table (stretches) / form / buttons
 			auto* root = new QVBoxLayout(this);
 			root->addWidget(table, 1);
 			root->addLayout(form);
@@ -262,7 +263,7 @@ namespace {
 	// RIGHT : iteration history table (top) and threshold-vs-volume chart (bottom).
 	//
 	// The iteration history table accumulates one row per completed iteration.
-	// Each row shows the iteration index, threshold, total region volume ×10³,
+	// Each row shows the iteration index, threshold, total region volume x10³,
 	// and a mutually exclusive checkbox so the user can nominate one iteration
 	// for final application.
 	//
@@ -282,7 +283,7 @@ namespace {
 		>;
 		using ResetFunc = std::function<void()>;
 
-		// ── Status bar helpers ────────────────────────────────────────────────
+		// Status bar helpers
 		enum class StatusState { Idle, Busy, Complete };
 
 		explicit IterationProgressDialog(
@@ -300,7 +301,7 @@ namespace {
 			setWindowTitle(tr("Region Grow - Iteration"));
 			setMinimumSize(1100, 640);
 
-			// ── Left panel: setup ────────────────────────────────────────────
+			// Left panel: setup
 			auto* setupForm = new QFormLayout;
 			setupForm->addRow(tr("Baseline threshold:"),
 				new QLabel(QString::number(baselineThreshold, 'f', 2), this));
@@ -321,8 +322,8 @@ namespace {
 			m_spinTargetIslands->setValue(2);
 			setupForm->addRow(tr("Target Islands:"), m_spinTargetIslands);
 
-			// Volume threshold: displayed in the same ×10³ mm³ units as the
-			// iteration table.  Initial value 1.0 represents 0.001 mm³ × 1000.
+			// Volume threshold: displayed in the same x10^3 mm^3 units as the
+			// iteration table.  Initial value 1.0 represents 0.001 mm^3 x 1000.
 			// The run stops when the absolute volume change between the last
 			// two appended rows falls at or below this value.
 			m_spinVolumeThreshold = new QDoubleSpinBox(this);
@@ -340,13 +341,13 @@ namespace {
 			m_spinMultiplier->setValue(0.1);
 			setupForm->addRow(tr("Std-dev multiplier:"), m_spinMultiplier);
 
-			// Read-only label: multiplier × stdDev updated live as the spin changes.
+			// Read-only label: multiplier x stdDev updated live as the spin changes.
 			m_labelStepSize = new QLabel(this);
 			m_labelStepSize->setTextInteractionFlags(Qt::NoTextInteraction);
 			updateStepSizeLabel(m_spinMultiplier->value());
 			setupForm->addRow(tr("Threshold step:"), m_labelStepSize);
 
-			// Live read-only label: baseline + iterations × step
+			// Live read-only label: baseline + iterations x step
 			m_labelFinalThreshold = new QLabel(this);
 			m_labelFinalThreshold->setTextInteractionFlags(Qt::NoTextInteraction);
 			updateFinalThresholdLabel(m_spinIterations->value(), m_spinMultiplier->value());
@@ -449,7 +450,7 @@ namespace {
 			leftLayout->addWidget(m_btnAuto);
 			leftLayout->addStretch();
 
-			// ── Right panel: iteration history table (top) ───────────────────
+			// Right panel: iteration history table (top)
 			// One row per completed iteration; the Select column is mutually
 			// exclusive so exactly one iteration can be nominated for Apply.
 			m_iterationTable = new QTableWidget(0, 5, this);
@@ -479,7 +480,7 @@ namespace {
 			auto* historyBoxLayout = new QVBoxLayout(historyBox);
 			historyBoxLayout->addWidget(m_iterationTable);
 
-			// ── Right panel: chart (bottom) ───────────────────────────────────
+			// Right panel: chart (bottom)
 			m_series = new QLineSeries(this);
 			m_series->setName(tr("Volume"));
 
@@ -548,7 +549,7 @@ namespace {
 			rightLayout->addWidget(historyBox, 1);
 			rightLayout->addWidget(chartView, 2);
 
-			// ── Status bar (bottom) ───────────────────────────────────────────
+			// Status bar (bottom)
 			m_statusLabel = new QLabel(this);
 			m_statusLabel->setContentsMargins(4, 0, 0, 0);
 
@@ -565,7 +566,7 @@ namespace {
 			statusBarLayout->addWidget(m_statusLabel, 1);
 			statusBarLayout->addWidget(m_stateIndicator);
 
-			// ── Root layout: content area (left | right) above the status bar ─
+			// Root layout: content area (left | right) above the status bar
 			auto* contentLayout = new QHBoxLayout;
 			contentLayout->addLayout(leftLayout);
 			contentLayout->addLayout(rightLayout, 1);
@@ -636,8 +637,8 @@ namespace {
 			m_spinCustomStart->setValue(threshMin);
 
 			// Back-compute the multiplier:
-			//   iters × multiplier × stdDev = threshMax - threshMin
-			//   multiplier = (threshMax - threshMin) / ((iters - 1) × stdDev)
+			//   iters x multiplier x stdDev = threshMax - threshMin
+			//   multiplier = (threshMax - threshMin) / ((iters - 1) x stdDev)
 			if (iters >= 2 && m_baseStdDev > 0.0)
 			{
 				const double newMultiplier =
@@ -1552,8 +1553,6 @@ void PrototypeMainWindow::clearIslandActors()
 // Graph-cut seed actor management
 // ---------------------------------------------------------------------------
 #ifdef CTAXPROTOTYPE_ENABLE_GRAPH_CUT
-void PrototypeMainWindow::clearGraphCutSeedActors()
-{
 	void PrototypeMainWindow::clearGraphCutSeedActors()
 	{
 		if (!ui || !ui->volumeView)
@@ -1561,7 +1560,6 @@ void PrototypeMainWindow::clearGraphCutSeedActors()
 
 		ui->volumeView->removeAuxProps(kKeyGraphCutSeeds);
 	}
-}
 #endif // CTAXPROTOTYPE_ENABLE_GRAPH_CUT
 
 
@@ -2104,6 +2102,19 @@ void PrototypeMainWindow::onReslice()
 		return;
 	}
 
+	// Cache the original-image PCA JSON once, before resliced output exists.
+	if (!m_reslicedImage)
+	{
+		m_originalPcaJson = pcaResultToJson(m_pca);
+	}
+
+	// Canonicalise axes before building the reslice matrix:
+	//   axes[0] -> tip direction (+X = tip, -X = base)
+	//   axes[1] -> positive world-Y ("right-side up" in SliceView XY)
+	//   axes[2] -> cross(axes[0], axes[1]) right-handed, derived
+	ProcessHelpers::orientPcaAxesForCanonicalReslice(m_image, m_threshold, m_pca);
+
+
 	auto resliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
 	resliceAxes->Identity();
 
@@ -2297,6 +2308,12 @@ void PrototypeMainWindow::onRegions()
 				[static_cast<std::size_t>(d)].data();
 			seeds.push_back({ pt[0], pt[1], pt[2] });
 		}
+
+	if (seeds.size() != 6)
+	{
+		qWarning("onRegions: expected 6 landmark seeds, got %zu; aborting.", seeds.size());
+		return;
+	}
 
 	const auto makeProgress = [this](int percent)
 		{
@@ -2591,7 +2608,7 @@ void PrototypeMainWindow::onRegionsGraphCut()
 //  2. Build a combined binary mask: selected islands OR orphan islands.
 //     Orphans are merged before dilation so all removed regions receive
 //     the same noise-padded boundary margin.
-//  3. Dilate the combined mask N times (3×3×3) to carve a clean margin.
+//  3. Dilate the combined mask N times (3x3x3) to carve a clean margin.
 //  4. Replace every dilated-mask voxel in m_reslicedImage with the mean
 //     background value.
 //  5. Hide the removed island surface actors and refresh both views.
@@ -2728,9 +2745,9 @@ void PrototypeMainWindow::onClean()
 
 	// ------------------------------------------------------------------
 	// Step 2: dilate the combined mask with a single (2N+1)³ kernel.
-	// N applications of a 3×3×3 box structuring element are equivalent
+	// N applications of a 3x3x3 box structuring element are equivalent
 	// (by Minkowski sum associativity) to one application of a
-	// (2N+1)×(2N+1)×(2N+1) box kernel — identical geometric result with
+	// (2N+1)x(2N+1)x(2N+1) box kernel — identical geometric result with
 	// one VTK pipeline setup and one DeepCopy instead of N of each.
 	// ------------------------------------------------------------------
 	const int kernelSide = 2 * nDilations + 1;
@@ -2924,7 +2941,7 @@ void PrototypeMainWindow::onExport()
 	showProgressValue(5);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	// ── Step 1: project cleaned resliced image back into original space ───────
+	// Step 1: project cleaned resliced image back into original space
 	const auto invResult = applyInverseResliceToOriginal();
 
 	showProgressValue(15);
@@ -2938,7 +2955,7 @@ void PrototypeMainWindow::onExport()
 		return;
 	}
 
-	// ── Step 2a: PCA on the inverse-resliced result ───────────────────────────
+	// Step 2a: PCA on the inverse-resliced result
 	ProcessHelpers::PcaResult exportPca;
 	const bool pcaOk = ProcessHelpers::computePca(
 		invResult, m_threshold, exportPca, nullptr);
@@ -2956,12 +2973,12 @@ void PrototypeMainWindow::onExport()
 	//   axes[1] -> positive world-Y ("right-side up" in SliceView XY)
 	//   axes[2] -> cross(axes[0], axes[1])  right-handed, derived
 	ProcessHelpers::orientPcaAxesForCanonicalReslice(
-		invResult, m_threshold, exportPca);
+		invResult, m_threshold, exportPca, true);
 
 	showProgressValue(25);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	// ── Step 2b: rotate the image using the PCA axes ──────────────────────────
+	// Step 2b: rotate the image using the PCA axes
 	auto resliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
 	resliceAxes->Identity();
 	for (int row = 0; row < 3; ++row)
@@ -2985,13 +3002,13 @@ void PrototypeMainWindow::onExport()
 	resliceFilter->SetNumberOfThreads(QThread::idealThreadCount());
 	resliceFilter->Update();
 
-	// ── Step 3: cache the grayscale rotated image ─────────────────────────────
+	// Step 3: cache the grayscale rotated image
 	auto rotatedImage = resliceFilter->GetOutput();
 
 	showProgressValue(35);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	// ── Step 3b: recompute PCA on the rotated image (centroid in rotated space)─
+	// Step 3b: recompute PCA on the rotated image (centroid in rotated space)
 	ProcessHelpers::PcaResult rotatedPca;
 	const bool rotPcaOk = ProcessHelpers::computePca(
 		rotatedImage, m_threshold, rotatedPca, nullptr);
@@ -3007,7 +3024,7 @@ void PrototypeMainWindow::onExport()
 	showProgressValue(40);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	// ── Step 4: find 6 surface landmark seeds on the rotated image ───────────
+	// Step 4: find 6 surface landmark seeds on the rotated image
 	std::array<std::array<double, 3>, 3> landmarkPos;
 	std::array<std::array<double, 3>, 3> landmarkNeg;
 
@@ -3044,7 +3061,7 @@ void PrototypeMainWindow::onExport()
 	showProgressValue(45);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
-	// ── Step 5: region-grow from seeds at baseline threshold ─────────────────
+	// Step 5: region-grow from seeds at baseline threshold
 	const auto growProgress = [this](int pct)
 		{
 			showProgressValue(45 + static_cast<int>(pct * 0.2));
@@ -3078,6 +3095,16 @@ void PrototypeMainWindow::onExport()
 		return;
 	}
 
+	vtkSmartPointer<vtkImageData> orphanMask;
+	const auto orphanProgress = [this](int pct) {
+		showProgressValue(65 + static_cast<int>(pct * 0.05));  // 65–70% range
+		m_progressBar->update();
+		QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+		};
+
+	ProcessHelpers::identifyOrphanIslands(
+		rotatedImage, m_threshold, seeds, orphanMask, orphanProgress);
+
 	// Identify the largest island by voxel count.  The exported mask will
 	// contain only this island so that the output represents a single,
 	// unambiguous bone region regardless of how many islands the grow found.
@@ -3094,7 +3121,7 @@ void PrototypeMainWindow::onExport()
 		largestLabel,
 		static_cast<long long>(largestIslandIt->voxelCount));
 
-	showProgressValue(65);
+	showProgressValue(70);
 	QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 
 	// ── Steps 6+7 fused: binarize and find tight bounding box in one pass ─────
@@ -3119,6 +3146,10 @@ void PrototypeMainWindow::onExport()
 	const auto* lblPtr = static_cast<const unsigned char*>(labelImage->GetScalarPointer());
 	const auto  lbl8 = static_cast<unsigned char>(largestLabel);
 
+	vtkDataArray* orphanScalars = nullptr;
+	if (orphanMask)
+		orphanScalars = orphanMask->GetPointData()->GetScalars();
+
 	int  boundsMin[3] = { lblExtent[1], lblExtent[3], lblExtent[5] };
 	int  boundsMax[3] = { lblExtent[0], lblExtent[2], lblExtent[4] };
 	bool anyForeground = false;
@@ -3133,6 +3164,12 @@ void PrototypeMainWindow::onExport()
 					+ (i - lblExtent[0]);
 
 				if (lblPtr[flat] != lbl8)
+				{
+					maskPtr[flat] = 0u;
+					continue;
+				}
+
+				if (orphanScalars && orphanScalars->GetTuple1(flat) > 0.5)
 				{
 					maskPtr[flat] = 0u;
 					continue;
@@ -3179,7 +3216,7 @@ void PrototypeMainWindow::onExport()
 		voiMaxX, voiMaxY, voiMaxZ);
 
 	// ── Determine output paths ────────────────────────────────────────────────
-	QString grayPath, maskPath, invPath;
+	QString grayPath, maskPath;// , invPath;
 	if (!m_sidecarPath.isEmpty() && !m_cropPath.isEmpty())
 	{
 		const QString cropBase = QFileInfo(m_cropPath).completeBaseName();
@@ -3188,14 +3225,14 @@ void PrototypeMainWindow::onExport()
 			cropBase + QStringLiteral("_export_grayscale.nii"));
 		maskPath = QDir(sidecarDir).filePath(
 			cropBase + QStringLiteral("_export_mask.nii"));
-		invPath = QDir(sidecarDir).filePath(
-			cropBase + QStringLiteral("_export_inv.nii"));
+		//invPath = QDir(sidecarDir).filePath(
+		//	cropBase + QStringLiteral("_export_inv.nii"));
 	}
 	else
 	{
 		grayPath = QDir::temp().filePath(QStringLiteral("export_grayscale.nii"));
 		maskPath = QDir::temp().filePath(QStringLiteral("export_mask.nii"));
-		invPath = QDir::temp().filePath(QStringLiteral("export_inv.nii"));
+		//invPath = QDir::temp().filePath(QStringLiteral("export_inv.nii"));
 	}
 	/*
 	auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
@@ -3222,19 +3259,26 @@ void PrototypeMainWindow::onExport()
 			writer->Write();
 		});
 
+	int fillCount = 0;
+
 	auto futureMask = QtConcurrent::run(
 		[maskImage,
 		 voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ,
-		 maskPath]()
+		 maskPath, &fillCount]()
 		{
 			auto extract = vtkSmartPointer<vtkExtractVOI>::New();
 			extract->SetInputData(maskImage);
 			extract->SetVOI(voiMinX, voiMaxX, voiMinY, voiMaxY, voiMinZ, voiMaxZ);
 
+			auto fill = vtkSmartPointer<vtkFillFullyEnclosedVoxelFilter>::New();
+			fill->SetInputConnection(extract->GetOutputPort());
+
 			auto writer = vtkSmartPointer<vtkNIFTIImageWriter>::New();
-			writer->SetInputConnection(extract->GetOutputPort());
+			writer->SetInputConnection(fill->GetOutputPort());
 			writer->SetFileName(maskPath.toUtf8().constData());
 			writer->Write();
+
+			fillCount = fill->GetFilledCount();
 		});
 
 	futureGray.waitForFinished();
@@ -3244,6 +3288,7 @@ void PrototypeMainWindow::onExport()
 
 	qDebug("onExport: grayscale written to '%s'.", qUtf8Printable(grayPath));
 	qDebug("onExport: mask written to '%s'.", qUtf8Printable(maskPath));
+	qDebug("onExport: number of filled singles '%d'", fillCount);
 
 	statusBar()->showMessage(
 		tr("Export saved: %1  |  %2").arg(grayPath).arg(maskPath), 8000);
@@ -3465,17 +3510,17 @@ PrototypeMainWindow::applyInverseResliceToOriginal() const
 		return nullptr;
 	}
 
-	// ── Build IndexMatrix⁻¹ from vtkImageReslice::GetIndexMatrix() math ──────
+	// Build IndexMatrix from vtkImageReslice::GetIndexMatrix() math
 	//
 	// Forward IndexMatrix (built by onReslice()'s vtkImageReslice internally):
-	//   IndexMatrix = inMatrix_orig × m_lastResliceAxes × outMatrix_resl
+	//   IndexMatrix = inMatrix_orig x m_lastResliceAxes x outMatrix_resl
 	//
-	//   outMatrix_resl : resliced_index → resliced_physical
-	//   m_lastResliceAxes : resliced_physical → original_physical
-	//   inMatrix_orig  : original_physical → original_index
+	//   outMatrix_resl : resliced_index -> resliced_physical
+	//   m_lastResliceAxes : resliced_physical -> original_physical
+	//   inMatrix_orig  : original_physical -> original_index
 	//
 	// We need the inverse:
-	//   IndexMatrix⁻¹ = reslInMatrix × invResliceAxes × origOutMatrix
+	//   IndexMatrix = reslInMatrix x invResliceAxes x origOutMatrix
 	//
 	// Both matrices are built using the exact same element formulas from
 	// GetIndexMatrix() in vtkImageReslice.cxx, applied to each image's
@@ -3530,22 +3575,22 @@ PrototypeMainWindow::applyInverseResliceToOriginal() const
 			return mat;
 		};
 
-	// origOutMatrix: original_index → original_physical
+	// origOutMatrix: original_index -> original_physical
 	const auto origOutMatrix = buildOutMatrix(m_originalImage);
 
-	// invResliceAxes: original_physical → resliced_physical
+	// invResliceAxes: original_physical -> resliced_physical
 	// Use m_lastResliceAxes — the matrix captured BEFORE setImage() overwrote
 	// m_pca with the resliced-image PCA.  Rebuilding from m_pca here would use
 	// the RESLICED image's PCA, not the axes that were actually applied.
 	auto invResliceAxes = vtkSmartPointer<vtkMatrix4x4>::New();
 	vtkMatrix4x4::Invert(m_lastResliceAxes, invResliceAxes);
 
-	// reslInMatrix: resliced_physical → resliced_index
+	// reslInMatrix: resliced_physical -> resliced_index
 	const auto reslInMatrix = buildInMatrix(m_reslicedImage);
 
-	// newIndexMatrix = reslInMatrix × invResliceAxes × origOutMatrix
+	// newIndexMatrix = reslInMatrix x invResliceAxes x origOutMatrix
 	// Concatenation order mirrors GetIndexMatrix():
-	//   SetMatrix(axes) → PreMultiply+Concatenate(out) → PostMultiply+Concatenate(in)
+	//   SetMatrix(axes) -> PreMultiply+Concatenate(out) -> PostMultiply+Concatenate(in)
 	auto xform = vtkSmartPointer<vtkTransform>::New();
 	xform->SetMatrix(invResliceAxes);
 	xform->PreMultiply();
@@ -3564,7 +3609,7 @@ PrototypeMainWindow::applyInverseResliceToOriginal() const
 			newIndexMatrix->GetElement(r, 2), newIndexMatrix->GetElement(r, 3));
 	}
 
-	// ── Deep-copy original; selectively overwrite cleaned bone voxels ─────────
+	// Deep-copy original; selectively overwrite cleaned bone voxels
 	auto output = vtkSmartPointer<vtkImageData>::New();
 	output->DeepCopy(m_originalImage);
 	vtkDataArray* outScalars = output->GetPointData()->GetScalars();
