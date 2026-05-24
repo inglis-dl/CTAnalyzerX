@@ -15,6 +15,7 @@ target_sources(CTAXCore
     src/Logger.cpp
     src/OtsuThresholdWorker.cpp
     src/VoxelLineIterator.cpp
+    src/vtkFillFullyEnclosedVoxelFilter.cxx
   PUBLIC
     include/ImageResliceHelper.h
     include/vtkImageOrthoPlanes.h
@@ -29,6 +30,9 @@ target_sources(CTAXCore
     include/Logger.h
     include/OtsuThresholdWorker.h
     include/VoxelLineIterator.h
+    include/FillFullyEnclosedVoxelImageFilter.h
+    include/FillFullyEnclosedVoxelImageFilter.hxx
+    include/vtkFillFullyEnclosedVoxelFilter.h
 )
 
 target_include_directories(CTAXCore
