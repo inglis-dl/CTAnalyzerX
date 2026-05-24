@@ -1,7 +1,7 @@
 ﻿cmake_minimum_required(VERSION 3.16...3.21 FATAL_ERROR)
 
 project(CTAnalyzerX
-    VERSION 0.1.0
+    VERSION 0.1.1
     DESCRIPTION "3D volume image visualization tool for DICOM and Scanco .isq files"
     LANGUAGES CXX
 )

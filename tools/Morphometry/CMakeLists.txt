@@ -20,7 +20,9 @@ find_package(ITK REQUIRED)
 include(${ITK_USE_FILE})
 
 set(CTAXMORPHOMETRY_VTK_LIBS
+  VTK::ImagingCore
   VTK::ImagingGeneral
+  VTK::ImagingMath
   VTK::ImagingMorphological
   VTK::ImagingStatistics
   VTK::FiltersCore
@@ -29,6 +31,7 @@ set(CTAXMORPHOMETRY_VTK_LIBS
 
 target_link_libraries(CTAXMorphometry
   PRIVATE
+    CTAXCore
     ${CTAXMORPHOMETRY_VTK_LIBS}
     ${ITK_LIBRARIES}
 )
