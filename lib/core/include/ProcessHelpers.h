@@ -73,10 +73,14 @@ namespace ProcessHelpers
 	//      Without this a flipped axes[0] produces a mirrored output image.
 	//
 	// This is a no-op when pca.valid is false or image is nullptr.
+	//
+	// For segmented bone masks on export the furthest vertical bone voxel along the e1 eigen
+	// vector is below the e0 axis so apply flip = true during onExport.
+	//
 	// -----------------------------------------------------------------------
 	void orientPcaAxesForCanonicalReslice(vtkImageData* image,
 										  const double& threshold,
-										  PcaResult& pca);
+										  PcaResult& pca, const bool& flip = false);
 
 	// -----------------------------------------------------------------------
 	// Ray-AABB intersection (slab method)

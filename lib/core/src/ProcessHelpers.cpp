@@ -558,7 +558,7 @@ namespace ProcessHelpers
 
 	void orientPcaAxesForCanonicalReslice(vtkImageData* image,
 										  const double& threshold,
-										  PcaResult& pca)
+										  PcaResult& pca, const bool& flip)
 	{
 		if (!pca.valid || !image)
 			return;
@@ -680,8 +680,18 @@ namespace ProcessHelpers
 		}
 
 		// Step 8: align axis e1 to point in the direction of max(dmax_pos, dmax_neg).
-		if (dmax_neg > dmax_pos)
-			axis1 = -axis1;
+		// use flip when exporting the PCA aligned binary bone mask
+		//
+		if (flip)
+		{
+			if (dmax_pos > dmax_neg)
+				axis1 = -axis1;
+		}
+		else
+		{
+			if (dmax_neg > dmax_pos)
+				axis1 = -axis1;
+		}
 
 		// Step 9: update e2 as cross product of revised e0 × revised e1.
 		axis2 = axis0.Cross(axis1);
