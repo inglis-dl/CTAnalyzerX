@@ -4,8 +4,10 @@ target_sources(CTAXMorphometry
   PRIVATE
     src/main.cpp
     src/BoneMorphometry.cpp
+    src/MorphometryProgressDialog.cpp
   PUBLIC
     include/BoneMorphometry.h
+    include/MorphometryProgressDialog.h
 )
 
 target_include_directories(CTAXMorphometry
@@ -21,17 +23,15 @@ include(${ITK_USE_FILE})
 
 set(CTAXMORPHOMETRY_VTK_LIBS
   VTK::ImagingCore
-  VTK::ImagingGeneral
-  VTK::ImagingMath
-  VTK::ImagingMorphological
-  VTK::ImagingStatistics
   VTK::FiltersCore
-  VTK::FiltersGeneral
 )
 
 target_link_libraries(CTAXMorphometry
   PRIVATE
     CTAXCore
+    Qt${VTK_QT_VERSION}::Core
+    Qt${VTK_QT_VERSION}::Gui
+    Qt${VTK_QT_VERSION}::Widgets
     ${CTAXMORPHOMETRY_VTK_LIBS}
     ${ITK_LIBRARIES}
 )

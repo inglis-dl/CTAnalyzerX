@@ -36,6 +36,76 @@ static void cliMessageHandler(QtMsgType type,
     }
 }
 
+struct CliOptions
+{
+    QString inputDir;
+    QString outputDir;
+    bool showProgress = false;
+    bool showHelp = false;
+    bool showVersion = false;
+};
+
+static bool parseCli(QCoreApplication& app,
+                     CliOptions& opts,
+                     QString& errorMessage,
+                     QString& helpText)
+{
+    QCommandLineParser parser;
+    parser.setApplicationDescription("CTAnalyzerX Batch Processing Tool");
+    parser.addHelpOption();
+    parser.addVersionOption();
+
+    const QCommandLineOption inputDirOption(
+        QStringList() << "i" << "input-dir",
+        "Directory containing JSON sidecar files.",
+        "input_directory");
+    parser.addOption(inputDirOption);
+
+    const QCommandLineOption outputDirOption(
+        QStringList() << "o" << "output-dir",
+        "Optional directory to save exported NIfTI images and processed JSON sidecar files.",
+        "output_directory");
+    parser.addOption(outputDirOption);
+
+    const QCommandLineOption progressOption(
+        QStringList() << "p" << "log-progress",
+        "Show a progress dialog while processing and write a CSV run report.");
+    parser.addOption(progressOption);
+
+    if (!parser.parse(app.arguments()))
+    {
+        errorMessage = parser.errorText();
+        helpText = parser.helpText();
+        return false;
+    }
+
+    helpText = parser.helpText();
+
+    if (parser.isSet("help"))
+    {
+        opts.showHelp = true;
+        return true;
+    }
+
+    if (parser.isSet("version"))
+    {
+        opts.showVersion = true;
+        return true;
+    }
+
+    if (!parser.isSet(inputDirOption))
+    {
+        errorMessage = "Missing required option: --input-dir <input_directory>";
+        return false;
+    }
+
+    opts.inputDir = parser.value(inputDirOption);
+    opts.outputDir = parser.isSet(outputDirOption) ? parser.value(outputDirOption) : QString();
+    opts.showProgress = parser.isSet(progressOption);
+
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // formatElapsed  —  converts milliseconds to HH:mm:ss.zzz
 // ---------------------------------------------------------------------------
@@ -217,41 +287,37 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName("CTAXBatchProcessor");
     QApplication::setApplicationVersion("1.0");
 
-    QCommandLineParser parser;
-    parser.setApplicationDescription("CTAnalyzerX Batch Processing Tool");
-    parser.addHelpOption();
-    parser.addVersionOption();
+    CliOptions cli;
+    QString cliError;
+    QString cliHelp;
 
-    QCommandLineOption inputDirOption(
-        QStringList() << "i" << "input-dir",
-        "Directory containing JSON sidecar files.",
-        "input_directory");
-    parser.addOption(inputDirOption);
-
-    QCommandLineOption outputDirOption(
-        QStringList() << "o" << "output-dir",
-        "Optional directory to save exported NIfTI images and processed JSON sidecar files.",
-        "output_directory");
-    parser.addOption(outputDirOption);
-
-    QCommandLineOption progressOption(
-        QStringList() << "p" << "log-progress",
-        "Show a progress dialog while processing and write a CSV run report.");
-    parser.addOption(progressOption);
-
-    parser.process(app);
-
-    if (!parser.isSet(inputDirOption))
+    if (!parseCli(app, cli, cliError, cliHelp))
     {
-        parser.showHelp(1);
+        QTextStream err(stderr);
+        err << "CLI error: " << cliError << "\n\n";
+        QTextStream out(stdout);
+        out << cliHelp;
         return 1;
     }
 
-    const QString inputFolderPath = parser.value(inputDirOption);
-    const QString outputFolderPath = parser.isSet(outputDirOption)
-        ? parser.value(outputDirOption)
-        : QString();
-    const bool    verbose = parser.isSet(progressOption);
+    if (cli.showHelp)
+    {
+        QTextStream out(stdout);
+        out << cliHelp;
+        return 0;
+    }
+
+    if (cli.showVersion)
+    {
+        QTextStream out(stdout);
+        out << QCoreApplication::applicationName()
+            << " " << QCoreApplication::applicationVersion() << "\n";
+        return 0;
+    }
+
+    const QString inputFolderPath = cli.inputDir;
+    const QString outputFolderPath = cli.outputDir;
+    const bool verbose = cli.showProgress;
 
     QDir inputDir(inputFolderPath);
     if (!inputDir.exists())
