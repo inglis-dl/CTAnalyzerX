@@ -13,7 +13,7 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QSizePolicy>
-
+#include <QStyle>
 
 WorkflowPanelWidget::WorkflowPanelWidget(QWidget* parent)
 	: QWidget(parent)
@@ -104,10 +104,6 @@ void WorkflowPanelWidget::adjustGroupWidths()
 		return;
 	}
 
-	const int avail = m_scrollArea->viewport()->width();
-	const int padding = 24;
-	const int target = qMax(220, avail - padding);
-
 	const QList<QWidget*> groups = {
 		m_grpImageInfo,
 		m_grpCrop,
@@ -115,17 +111,44 @@ void WorkflowPanelWidget::adjustGroupWidths()
 		m_grpWindowLevel
 	};
 
+	// Compute required width from actual group/widget constraints.
+	int requiredGroupWidth = 0;
 	for (QWidget* g : groups) {
 		if (!g) {
 			continue;
 		}
+		requiredGroupWidth = qMax(requiredGroupWidth, g->minimumWidth());
+		requiredGroupWidth = qMax(requiredGroupWidth, g->minimumSizeHint().width());
+		requiredGroupWidth = qMax(requiredGroupWidth, g->sizeHint().width());
+	}
+
+	// Hard floor matching embedded widgets (ImageInfo/Crop/WindowLevel use ~290).
+	requiredGroupWidth = qMax(requiredGroupWidth, 290);
+
+	const QMargins rootMargins = m_rootLayout ? m_rootLayout->contentsMargins() : QMargins();
+	const int contentMinWidth = requiredGroupWidth + rootMargins.left() + rootMargins.right();
+
+	const int viewportWidth = m_scrollArea->viewport()->width();
+	const int padding = 24;
+	const int target = qMax(contentMinWidth, viewportWidth - padding);
+
+	for (QWidget* g : groups) {
+		if (!g) {
+			continue;
+		}
+		g->setMinimumWidth(requiredGroupWidth);
 		g->setMaximumWidth(target);
-		g->setMinimumWidth(0);
 		g->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 	}
 
-	m_scrollContent->setMinimumWidth(0);
+	m_scrollContent->setMinimumWidth(contentMinWidth);
 	m_scrollContent->setMaximumWidth(target);
+
+	// Ensure the panel itself cannot be shrunk below what content needs.
+	const int scrollBarExtent =
+		m_scrollArea->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, m_scrollArea);
+	const int panelMinWidth = contentMinWidth + padding + scrollBarExtent;
+	setMinimumWidth(panelMinWidth);
 }
 
 void WorkflowPanelWidget::resizeEvent(QResizeEvent* event)

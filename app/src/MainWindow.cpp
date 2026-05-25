@@ -18,6 +18,7 @@
 #include <QDebug>
 #include <QDragEnterEvent>
 #include <QFileDialog>
+#include <QHBoxLayout>
 #include <QMessageBox>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
@@ -85,6 +86,29 @@ MainWindow::MainWindow(QWidget* parent)
 	: QMainWindow(parent), ui(new Ui::MainWindow), defaultImageLoaded(false)
 {
 	ui->setupUi(this);
+
+	// Keep panel compact but wide enough for embedded widgets.
+	const int workflowMin = ui->workflowPanelWidget
+		? ui->workflowPanelWidget->minimumSizeHint().width()
+		: 320;
+	const int panelWidth = qBound(320, workflowMin, 420);
+
+	if (ui->controlPanel) {
+		ui->controlPanel->setMinimumWidth(panelWidth);
+		ui->controlPanel->setMaximumWidth(panelWidth);
+	}
+
+	// Ensure no extra gap between panel and lightbox.
+	if (auto* h = qobject_cast<QHBoxLayout*>(ui->centralWidget->layout())) {
+		h->setSpacing(0);
+	}
+
+	// Prevent shrinking into geometry ranges where native GL children can appear to overlap.
+	if (ui->lightboxWidget) {
+		ui->lightboxWidget->setMinimumWidth(480);
+		setMinimumWidth(panelWidth + ui->lightboxWidget->minimumWidth());
+	}
+
 
 	setAcceptDrops(true); // Enable drag and drop on the main window
 

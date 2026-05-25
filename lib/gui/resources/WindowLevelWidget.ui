@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>233</width>
-    <height>136</height>
+    <width>290</width>
+    <height>129</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -18,7 +18,7 @@
   </property>
   <property name="minimumSize">
    <size>
-    <width>0</width>
+    <width>290</width>
     <height>46</height>
    </size>
   </property>
@@ -95,10 +95,10 @@
         </size>
        </property>
        <property name="minimum">
-        <double>0.0</double>
+        <double>0.000000000000000</double>
        </property>
        <property name="maximum">
-        <double>255.0</double>
+        <double>255.000000000000000</double>
        </property>
       </widget>
      </item>
@@ -111,10 +111,10 @@
         </size>
        </property>
        <property name="minimum">
-        <double>0.0</double>
+        <double>0.000000000000000</double>
        </property>
        <property name="maximum">
-        <double>255.0</double>
+        <double>255.000000000000000</double>
        </property>
       </widget>
      </item>
@@ -135,14 +135,14 @@
    </item>
   </layout>
  </widget>
-	<customwidgets>
-		<customwidget>
-			<class>ScalarOpacityFunctionWidget</class>
-			<extends>QWidget</extends>
-			<header>ScalarOpacityFunctionWidget.h</header>
-			<container>1</container>
-		</customwidget>
-	</customwidgets>
+ <customwidgets>
+  <customwidget>
+   <class>ScalarOpacityFunctionWidget</class>
+   <extends>QWidget</extends>
+   <header>ScalarOpacityFunctionWidget.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
  <resources/>
  <connections/>
 </ui>
