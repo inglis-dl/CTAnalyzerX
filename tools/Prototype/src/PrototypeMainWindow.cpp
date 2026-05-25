@@ -2006,13 +2006,13 @@ void PrototypeMainWindow::onLandmark()
 
 		ProcessHelpers::findSurfacePointFromBoundary(
 			m_image, m_pca.centroid, axisDirPos, m_threshold,
-			m_landmarkPoints[static_cast<std::size_t>(i)][0].data());
+			m_landmarkPoints[i][0].data());
 		ProcessHelpers::findSurfacePointFromBoundary(
 			m_image, m_pca.centroid, axisDirNeg, m_threshold,
-			m_landmarkPoints[static_cast<std::size_t>(i)][1].data());
+			m_landmarkPoints[i][1].data());
 
-		const double* lPos = m_landmarkPoints[static_cast<std::size_t>(i)][0].data();
-		const double* lNeg = m_landmarkPoints[static_cast<std::size_t>(i)][1].data();
+		const double* lPos = m_landmarkPoints[i][0].data();
+		const double* lNeg = m_landmarkPoints[i][1].data();
 
 		qDebug("Landmark axis %d  +: (%.2f, %.2f, %.2f)  -: (%.2f, %.2f, %.2f)",
 			i, lPos[0], lPos[1], lPos[2], lNeg[0], lNeg[1], lNeg[2]);
@@ -2304,7 +2304,7 @@ void PrototypeMainWindow::onRegions()
 		for (int d = 0; d < 2; ++d)
 		{
 			const double* pt =
-				m_landmarkPoints[static_cast<std::size_t>(i)]
+				m_landmarkPoints[i]
 				[static_cast<std::size_t>(d)].data();
 			seeds.push_back({ pt[0], pt[1], pt[2] });
 		}
@@ -3464,7 +3464,7 @@ void PrototypeMainWindow::onInitialize()
 		for (int d = 0; d < 2; ++d)
 		{
 			const double* pt =
-				m_landmarkPoints[static_cast<std::size_t>(i)]
+				m_landmarkPoints[i]
 				[static_cast<std::size_t>(d)].data();
 			seeds.push_back({ pt[0], pt[1], pt[2] });
 		}

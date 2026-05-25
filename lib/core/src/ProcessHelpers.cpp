@@ -42,13 +42,10 @@
 
 namespace ProcessHelpers
 {
+	inline constexpr double tol = 1e-12;
+
 	namespace
 	{
-		Vec3 ToVec3(const double v[3])
-		{
-			return Vec3(v[0], v[1], v[2]);
-		}
-
 		void ToArray(const Vec3& v, double out[3])
 		{
 			out[0] = v.GetX();
@@ -428,7 +425,6 @@ namespace ProcessHelpers
 	{
 		double tMin = -std::numeric_limits<double>::max();
 		double tMax = std::numeric_limits<double>::max();
-		const double tol = 1e-12;
 		for (int a = 0; a < 3; ++a)
 		{
 			const double d = rayDir[a];
@@ -460,7 +456,6 @@ namespace ProcessHelpers
 					 double& tExit)
 	{
 		double tFar = std::numeric_limits<double>::max();
-		const double tol = 1e-12;
 		for (int a = 0; a < 3; ++a)
 		{
 			const double d = rayDir[a];
@@ -520,7 +515,6 @@ namespace ProcessHelpers
 
 		double tmin = -std::numeric_limits<double>::infinity();
 		double tmax = std::numeric_limits<double>::infinity();
-		const double tol = 1e-12;
 		for (int d = 0; d < 3; ++d)
 		{
 			double c_d = c[d];
@@ -579,7 +573,6 @@ namespace ProcessHelpers
 		// the chosen primary direction.
 		// ------------------------------------------------------------------
 		Vec3 axis0(pca.axes[0]);
-		const double tol = 1e-12;
 		if (axis0.Normalize() <= tol)
 			return;
 
@@ -757,9 +750,32 @@ namespace ProcessHelpers
 								  double threshold,
 								  Vec3& outWorld)
 	{
-		double out[3] = { centroid.GetX(), centroid.GetY(), centroid.GetZ() };
-		findSurfacePointFromBoundary(image, centroid.GetData(), axisDir.GetData(), threshold, out);
-		outWorld = Vec3(out);
+		double bounds[6] = {};
+		image->GetBounds(bounds);
+
+		const Vec3 bbMin(bounds[0], bounds[2], bounds[4]);
+		const Vec3 bbMax(bounds[1], bounds[3], bounds[5]);
+
+		double tExit = 0.0;
+		if (!rayAabbExit(centroid, axisDir, bbMin, bbMax, tExit))
+		{
+			outWorld = centroid;
+			return;
+		}
+
+		// Walk from the far image boundary back toward the centroid.
+		const Vec3 startWorld = centroid + (axisDir * tExit);
+		VoxelLine line(image, startWorld, centroid);
+
+		VoxelLineIterator it = line.begin();
+		if (it.AdvanceToFirst(threshold))
+		{
+			outWorld = it.ToWorld();
+			return;
+		}
+
+		// Fallback: return centroid if no qualifying voxel is found.
+		outWorld = centroid;
 	}
 
 	// -----------------------------------------------------------------------
@@ -857,7 +873,7 @@ namespace ProcessHelpers
 
 		for (int s = 0; s < nSeeds; ++s)
 		{
-			const auto& sw = seedsWorld[static_cast<std::size_t>(s)];
+			const auto& sw = seedsWorld[s];
 			const double seedW[3] = { sw[0], sw[1], sw[2] };
 
 			int seedVox[3];
@@ -1179,10 +1195,10 @@ namespace ProcessHelpers
 		quint8 nextLabel = 1u;
 		for (int s = 0; s < nSeeds; ++s)
 		{
-			SeedSetup& ss = setups[static_cast<std::size_t>(s)];
-			ss.world[0] = seedsWorld[static_cast<std::size_t>(s)][0];
-			ss.world[1] = seedsWorld[static_cast<std::size_t>(s)][1];
-			ss.world[2] = seedsWorld[static_cast<std::size_t>(s)][2];
+			SeedSetup& ss = setups[s];
+			ss.world[0] = seedsWorld[s][0];
+			ss.world[1] = seedsWorld[s][1];
+			ss.world[2] = seedsWorld[s][2];
 
 			double cont[3] = {};
 			reslicedImage->TransformPhysicalPointToContinuousIndex(ss.world, cont);
@@ -1251,7 +1267,7 @@ namespace ProcessHelpers
 		{
 			// Copy by value: the lambda must not hold a reference into setups
 			// since this loop may continue modifying it while tasks run.
-			const SeedSetup ss = setups[static_cast<std::size_t>(s)];
+			const SeedSetup ss = setups[s];
 
 			if (!ss.valid)
 			{
@@ -1445,7 +1461,7 @@ namespace ProcessHelpers
 
 		for (int s = 0; s < nSeeds; ++s)
 		{
-			const BfsResult& r = bfsResults[static_cast<std::size_t>(s)];
+			const BfsResult& r = bfsResults[s];
 			if (!r.valid || r.voxelCount == 0)
 				continue;
 
@@ -1498,7 +1514,7 @@ namespace ProcessHelpers
 			// Walk every BfsResult whose root matches this merged entry and remap.
 			for (int s = 0; s < nSeeds; ++s)
 			{
-				const BfsResult& r = bfsResults[static_cast<std::size_t>(s)];
+				const BfsResult& r = bfsResults[s];
 				if (!r.valid || r.voxelCount == 0)
 					continue;
 				if (find(static_cast<int>(r.label)) == mr.canonicalRoot)
@@ -1814,10 +1830,10 @@ namespace ProcessHelpers
 	}
 
 	std::vector<std::array<double, 3>> computeInwardAdjustedSeeds(
-	vtkImageData* image,
-	double threshold,
-	const std::vector<std::array<double, 3>>& originalSeedsWorld,
-	const PcaResult& pca)
+		vtkImageData* image,
+		double threshold,
+		const std::vector<std::array<double, 3>>& originalSeedsWorld,
+		const PcaResult& pca)
 	{
 		std::vector<std::array<double, 3>> adjusted = originalSeedsWorld;
 
@@ -1828,27 +1844,8 @@ namespace ProcessHelpers
 
 		for (int s = 0; s < nSeeds; ++s)
 		{
-			// Keep the existing seed packing convention:
-			// axis = s / 2, tip = s % 2 (0 = positive, 1 = negative).
-			const int axis = s / 2;
-			const int tip = s % 2;
-
-			// Inward direction toward the centroid:
-			//   positive tip sits at centroid + R * axes[axis] -> inward = -axes[axis]
-			//   negative tip sits at centroid - R * axes[axis] -> inward = +axes[axis]
-			const double sign = (tip == 0) ? -1.0 : +1.0;
-			const Vec3d inward(
-				sign * pca.axes[axis][0],
-				sign * pca.axes[axis][1],
-				sign * pca.axes[axis][2]);
-
-			const std::array<double, 3> start = originalSeedsWorld[static_cast<std::size_t>(s)];
-			const std::array<double, 3> end =
-			{
-				pca.centroid[0],
-				pca.centroid[1],
-				pca.centroid[2]
-			};
+			Vec3d start(originalSeedsWorld[s].data());
+			Vec3d end(pca.centroid);
 
 			// VoxelLine defines the segment; VoxelLineIterator walks it.
 			VoxelLine line(image, start, end);
@@ -1860,12 +1857,7 @@ namespace ProcessHelpers
 					continue;
 
 				const auto world = it.ToWorld();
-				adjusted[static_cast<std::size_t>(s)] =
-				{
-					world[0],
-					world[1],
-					world[2]
-				};
+				adjusted[s] = { world[0], world[1], world[2] };
 
 				qDebug("computeInwardAdjustedSeeds: seed %d adjusted to "
 					   "(%.2f, %.2f, %.2f)",
