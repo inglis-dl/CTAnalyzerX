@@ -1,49 +1,47 @@
-#ifndef Q_VTK_OUTPUT_WINDOW_H
-#define Q_VTK_OUTPUT_WINDOW_H
+#pragma once
 
 #include <vtkOutputWindow.h>
 #include <QDebug>
+#include <QString>
 
 /// Redirects all VTK text output to Qt's logging system.
 /// Install via vtkOutputWindow::SetInstance() before any VTK objects are created.
 class VtkQtOutputWindow : public vtkOutputWindow
 {
 public:
-    static VtkQtOutputWindow* New();
-    vtkTypeMacro(VtkQtOutputWindow, vtkOutputWindow);
+	static VtkQtOutputWindow* New();
+	vtkTypeMacro(VtkQtOutputWindow, vtkOutputWindow);
 
-    void DisplayText(const char* msg) override
-    {
-        qDebug().noquote() << "[VTK]" << msg;
-    }
+	void DisplayText(const char* msg) override
+	{
+		qDebug().noquote() << "[VTK]" << QString::fromUtf8(msg ? msg : "").trimmed();
+	}
 
-    void DisplayErrorText(const char* msg) override
-    {
-        qCritical().noquote() << "[VTK ERROR]" << msg;
-    }
+	void DisplayErrorText(const char* msg) override
+	{
+		qCritical().noquote() << "[VTK ERROR]" << QString::fromUtf8(msg ? msg : "").trimmed();
+	}
 
-    void DisplayWarningText(const char* msg) override
-    {
-        qWarning().noquote() << "[VTK WARN]" << msg;
-    }
+	void DisplayWarningText(const char* msg) override
+	{
+		qWarning().noquote() << "[VTK WARN]" << QString::fromUtf8(msg ? msg : "").trimmed();
+	}
 
-    void DisplayGenericWarningText(const char* msg) override
-    {
-        qWarning().noquote() << "[VTK]" << msg;
-    }
+	void DisplayGenericWarningText(const char* msg) override
+	{
+		qWarning().noquote() << "[VTK]" << QString::fromUtf8(msg ? msg : "").trimmed();
+	}
 
-    void DisplayDebugText(const char* msg) override
-    {
-        qDebug().noquote() << "[VTK DBG]" << msg;
-    }
+	void DisplayDebugText(const char* msg) override
+	{
+		qDebug().noquote() << "[VTK DBG]" << QString::fromUtf8(msg ? msg : "").trimmed();
+	}
 
 protected:
-    VtkQtOutputWindow() = default;
-    ~VtkQtOutputWindow() override = default;
+	VtkQtOutputWindow() = default;
+	~VtkQtOutputWindow() override = default;
 
 private:
-    VtkQtOutputWindow(const VtkQtOutputWindow&) = delete;
-    void operator=(const VtkQtOutputWindow&) = delete;
+	VtkQtOutputWindow(const VtkQtOutputWindow&) = delete;
+	void operator=(const VtkQtOutputWindow&) = delete;
 };
-
-#endif // Q_VTK_OUTPUT_WINDOW_H

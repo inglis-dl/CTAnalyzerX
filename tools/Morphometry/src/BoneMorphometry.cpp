@@ -1,5 +1,7 @@
 ﻿#include "BoneMorphometry.h"
 
+#include <QDebug>
+
 #include <itkBinaryBallStructuringElement.h>
 #include <itkBinaryDilateImageFilter.h>
 #include <itkBinaryThinningImageFilter3D.h>
@@ -19,10 +21,6 @@
 #include <itkShapeLabelMapFilter.h>
 #include <itkSignedMaurerDistanceMapImageFilter.h>
 #include <itkVTKImageToImageFilter.h>
-
-
-// Add these includes at the top:
-#include <vtkPolyDataConnectivityFilter.h>
 
 #include <vtkAppendPolyData.h>
 #include <vtkCellArray.h>
@@ -54,6 +52,7 @@
 #include <vtkPointLocator.h>
 #include <vtkPolyLine.h>
 #include <vtkPointData.h>
+#include <vtkPolyDataConnectivityFilter.h>
 #include <vtkSmartPointer.h>
 #include <vtkStripper.h>
 #include <vtkTransform.h>
@@ -100,7 +99,7 @@ namespace BoneMorphometry {
 		}
 		catch (const itk::ExceptionObject& ex)
 		{
-			std::cerr << "Error loading image: " << ex.what() << std::endl;
+			qCritical().noquote() << "Error loading image:" << ex.what();
 			return nullptr;
 		}
 	}
@@ -456,7 +455,7 @@ namespace BoneMorphometry {
 			vtkSmartPointer<vtkImageData> vtkVoidMask = ITKToVTKImage(voidMask);
 			if (!vtkVoidMask)
 			{
-				std::cerr << "  Error: Failed to convert to VTK\n";
+				qCritical().noquote() << "Error: Failed to convert void to VTK";
 				continue;
 			}
 
@@ -464,7 +463,7 @@ namespace BoneMorphometry {
 
 			if (!surf || surf->GetNumberOfPoints() == 0)
 			{
-				std::cerr << "  Warning: No surface extracted\n";
+				qWarning().noquote() << "Warning: No surface extracted for void label" << static_cast<int>(currentLabel);
 			}
 			else
 			{
@@ -509,7 +508,7 @@ namespace BoneMorphometry {
 			vtkSmartPointer<vtkImageData> vtkBoneImage = ITKToVTKImage(itkImage);
 			if (!vtkBoneImage)
 			{
-				std::cerr << "Error: Failed to convert input image to VTK\n";
+				qCritical().noquote() << "Error: Failed to convert input image to VTK";
 				return false;
 			}
 
@@ -519,7 +518,7 @@ namespace BoneMorphometry {
 			vtkSmartPointer<vtkPolyData> allBoneSurfaces = ExtractSurface(vtkBoneImage, boneThreshold);
 			if (!allBoneSurfaces || allBoneSurfaces->GetNumberOfPoints() == 0)
 			{
-				std::cerr << "Error: No bone surface extracted from input image\n";
+				qCritical().noquote() << "Error: No bone surface extracted from input image";
 				return false;
 			}
 
@@ -538,11 +537,13 @@ namespace BoneMorphometry {
 
 			if (!exteriorWriter->Write())
 			{
-				std::cerr << "Error: Failed to write exterior bone surface: " << outputBoneFilename << "\n";
+				qCritical().noquote() << "Error: Failed to write exterior bone surface:"
+					<< QString::fromStdString(outputBoneFilename);
 				return false;
 			}
 
-			std::cout << "Wrote largest exterior bone surface to " << outputBoneFilename << "\n";
+			qInfo().noquote() << "Wrote largest exterior bone surface to"
+				<< QString::fromStdString(outputBoneFilename);
 
 			// ------------------------------------------------------------
 			// Part 2: Extract and write combined void surfaces (existing logic)
@@ -618,7 +619,7 @@ namespace BoneMorphometry {
 				vtkSmartPointer<vtkImageData> vtkVoidMask = ITKToVTKImage(voidMask);
 				if (!vtkVoidMask)
 				{
-					std::cerr << "    Warning: Failed to convert void " << (voidCount + 1) << " to VTK\n";
+					qWarning().noquote() << "Warning: Failed to convert void" << (voidCount + 1) << "to VTK";
 					continue;
 				}
 
@@ -628,7 +629,7 @@ namespace BoneMorphometry {
 				vtkSmartPointer<vtkPolyData> surf = ExtractSurface(vtkVoidMask, t);
 				if (!surf || surf->GetNumberOfPoints() == 0)
 				{
-					std::cerr << "    Warning: No surface extracted for void " << (voidCount + 1) << "\n";
+					qWarning().noquote() << "Warning: No surface extracted for void" << (voidCount + 1);
 					continue;
 				}
 
@@ -644,7 +645,7 @@ namespace BoneMorphometry {
 			}
 			else
 			{
-				std::cout << "Debug: No internal voids found; writing empty void surface file\n";
+				qInfo().noquote() << "No internal voids found; writing empty void surface file";
 			}
 
 			auto voidWriter = vtkSmartPointer<vtkXMLPolyDataWriter>::New();
@@ -654,16 +655,18 @@ namespace BoneMorphometry {
 
 			if (!voidWriter->Write())
 			{
-				std::cerr << "Error: Failed to write void surfaces: " << outputVoidsFilename << "\n";
+				qCritical().noquote() << "Error: Failed to write void surfaces:"
+					<< QString::fromStdString(outputVoidsFilename);
 				return false;
 			}
 
-			std::cout << "Successfully wrote combined void surfaces to " << outputVoidsFilename << "\n";
+			qInfo().noquote() << "Successfully wrote combined void surfaces to"
+				<< QString::fromStdString(outputVoidsFilename);
 			return true;
 		}
 		catch (const std::exception& ex)
 		{
-			std::cerr << "Error writing combined void surfaces: " << ex.what() << std::endl;
+			qCritical().noquote() << "Error writing combined void surfaces:" << ex.what();
 			return false;
 		}
 	}
@@ -752,14 +755,14 @@ namespace BoneMorphometry {
 			writer->SetInput(outputImage);
 			writer->Update();
 
-			std::cout << "Debug: Wrote " << labelMap->GetNumberOfLabelObjects()
-				<< " labeled voids to " << outputFilename << "\n";
+			qInfo().noquote() << "Wrote" << static_cast<int>(labelMap->GetNumberOfLabelObjects())
+				<< "labeled voids to" << QString::fromStdString(outputFilename);
 
 			return true;
 		}
 		catch (const itk::ExceptionObject& ex)
 		{
-			std::cerr << "Error writing labeled void image: " << ex.what() << std::endl;
+			qCritical().noquote() << "Error writing labeled void image:" << ex.what();
 			return false;
 		}
 	}

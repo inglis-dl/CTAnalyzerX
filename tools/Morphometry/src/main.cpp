@@ -1,4 +1,5 @@
 ﻿#include "BoneMorphometry.h"
+#include "Logger.h"
 #include "MorphometryProgressDialog.h"
 
 #include <QApplication>
@@ -613,8 +614,12 @@ private:
 int main(int argc, char** argv)
 {
 	QApplication app(argc, argv);
-	QApplication::setApplicationName(QStringLiteral("CTAXMorphometry"));
-	QApplication::setApplicationVersion(QStringLiteral("1.0"));
+	QCoreApplication::setOrganizationName(QStringLiteral("CTAnalyzerX"));
+	QCoreApplication::setApplicationName(QStringLiteral("CTAXMorphometry"));
+	Logger::setChannel(QStringLiteral("Morphometry"));
+	Logger::setSingleSharedFile(true); // or false
+	Logger::install();
+	QObject::connect(&app, &QCoreApplication::aboutToQuit, []() { Logger::uninstall(); });
 
 	CliOptions opts;
 	QString cliError;
@@ -717,19 +722,35 @@ int main(int argc, char** argv)
 		delete progressDialog;
 	}
 
+	const bool hasResultsToWrite = !rows.empty();
+
 	if (opts.writeCsv)
 	{
-		writeCsvReport(summaryCsvPath, rows);
-		writeVoidDetailsCsvReport(voidDetailsCsvPath, rows);
+		if (hasResultsToWrite)
+		{
+			writeCsvReport(summaryCsvPath, rows);
+			writeVoidDetailsCsvReport(voidDetailsCsvPath, rows);
+		}
+		else
+		{
+			qWarning().noquote() << "Skipping CSV export: no results to write.";
+		}
 	}
 
 	if (opts.writeJson)
 	{
-		writeJsonReport(jsonReportPath, rows);
+		if (hasResultsToWrite)
+		{
+			writeJsonReport(jsonReportPath, rows);
+		}
+		else
+		{
+			qWarning().noquote() << "Skipping JSON export: no results to write.";
+		}
 	}
 
-	std::cout << "Completed. Success: " << finalSuccessCount
-		<< ", Failed: " << finalErrorCount << "\n";
+	qInfo().noquote() << "Completed. Success: " << finalSuccessCount
+		<< ", Failed: " << finalErrorCount;
 
 	return (finalSuccessCount > 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -1,40 +1,20 @@
 #include "Logger.h"
+#include "VtkQtOutputWindow.h"
 
 #include <QCoreApplication>
-#include <QDir>
-#include <QDebug>
-#include <QMessageLogContext>
-#include <QTextStream>
-#include <QFileInfo>
 #include <QDateTime>
+#include <QDebug>
+#include <QDir>
+#include <QFileInfo>
+#include <QMessageLogContext>
+#include <QStandardPaths>
+#include <QTextStream>
+
 #include <algorithm>
+#include <cstdio>
 
-#include <vtkOutputWindow.h>
 #include <vtkObjectFactory.h>
-
-// -------------------- VTK OutputWindow redirect --------------------
-// Small vtkOutputWindow subclass that forwards messages into Logger.
-// Placed here so implementation is local to the project.
-class LocalVTKOutputWindow : public vtkOutputWindow
-{
-public:
-	static LocalVTKOutputWindow* New();
-	vtkTypeMacro(LocalVTKOutputWindow, vtkOutputWindow);
-
-	void DisplayText(const char* txt) override
-	{
-		if (txt) Logger::writeLine(QString::fromUtf8(txt));
-	}
-	void DisplayWarningText(const char* txt) override
-	{
-		if (txt) Logger::writeLine(QStringLiteral("VTK WARNING: %1").arg(QString::fromUtf8(txt)));
-	}
-	void DisplayErrorText(const char* txt) override
-	{
-		if (txt) Logger::writeLine(QStringLiteral("VTK ERROR: %1").arg(QString::fromUtf8(txt)));
-	}
-};
-vtkStandardNewMacro(LocalVTKOutputWindow);
+#include <vtkOutputWindow.h>
 
 // -------------------- Logger implementation --------------------
 Logger* Logger::s_instance = nullptr;
@@ -44,10 +24,20 @@ bool Logger::s_rotateEnabled = true;
 int Logger::s_maxBackupFiles = 5;
 int Logger::s_maxFileSizeMB = 5;
 
+QString Logger::s_umbrellaLogRoot;
+QString Logger::s_channel = QStringLiteral("Unknown");
+bool Logger::s_singleSharedFile = false;
+
+void Logger::setUmbrellaLogRoot(const QString& path) { s_umbrellaLogRoot = path; }
+void Logger::setChannel(const QString& channel) { s_channel = channel; }
+void Logger::setSingleSharedFile(bool on) { s_singleSharedFile = on; }
+
+// Keep previous Qt handler so uninstall restores original behavior.
+static QtMessageHandler s_previousQtMessageHandler = nullptr;
+
 // Qt message handler that forwards to Logger
 static void qtMessageHandler(QtMsgType type, const QMessageLogContext& context, const QString& msg)
 {
-	Q_UNUSED(context);
 	const QString t = qFormatLogMessage(type, context, msg);
 	Logger::writeLine(t);
 }
@@ -55,15 +45,14 @@ static void qtMessageHandler(QtMsgType type, const QMessageLogContext& context, 
 Logger::Logger()
 	: m_stream(&m_file)
 {
-	// replace VTK output window (prevents VTK modal popups)
-	m_vtkOutputWindow = vtkSmartPointer<LocalVTKOutputWindow>::New();
 	openLog();
 }
 
 Logger::~Logger()
 {
 	// restore std::cerr if redirected
-	if (m_oldCerr) {
+	if (m_oldCerr)
+	{
 		std::cerr.rdbuf(m_oldCerr);
 		m_oldCerr = nullptr;
 	}
@@ -72,35 +61,45 @@ Logger::~Logger()
 
 void Logger::install()
 {
-	if (s_instance) return;
-	// create singleton
+	if (s_instance)
+		return;
+
+	// create singleton (constructor opens log)
 	s_instance = new Logger();
 
-	// install Qt handler
-	qInstallMessageHandler(qtMessageHandler);
+	// Save current VTK output window so uninstall can restore it
+	s_instance->m_previousVtkOutputWindow = vtkOutputWindow::GetInstance();
 
-	// replace VTK output window (prevents VTK modal popups)
-	vtkOutputWindow::SetInstance(s_instance->GetVTKOutputWindow());
+	// Route VTK -> Qt logging (qDebug/qWarning/qCritical)
+	s_instance->m_vtkOutputWindow = vtkSmartPointer<VtkQtOutputWindow>::New();
+	vtkOutputWindow::SetInstance(s_instance->m_vtkOutputWindow);
+
+	// install Qt handler and keep previous
+	s_previousQtMessageHandler = qInstallMessageHandler(qtMessageHandler);
 }
 
-LocalVTKOutputWindow* Logger::GetVTKOutputWindow() const
+VtkQtOutputWindow* Logger::GetVTKOutputWindow() const
 {
 	return m_vtkOutputWindow;
 }
 
 void Logger::uninstall()
 {
-	if (!s_instance) return;
+	if (!s_instance)
+		return;
 
-	// Restore VTK output window to default by passing nullptr (VTK will recreate default on demand)
-	vtkOutputWindow::SetInstance(nullptr);
+	// Restore prior VTK output sink
+	if (s_instance->m_previousVtkOutputWindow)
+		vtkOutputWindow::SetInstance(s_instance->m_previousVtkOutputWindow);
+	else
+		vtkOutputWindow::SetInstance(nullptr);
 
-	// uninstall Qt handler: install a no-op handler (nullptr not permitted), install fallback that writes to stderr
-	qInstallMessageHandler([](QtMsgType t, const QMessageLogContext& c, const QString& m) {
-		QByteArray ba = qFormatLogMessage(t, c, m).toLocal8Bit();
-		fwrite(ba.constData(), 1, ba.size(), stderr);
-		fputc('\n', stderr);
-	});
+	s_instance->m_vtkOutputWindow = nullptr;
+	s_instance->m_previousVtkOutputWindow = nullptr;
+
+	// Restore previous Qt message handler
+	qInstallMessageHandler(s_previousQtMessageHandler);
+	s_previousQtMessageHandler = nullptr;
 
 	delete s_instance;
 	s_instance = nullptr;
@@ -119,38 +118,61 @@ int Logger::maxFileSizeMB() { return s_maxFileSizeMB; }
 void Logger::openLog()
 {
 	QMutexLocker locker(&m_mutex);
+	openLogUnlocked();
+}
 
-	QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-	if (dir.isEmpty())
-		dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-	QDir d(dir);
+void Logger::openLogUnlocked()
+{
+	QString root = s_umbrellaLogRoot;
+	if (root.isEmpty())
+	{
+		root = QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
+			.filePath(QStringLiteral("CTAnalyzerX/logs"));
+	}
+
+	QDir d(root);
 	if (!d.exists())
 		d.mkpath(QStringLiteral("."));
 
-	QString path = d.filePath(QStringLiteral("CTAnalyzerX.log"));
+	QString fileName;
+	if (s_singleSharedFile)
+	{
+		fileName = QStringLiteral("CTAnalyzerX.shared.log");
+	}
+	else
+	{
+		const qint64 pid = QCoreApplication::applicationPid();
+		fileName = QStringLiteral("%1_%2.log").arg(s_channel).arg(pid);
+	}
 
-	m_file.setFileName(path);
-	if (!m_file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+	m_file.setFileName(d.filePath(fileName));
+	if (!m_file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
+	{
 		// fallback to temp
-		QString tmp = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-		path = QDir(tmp).filePath(QStringLiteral("CTAnalyzerX.log"));
-		m_file.setFileName(path);
+		const QString tmp = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+		m_file.setFileName(QDir(tmp).filePath(QStringLiteral("CTAnalyzerX.log")));
 		m_file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
 	}
+
 	m_stream.setDevice(&m_file);
 
 	// header
-	m_stream << "---- CTAnalyzerX log started: " << QDateTime::currentDateTime().toString(Qt::ISODate) << " ----\n";
+	m_stream << "---- CTAnalyzerX log started: "
+		<< QDateTime::currentDateTime().toString(Qt::ISODate)
+		<< " ----\n";
 	m_stream.flush();
 
 	// redirect std::cerr to same file to capture libraries that write to cerr
-	if (!m_ofs) {
+	if (!m_ofs)
+	{
 		m_ofs = std::make_unique<std::ofstream>(m_file.fileName().toLocal8Bit().constData(), std::ios::app);
-		if (m_ofs && m_ofs->good()) {
+		if (m_ofs && m_ofs->good())
+		{
 			m_oldCerr = std::cerr.rdbuf();
 			std::cerr.rdbuf(m_ofs->rdbuf());
 		}
-		else {
+		else
+		{
 			m_ofs.reset();
 		}
 	}
@@ -159,39 +181,53 @@ void Logger::openLog()
 void Logger::closeLog()
 {
 	QMutexLocker locker(&m_mutex);
-	if (m_stream.device()) m_stream.flush();
-	if (m_file.isOpen()) m_file.close();
+	closeLogUnlocked();
+}
+
+void Logger::closeLogUnlocked()
+{
+	if (m_stream.device())
+		m_stream.flush();
+
+	if (m_file.isOpen())
+		m_file.close();
 }
 
 void Logger::rotateLogsIfNeeded()
 {
 	// must be called with mutex locked
-	if (!s_rotateEnabled) return;
+	if (!s_rotateEnabled)
+		return;
 
 	const QString base = m_file.fileName();
-	if (base.isEmpty()) return;
+	if (base.isEmpty())
+		return;
 
 	qint64 size = 0;
-	if (m_file.isOpen()) {
+	if (m_file.isOpen())
 		size = m_file.size();
-	}
-	else {
+	else
+	{
 		QFileInfo fi(base);
-		if (fi.exists()) size = fi.size();
+		if (fi.exists())
+			size = fi.size();
 	}
 
 	const qint64 threshold = static_cast<qint64>(s_maxFileSizeMB) * 1024 * 1024;
-	if (threshold <= 0) return;
-	if (size < threshold) return;
+	if (threshold <= 0 || size < threshold)
+		return;
 
-	// perform rotation (close, rename to timestamped backup, prune, reopen)
 	// flush and close current file device
-	if (m_stream.device()) m_stream.flush();
-	if (m_file.isOpen()) m_file.close();
+	if (m_stream.device())
+		m_stream.flush();
+	if (m_file.isOpen())
+		m_file.close();
 
 	// restore stderr redirection so rename operations won't fail on Windows
-	if (m_ofs) {
-		if (m_oldCerr) {
+	if (m_ofs)
+	{
+		if (m_oldCerr)
+		{
 			std::cerr.rdbuf(m_oldCerr);
 			m_oldCerr = nullptr;
 		}
@@ -206,72 +242,94 @@ void Logger::rotateLogsIfNeeded()
 	QString backupName = QStringLiteral("%1%2.log").arg(prefix, timestamp);
 	QString backupPath = dir.filePath(backupName);
 
-	// if a collision occurs (same minute), try adding seconds, then a numeric suffix
-	if (QFile::exists(backupPath)) {
+	// collision handling
+	if (QFile::exists(backupPath))
+	{
 		timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
 		backupName = QStringLiteral("%1%2.log").arg(prefix, timestamp);
 		backupPath = dir.filePath(backupName);
 		int idx = 1;
-		while (QFile::exists(backupPath)) {
+		while (QFile::exists(backupPath))
+		{
 			backupName = QStringLiteral("%1%2_%3.log").arg(prefix, timestamp).arg(idx);
 			backupPath = dir.filePath(backupName);
 			++idx;
 		}
 	}
 
-	// move current log to timestamped backup
-	if (QFile::exists(base)) {
+	if (QFile::exists(base))
 		QFile::rename(base, backupPath);
-	}
 
-	// prune older timestamped backups if we keep a limited number
-	if (s_maxBackupFiles > 0) {
-		// list CTAnalyzerX_*.log files
+	if (s_maxBackupFiles > 0)
+	{
 		QStringList nameFilters;
 		nameFilters << QStringLiteral("CTAnalyzerX_*.log");
-		QFileInfoList infos = dir.entryInfoList(nameFilters, QDir::Files | QDir::NoSymLinks, QDir::Time); // newest first
+		QFileInfoList infos = dir.entryInfoList(nameFilters, QDir::Files | QDir::NoSymLinks, QDir::Time);
 
-		// sort by lastModified ascending (oldest first) so we remove oldest entries
 		std::sort(infos.begin(), infos.end(), [](const QFileInfo& a, const QFileInfo& b) {
 			return a.lastModified() < b.lastModified();
 		});
 
-		// remove oldest until only s_maxBackupFiles remain
-		int removeCount = static_cast<int>(infos.size()) - s_maxBackupFiles;
-		for (int i = 0; i < removeCount; ++i) {
-			const QFileInfo& fi = infos.at(i);
-			QFile::remove(fi.absoluteFilePath());
-		}
+		const int removeCount = static_cast<int>(infos.size()) - s_maxBackupFiles;
+		for (int i = 0; i < removeCount; ++i)
+			QFile::remove(infos.at(i).absoluteFilePath());
 	}
 
-	// reopen a fresh log (this will recreate m_ofs and redirect stderr)
-	openLog();
+	// reopen fresh log without re-locking mutex
+	openLogUnlocked();
 }
 
 void Logger::writeInternal(const QString& line)
 {
-	QMutexLocker locker(&m_mutex);
-	if (!m_stream.device()) {
-		// attempt reopen
-		openLog();
+	// Inter-process lock only needed for single shared file mode.
+	if (s_singleSharedFile)
+	{
+		static QSystemSemaphore ipcLock(QStringLiteral("CTAnalyzerX.Logger.SharedFile"), 1);
+		ipcLock.acquire();
+
+		{
+			QMutexLocker locker(&m_mutex);
+			if (!m_stream.device())
+				openLogUnlocked();
+			rotateLogsIfNeeded();
+
+			const QString out = QStringLiteral("[%1][%2][pid:%3] %4\n")
+				.arg(QDateTime::currentDateTime().toString(Qt::ISODate))
+				.arg(s_channel)
+				.arg(QCoreApplication::applicationPid())
+				.arg(line);
+			m_stream << out;
+			m_stream.flush();
+		}
+
+		ipcLock.release();
+		return;
 	}
 
-	// Check file size and rotate strictly based on size before writing
+	QMutexLocker locker(&m_mutex);
+	if (!m_stream.device())
+		openLogUnlocked();
 	rotateLogsIfNeeded();
 
-	const QString out = QStringLiteral("[%1] %2\n").arg(QDateTime::currentDateTime().toString(Qt::ISODate), line);
+	const QString out = QStringLiteral("[%1][%2][pid:%3] %4\n")
+		.arg(QDateTime::currentDateTime().toString(Qt::ISODate))
+		.arg(s_channel)
+		.arg(QCoreApplication::applicationPid())
+		.arg(line);
 	m_stream << out;
 	m_stream.flush();
 }
 
 void Logger::writeLine(const QString& line)
 {
-	if (s_instance) {
+	if (s_instance)
+	{
 		s_instance->writeInternal(line);
 	}
-	else {
+	else
+	{
 		// fallback to stderr
-		QByteArray ba = line.toLocal8Bit();
+		const QByteArray ba = line.toLocal8Bit();
 		fwrite(ba.constData(), 1, ba.size(), stderr);
 		fputc('\n', stderr);
 		fflush(stderr);

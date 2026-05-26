@@ -1,18 +1,20 @@
 #pragma once
 
+#include <QDateTime>
 #include <QFile>
 #include <QMutex>
-#include <QTextStream>
 #include <QStandardPaths>
-#include <QDateTime>
+#include <QSystemSemaphore>
+#include <QTextStream>
+
 #include <memory>
 #include <ostream>
+#include <fstream>
 
 #include <vtkSmartPointer.h>
 
-// Forward declarations for VTK
 class vtkOutputWindow;
-class LocalVTKOutputWindow;
+class VtkQtOutputWindow;
 
 class Logger
 {
@@ -26,7 +28,13 @@ public:
 	// Write a line to the log (thread-safe)
 	static void writeLine(const QString& line);
 
-	LocalVTKOutputWindow* GetVTKOutputWindow() const;
+	// Runtime config (set before install)
+	static void setUmbrellaLogRoot(const QString& path);   // e.g. %LOCALAPPDATA%/CTAnalyzerX/logs
+	static void setChannel(const QString& channel);        // App/Prototype/Viewer/Morphometry
+	static void setSingleSharedFile(bool on);              // true => CTAnalyzerX.shared.log
+
+
+	VtkQtOutputWindow* GetVTKOutputWindow() const;
 
 	// Runtime configuration (call before Logger::install to affect behavior)
 	static void setRotateEnabled(bool on);
@@ -46,13 +54,19 @@ private:
 	void closeLog();
 	void writeInternal(const QString& line);
 
+	// assumes m_mutex is already held
+	void openLogUnlocked();
+	void closeLogUnlocked();
+
 	// rotation helpers (size-based rotation happens from writeInternal)
 	void rotateLogsIfNeeded();
-	void rotateLogs();
 
 	QFile m_file;
 	QTextStream m_stream;
 	QMutex m_mutex;
+	static QString s_umbrellaLogRoot;
+	static QString s_channel;
+	static bool s_singleSharedFile;
 
 	// rotation config (static runtime-configurable)
 	static bool s_rotateEnabled;
@@ -63,7 +77,8 @@ private:
 	std::unique_ptr<std::ofstream> m_ofs;
 	std::streambuf* m_oldCerr = nullptr;
 
-	vtkSmartPointer<LocalVTKOutputWindow> m_vtkOutputWindow;
+	vtkSmartPointer<VtkQtOutputWindow> m_vtkOutputWindow;
+	vtkSmartPointer<vtkOutputWindow> m_previousVtkOutputWindow;
 
 	static Logger* s_instance;
 };

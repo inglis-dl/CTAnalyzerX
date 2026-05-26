@@ -1,4 +1,5 @@
 ﻿#include "BatchProcessor.h"
+#include "Logger.h"
 #include "BatchProgressDialog.h"
 
 #include <QApplication>
@@ -284,8 +285,13 @@ int main(int argc, char* argv[])
     // QApplication is required when -p shows a GUI dialog.
     // It is a superset of QCoreApplication and safe to use unconditionally.
     QApplication app(argc, argv);
-    QApplication::setApplicationName("CTAXBatchProcessor");
-    QApplication::setApplicationVersion("1.0");
+
+    QCoreApplication::setOrganizationName(QStringLiteral("CTAnalyzerX"));
+    QCoreApplication::setApplicationName(QStringLiteral("CTAXBatchProcessor"));
+    Logger::setChannel(QStringLiteral("BatchProcessor"));
+    Logger::setSingleSharedFile(true); // or false
+    Logger::install();
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() { Logger::uninstall(); });
 
     CliOptions cli;
     QString cliError;

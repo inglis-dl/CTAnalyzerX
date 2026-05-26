@@ -1,5 +1,5 @@
 #include "PrototypeMainWindow.h"
-#include "VtkQtOutputWindow.h"
+#include "Logger.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkAutoInit.h>
@@ -20,15 +20,6 @@ VTK_MODULE_INIT(vtkRenderingVolumeOpenGL2);
 
 int main(int argc, char* argv[])
 {
-	// Install the Qt-forwarding output window before any VTK object is created.
-	// Wrap in a vtkSmartPointer so the caller's reference is released immediately
-	// after SetInstance() takes its own reference, preventing a vtkDebugLeaks
-	// "1 instance still around" report at shutdown.
-	{
-		//auto win = vtkSmartPointer<VtkQtOutputWindow>::New();
-		//vtkOutputWindow::SetInstance(win);
-	}
-
 #ifdef _WIN32
 	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 #endif
@@ -41,6 +32,17 @@ int main(int argc, char* argv[])
 	QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 
 	QApplication app(argc, argv);
+
+	// Set identity before Logger::install() so QStandardPaths points to
+	// the expected app-local directory.
+	QCoreApplication::setOrganizationName(QStringLiteral("CTAnalyzerX"));
+	QCoreApplication::setApplicationName(QStringLiteral("CTAXPrototype"));
+
+	// Logger installs Qt message handler + VTK output window routing.
+	Logger::setChannel(QStringLiteral("Prototype"));
+	Logger::setSingleSharedFile(true); // or false
+	Logger::install();
+	QObject::connect(&app, &QCoreApplication::aboutToQuit, []() { Logger::uninstall(); });
 
 	Q_INIT_RESOURCE(resources);
 
@@ -56,9 +58,6 @@ int main(int argc, char* argv[])
 		w.resize(1200, 800);
 		w.show();
 
-		// If a sidecar path was supplied on the command line load it immediately.
-		// Otherwise the window opens with no image; the user can open one via
-		// File ? Open (the leftmost toolbar button).
 		const QStringList args = QApplication::arguments();
 		if (args.size() >= 2)
 			w.loadFromSidecarAsync(args.at(1));
@@ -67,6 +66,8 @@ int main(int argc, char* argv[])
 	}
 	catch (const std::exception& ex)
 	{
+		Logger::uninstall();
+
 		QMessageBox::critical(
 			nullptr,
 			QStringLiteral("CTAXPrototype - Fatal Error"),
