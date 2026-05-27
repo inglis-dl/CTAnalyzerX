@@ -17,26 +17,6 @@
 
 #include <cstdio>
 
-static void cliMessageHandler(QtMsgType type,
-                               const QMessageLogContext& /*context*/,
-                               const QString& msg)
-{
-    const QByteArray text = msg.toLocal8Bit();
-    switch (type)
-    {
-        case QtDebugMsg:
-        fprintf(stdout, "[DEBUG]    %s\n", text.constData()); fflush(stdout); break;
-        case QtInfoMsg:
-        fprintf(stdout, "[INFO]     %s\n", text.constData()); fflush(stdout); break;
-        case QtWarningMsg:
-        fprintf(stderr, "[WARNING]  %s\n", text.constData()); fflush(stderr); break;
-        case QtCriticalMsg:
-        fprintf(stderr, "[ERROR]    %s\n", text.constData()); fflush(stderr); break;
-        case QtFatalMsg:
-        fprintf(stderr, "[FATAL]    %s\n", text.constData()); fflush(stderr); break;
-    }
-}
-
 struct CliOptions
 {
     QString inputDir;
@@ -45,6 +25,16 @@ struct CliOptions
     bool showHelp = false;
     bool showVersion = false;
 };
+
+static void writeConsole(FILE* stream, const QString& text)
+{
+    const QByteArray utf8 = text.toUtf8();
+    if (!utf8.isEmpty())
+    {
+        fwrite(utf8.constData(), 1, static_cast<size_t>(utf8.size()), stream);
+    }
+    fflush(stream);
+}
 
 static bool parseCli(QCoreApplication& app,
                      CliOptions& opts,
@@ -214,6 +204,7 @@ private:
     std::atomic<bool>   m_abortRequested;
 };
 
+
 // ---------------------------------------------------------------------------
 // writeCsvReport
 // ---------------------------------------------------------------------------
@@ -273,25 +264,13 @@ static void writeCsvReport(const QString& csvPath,
 
 int main(int argc, char* argv[])
 {
-    qInstallMessageHandler(cliMessageHandler);
-
-    // Register custom types used in cross-thread queued signal/slot connections.
-    // Must be called before any QThread is started that emits these signals.
-    // Q_DECLARE_METATYPE alone is insufficient — runtime registration is also required.
     qRegisterMetaType<ProcessingStage>();
     qRegisterMetaType<ProcessingRunResult>();
     qRegisterMetaType<QVector<ProcessingRunResult>>();
 
-    // QApplication is required when -p shows a GUI dialog.
-    // It is a superset of QCoreApplication and safe to use unconditionally.
     QApplication app(argc, argv);
-
     QCoreApplication::setOrganizationName(QStringLiteral("CTAnalyzerX"));
     QCoreApplication::setApplicationName(QStringLiteral("CTAXBatchProcessor"));
-    Logger::setChannel(QStringLiteral("BatchProcessor"));
-    Logger::setSingleSharedFile(true); // or false
-    Logger::install();
-    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() { Logger::uninstall(); });
 
     CliOptions cli;
     QString cliError;
@@ -299,26 +278,26 @@ int main(int argc, char* argv[])
 
     if (!parseCli(app, cli, cliError, cliHelp))
     {
-        QTextStream err(stderr);
-        err << "CLI error: " << cliError << "\n\n";
-        QTextStream out(stdout);
-        out << cliHelp;
+        writeConsole(stderr, QStringLiteral("CLI error: ") + cliError + QStringLiteral("\n\n"));
+        if (!cliHelp.isEmpty())
+            writeConsole(stdout, cliHelp);
         return 1;
     }
 
     if (cli.showHelp)
     {
-        QTextStream out(stdout);
-        out << cliHelp;
-        return 0;
+        writeConsole(stdout, cliHelp);
+        return EXIT_SUCCESS;
     }
 
     if (cli.showVersion)
     {
-        QTextStream out(stdout);
-        out << QCoreApplication::applicationName()
-            << " " << QCoreApplication::applicationVersion() << "\n";
-        return 0;
+        writeConsole(stdout,
+            QCoreApplication::applicationName()
+            + QStringLiteral(" ")
+            + QCoreApplication::applicationVersion()
+            + QStringLiteral("\n"));
+        return EXIT_SUCCESS;
     }
 
     const QString inputFolderPath = cli.inputDir;
@@ -328,7 +307,9 @@ int main(int argc, char* argv[])
     QDir inputDir(inputFolderPath);
     if (!inputDir.exists())
     {
-        qCritical() << "Error: Input directory does not exist:" << inputFolderPath;
+        writeConsole(stderr,
+            QStringLiteral("Error: Input directory does not exist: ")
+            + inputFolderPath + QStringLiteral("\n"));
         return 1;
     }
 
@@ -337,15 +318,25 @@ int main(int argc, char* argv[])
         QDir outputDir(outputFolderPath);
         if (!outputDir.exists())
         {
-            qWarning() << "Output directory does not exist. Attempting to create it:"
-                << outputFolderPath;
-            if (!outputDir.mkpath("."))
+            writeConsole(stderr,
+                QStringLiteral("Warning: Output directory does not exist. Attempting to create it: ")
+                + outputFolderPath + QStringLiteral("\n"));
+
+            if (!outputDir.mkpath(QStringLiteral(".")))
             {
-                qCritical() << "Error: Could not create output directory:" << outputFolderPath;
+                writeConsole(stderr,
+                    QStringLiteral("Error: Could not create output directory: ")
+                    + outputFolderPath + QStringLiteral("\n"));
                 return 1;
             }
         }
     }
+
+    // Logger is runtime-only: install after CLI parsing/validation succeeds.
+    Logger::setChannel(QStringLiteral("BatchProcessor"));
+    Logger::setSingleSharedFile(true); // or false
+    Logger::install();
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, []() { Logger::uninstall(); });
 
     const QStringList sidecarFiles =
         inputDir.entryList(QStringList() << "*.json",

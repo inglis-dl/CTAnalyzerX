@@ -1,4 +1,4 @@
-add_executable(CTAXBatchProcessor WIN32)
+add_executable(CTAXBatchProcessor)
 
 target_sources(CTAXBatchProcessor
   PRIVATE
@@ -35,7 +35,6 @@ target_link_libraries(CTAXBatchProcessor
     ${CTAXBATCH_VTK_LIBS}
     Qt5::Concurrent
 )
-
 
 set_property(TARGET CTAXBatchProcessor PROPERTY AUTOUIC_SEARCH_PATHS
   ${CTAX_GUI_RESOURCES_DIR}

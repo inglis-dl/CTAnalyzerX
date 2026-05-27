@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <iostream>
 #include <vector>
 
@@ -29,7 +30,6 @@ namespace
 	struct CliOptions
 	{
 		bool generateSurfaces = false;
-		bool showProgressDialog = false;
 
 		bool hasInputFile = false;
 		bool hasInputDir = false;
@@ -43,6 +43,10 @@ namespace
 		// Optional prefixes (can include directory).
 		QString csvPrefix;
 		QString jsonPrefix;
+
+		bool showProgress = false;
+		bool showHelp = false;
+		bool showVersion = false;
 	};
 
 	struct ResultRow
@@ -82,7 +86,18 @@ namespace
 		return QFileInfo(filePath).completeBaseName();
 	}
 
-	static bool parseCli(QCoreApplication& app, CliOptions& opts, QString& errorMessage)
+	static void writeConsole(FILE* stream, const QString& text)
+	{
+		const QByteArray utf8 = text.toUtf8();
+		if (!utf8.isEmpty())
+			fwrite(utf8.constData(), 1, static_cast<size_t>(utf8.size()), stream);
+		fflush(stream);
+	}
+
+	static bool parseCli(QCoreApplication& app,
+						 CliOptions& opts,
+						 QString& errorMessage,
+						 QString& helpText)
 	{
 		QCommandLineParser parser;
 		parser.setApplicationDescription(QStringLiteral("CTAnalyzerX Morphometry Tool"));
@@ -141,22 +156,20 @@ namespace
 		if (!parser.parse(app.arguments()))
 		{
 			errorMessage = parser.errorText();
+			helpText = parser.helpText();
 			return false;
 		}
 
-		// Handle --help / --version via built-in behavior
-		if (parser.isSet(QStringLiteral("help")))
-		{
-			parser.showHelp(EXIT_SUCCESS); // does not return
-		}
-		if (parser.isSet(QStringLiteral("version")))
-		{
-			parser.showVersion();
-			return false;
-		}
+		helpText = parser.helpText();
+
+		// Do not call showHelp()/showVersion() here; let main print to stdout/stderr.
+		opts.showHelp = parser.isSet(QStringLiteral("help"));
+		opts.showVersion = parser.isSet(QStringLiteral("version"));
+		if (opts.showHelp || opts.showVersion)
+			return true;
 
 		opts.generateSurfaces = parser.isSet(surfacesOpt);
-		opts.showProgressDialog = parser.isSet(progressOpt);
+		opts.showProgress = parser.isSet(progressOpt);
 
 		opts.writeCsv = parser.isSet(csvOpt) || parser.isSet(csvPrefixOpt);
 		opts.writeJson = parser.isSet(jsonOpt) || parser.isSet(jsonPrefixOpt);
@@ -176,7 +189,6 @@ namespace
 			opts.inputDir = parser.value(inputDirOpt);
 		}
 
-		// Legacy positional single-file mode (only when neither explicit input option is set)
 		const QStringList positional = parser.positionalArguments();
 		if (!opts.hasInputFile && !opts.hasInputDir && positional.size() == 1)
 		{
@@ -616,32 +628,43 @@ int main(int argc, char** argv)
 	QApplication app(argc, argv);
 	QCoreApplication::setOrganizationName(QStringLiteral("CTAnalyzerX"));
 	QCoreApplication::setApplicationName(QStringLiteral("CTAXMorphometry"));
+
+	// Parse CLI before installing Logger so --help/--version output remains
+	// standard console behavior (stdout/stderr) and exits cleanly.
+	CliOptions opts;
+	QString cliError;
+	QString cliHelp;
+
+	if (!parseCli(app, opts, cliError, cliHelp))
+	{
+		if (!cliError.isEmpty())
+			writeConsole(stderr, QStringLiteral("CLI error: ") + cliError + QStringLiteral("\n\n"));
+		if (!cliHelp.isEmpty())
+			writeConsole(stdout, cliHelp);
+		return EXIT_FAILURE;
+	}
+
+	if (opts.showHelp)
+	{
+		writeConsole(stdout, cliHelp);
+		return EXIT_SUCCESS;
+	}
+
+	if (opts.showVersion)
+	{
+		writeConsole(stdout,
+			QCoreApplication::applicationName()
+			+ QStringLiteral(" ")
+			+ QCoreApplication::applicationVersion()
+			+ QStringLiteral("\n"));
+		return EXIT_SUCCESS;
+	}
+
+	// Install logger only for actual processing flow.
 	Logger::setChannel(QStringLiteral("Morphometry"));
 	Logger::setSingleSharedFile(true); // or false
 	Logger::install();
 	QObject::connect(&app, &QCoreApplication::aboutToQuit, []() { Logger::uninstall(); });
-
-	CliOptions opts;
-	QString cliError;
-	if (!parseCli(app, opts, cliError))
-	{
-		if (!cliError.isEmpty())
-		{
-			std::cerr << "CLI error: " << cliError.toStdString() << "\n";
-		}
-		return EXIT_FAILURE;
-	}
-
-	if (opts.hasInputFile && !QFileInfo::exists(opts.inputFile))
-	{
-		std::cerr << "Error: input file does not exist: " << opts.inputFile.toStdString() << "\n";
-		return EXIT_FAILURE;
-	}
-	if (opts.hasInputDir && !QDir(opts.inputDir).exists())
-	{
-		std::cerr << "Error: input directory does not exist: " << opts.inputDir.toStdString() << "\n";
-		return EXIT_FAILURE;
-	}
 
 	const std::vector<QString> inputs = collectInputs(opts);
 
@@ -662,7 +685,7 @@ int main(int argc, char** argv)
 		: QString();
 
 	MorphometryProgressDialog* progressDialog = nullptr;
-	if (opts.showProgressDialog)
+	if (opts.showProgress)
 	{
 		progressDialog = new MorphometryProgressDialog(static_cast<int>(inputs.size()));
 		progressDialog->show();
