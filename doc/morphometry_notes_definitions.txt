@@ -1,0 +1,150 @@
+References for ITK filters used in the code:
+
+source itkBoneMorphometryFeaturesFilter
+https://insight-journal.org/browse/publication/988/#abstract
+
+Bone and Void Shape morphemetry
+https://insight-journal.org/browse/publication/176/#abstract
+
+Bone Morphometry batch processor CTAXMorphometry
+Algorithm Outline
+
+see BoneMorphometry.cpp in the source code repository
+
+
+ComputeBoneMetrics
+    A[Input: Binary ITK Image] --> B[ITK: Trabecular Metrics]
+    A --> C[Convert to VTK]
+    C --> D[VTK: Extract Surface]
+    D --> E[VTK: Mass Properties]
+    A --> F[ITK: Voxel Volume Count]
+    A --> G[Custom: SMI]
+    B --> H[BoneMetrics Output]
+	
+	
+ITK Trabecular Metrics	
+
+What it does:
+Uses ITK's specialized bone morphometry filter to compute standard trabecular bone metrics:
+•	BVTV (Bone Volume / Total Volume): Fraction of bone in the volume
+•	BS/BV (Bone Surface / Bone Volume): Surface-to-volume ratio
+•	Tb.Th (Trabecular Thickness): Mean thickness of trabeculae
+•	Tb.N (Trabecular Number): Number of trabeculae per unit length
+•	Tb.Sp (Trabecular Spacing): Mean distance between trabeculae
+
+What m_Pp and m_Pl represent
+•	m_Pp = bone volume fraction (BV/TV, returned by GetBVTV()):
+[ m_Pp = \frac{\text{numBoneVoxels}}{\text{numVoxelsInsideMask}} ] So this is the fraction of ROI volume labeled as bone.
+•	m_Pl = trabecular number proxy (returned by GetTbN()), computed from boundary crossings per unit length:
+•	First per axis:
+•	m_PlX, m_PlY, m_PlZ from opposite-face transition counts normalized by ROI size and voxel spacing.
+•	Then averaged: [ m_Pl = \frac{m_{PlX} + m_{PlY} + m_{PlZ}}{3} ] This is effectively a line-intercept-based density of bone interfaces, used as TbN.
+
+•	Exposes metrics:
+•	GetBVTV() → m_Pp
+•	GetTbN() → m_Pl
+•	GetTbTh() → m_Pp / m_Pl
+•	GetTbSp() → (1 - m_Pp) / m_Pl
+•	GetBSBV() → 2 * (m_Pl / m_Pp)
+	
+NOTE: do not use BVTV as implmented by ITK and used for 'BVTV': it uses the total image volume ROI as the "total volume"
+Use the following columns to compute a ROI independent metric from the csv file columns:
+
+let TV = TotalVoidVolume + BoneVoxelVolume
+let BV = BoneVoxelVolume
+then BVTV = BV/TV
+	
+	
+Structure Model Index (SMI)
+What SMI measures:
+Discriminates between plate-like (SMI ≈ 0) and rod-like (SMI ≈ 3) trabecular structures.
+Algorithm:
+1.	Extract surface at threshold t
+2.	Dilate mask by 1 voxel
+3.	Extract dilated surface
+4.	Compute: SMI = 6 * (ΔV * S) / (V * ΔS)
+Where:
+•	ΔV = volume change
+•	ΔS = surface area change
+•	Formula derived from differential geometry of parallel surfaces
+
+Euler Number/Characteristic (χ) of a triangulated surface mesh using the Euler-Poincaré formula for polyhedra.
+BoneMeshEuler variable 
+χ = V - E + F
+Where:
+•	V = number of vertices (points)
+•	E = number of edges
+•	F = number of faces (polygons)
+For a closed, orientable 2-manifold (like a bone surface):
+•	Sphere: χ = 2
+•	Torus: χ = 0
+•	Each additional "handle" decreases χ by 2
+using VTK surface data:
+•	V: Count of 3D points defining the mesh
+•	F: Count of polygonal faces (typically triangles after vtkTriangleFilter)
+unique edges E is computed by:
+1.	Iterate through each polygon face
+2.	For each face with npts vertices, generate edges:
+•	Edge 0: vertex[0] → vertex[1]
+•	Edge 1: vertex[1] → vertex[2]
+•	...
+•	Edge (npts-1): vertex[npts-1] → vertex[0] (wraps via modulo)
+3.	Normalize edge direction (if (a > b) swap) so (v₁, v₂) = (v₂, v₁)
+4.	Store in std::set<pair> to auto-deduplicate
+
+Topological based Euler calculations use binary mask image voxel data
+and connectivity of voxels (all variables with 'Topology' prefix)
+see ComputeTopology code
+
+For a closed, orientable 3D surface:
+χ = 2 - 2g - 2h
+•	χ = Euler characteristic
+•	g = genus (number of "handles" or tunnels):  
+•	h = number of internal cavities
+ note that solving for g:
+ g = (2 - 2h - χ) / 2
+Why it matters:
+Provides quantitative topology metrics for bone health assessment, beyond simple volume/density measurements.
+
+Void Metrics
+    A[Input: Binary Bone Mask] --> B[Step 1: Invert Image]
+    B --> C[Step 2: Connected Components]
+    C --> D[Step 3: Shape Label Map]
+    D --> E[Step 4: Remove Border Regions]
+    E --> F[Step 5: For Each Void]
+    F --> G[Part A: ITK Voxel Metrics]
+    F --> H[Part B: Create Binary Mask]
+    H --> I[Part C: VTK Surface Analysis]
+    G --> J[VoidMetrics Vector]
+    I --> J
+    J --> K[Return Results + Totals]
+	
+	    // ITK voxel-based
+    VoxelVolume;              // mm³
+    VoxelEquivalentDiameter;  // mm
+    VoxelElongation;          // 0-1
+    VoxelRoundness;           // 0-1
+    VoxelFlatness;            // 0-1
+    
+	Shape metrics interpretation:
+Metric	Formula	Sphere	Rod	Plate
+Elongation	λ2/λ1	1.0	< 0.5	~0.8
+Flatness	λ3/λ2	1.0	~1.0	< 0.5
+Roundness	Perimeter²/(4π·Area)	1.0	> 2.0	~1.5
+Where λ1 ≥ λ1 ≥ λ3 are principal axes from PCA.
+	
+NOTE: for very small voids (ie. 2 voxels etc.) the parameters may = 0	
+	
+    // VTK mesh-based
+    MeshSurfaceArea;          // mm²
+    MeshSphericity;           // 0-1
+	
+Sphericity calculation	
+Normalized Shape Index = (π^(1/3) × (6V)^(2/3)) / S
+Where:
+  V = volume
+  S = surface area
+ 
+Perfect sphere = 1.0
+Elongated shapes < 1.0
+	
