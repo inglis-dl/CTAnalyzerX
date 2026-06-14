@@ -8,7 +8,12 @@ class CropWidget : public QWidget
 {
 	Q_OBJECT
 public:
-	explicit CropWidget(QWidget* parent = nullptr);
+	enum class Mode {
+		Cropping,      // Full crop-and-save workflow (Define/Reset/Save buttons)
+		Visualization  // Live visualization mode (Checkbox/Reset, no Save)
+	};
+
+	explicit CropWidget(QWidget* parent = nullptr, Mode mode = Mode::Cropping);
 	~CropWidget() override;
 
 	// Accessors for the range sliders
@@ -25,6 +30,9 @@ public:
 	QLabel* zMaxLabel() const { return ui.zMaxLabel; }
 
 	void setSaveEnabled(bool on);
+
+	// Get current mode
+	Mode mode() const { return m_mode; }
 
 public slots:
 	// Configure the sliders' ranges and labels (x,y,z order to match UI)
@@ -64,7 +72,10 @@ private slots:
 
 private:
 	Ui::CropWidget ui;
+	Mode m_mode;
+
 	void setSiblingControlsEnabled(bool on);
 	void updateLabels();
 	void updateSaveButtonState();
+	void configureForMode();
 };

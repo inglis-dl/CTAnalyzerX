@@ -20,7 +20,7 @@ target_sources(CTAXGui
     src/SelectionFrameWidget.cpp
     src/SliceView.cpp
     src/SunkenSliderStyle.cpp
-    src/VolumePlanesWidget.cpp
+#   src/VolumePlanesWidget.cpp
     src/VolumeRotationWidget.cpp
     src/VolumeView.cpp
     src/WindowLevelBridge.cpp
@@ -32,7 +32,7 @@ target_sources(CTAXGui
     resources/LightboxWidget.ui
     resources/ScalarOpacityFunctionWidget.ui
     resources/SliceView.ui
-    resources/VolumePlanesWidget.ui
+#    resources/VolumePlanesWidget.ui
     resources/VolumeRotationWidget.ui
     resources/VolumeView.ui
     resources/WindowLevelWidget.ui
@@ -56,7 +56,7 @@ target_sources(CTAXGui
     include/SelectionFrameWidget.h
     include/SliceView.h
     include/SunkenSliderStyle.h
-    include/VolumePlanesWidget.h
+#    include/VolumePlanesWidget.h
     include/VolumeRotationWidget.h
     include/VolumeView.h
     include/WindowLevelBridge.h

@@ -2,8 +2,9 @@
 
 #include <QDebug>
 
-CropWidget::CropWidget(QWidget* parent)
+CropWidget::CropWidget(QWidget* parent, Mode mode)
 	: QWidget(parent)
+	, m_mode(mode)
 {
 	ui.setupUi(this);
 
@@ -27,6 +28,9 @@ CropWidget::CropWidget(QWidget* parent)
 	// sensible defaults for labels (in case caller doesn't call setRangeSliders)
 	setRangeSliders(0, 1000, 0, 1000, 0, 1000);
 
+	// Configure UI based on mode
+	configureForMode();
+
 	// Ensure Save is correctly initialized according to slider defaults
 	// (it will be disabled because the initial region matches the full image)
 	updateSaveButtonState();
@@ -34,6 +38,30 @@ CropWidget::CropWidget(QWidget* parent)
 
 CropWidget::~CropWidget()
 {
+}
+
+void CropWidget::configureForMode()
+{
+	if (m_mode == Mode::Visualization) {
+		// Hide Save button in visualization mode
+		if (ui.saveButton) {
+			ui.saveButton->setVisible(false);
+		}
+		// In visualization mode, the define button acts as a simple checkbox
+		// (no need for complex save validation logic)
+		if (ui.defineButton) {
+			ui.defineButton->setText(tr("Enable ROI Planes"));
+		}
+	}
+	else {
+		// Cropping mode: all controls visible with standard labels
+		if (ui.saveButton) {
+			ui.saveButton->setVisible(true);
+		}
+		if (ui.defineButton) {
+			ui.defineButton->setText(tr("Define"));
+		}
+	}
 }
 
 void CropWidget::setSaveEnabled(bool on)
@@ -200,6 +228,11 @@ void CropWidget::updateSaveButtonState()
 {
 	// If no UI elements available bail out defensively.
 	if (!ui.saveButton || !ui.xRangeSlider || !ui.yRangeSlider || !ui.zRangeSlider || !ui.defineButton) return;
+
+	// In visualization mode, Save button is hidden, so no need to update its state
+	if (m_mode == Mode::Visualization) {
+		return;
+	}
 
 	// Must be in define mode to allow save
 	if (!ui.defineButton->isChecked()) {

@@ -1,12 +1,12 @@
 ﻿#include "ViewerMainWindow.h"
 
 #include "CollapsibleGroupBox.h"
+#include "CropWidget.h"
 #include "ImageInfoWidget.h"
 #include "ImageLoader.h"
 #include "LightboxWidget.h"
 #include "ScalarOpacityFunctionWidget.h"
 #include "SliceView.h"
-#include "VolumePlanesWidget.h"
 #include "WindowLevelWidget.h"
 
 #include <vtkEventQtSlotConnect.h>
@@ -98,7 +98,8 @@ void ViewerMainWindow::buildUi()
 	grpWindowLevel->setLayout(windowLevelLayout);
 
 	// Volume cropping planes section
-	m_volumePlanes = new VolumePlanesWidget(scrollContent);
+	// Use CropWidget in Visualization mode (replaces VolumePlanesWidget)
+	m_volumePlanes = new CropWidget(scrollContent, CropWidget::Mode::Visualization);
 	auto* grpVolumePlanes = new CollapsibleGroupBox(tr("ROI Planes"), scrollContent);
 	auto* volumePlanesLayout = new QVBoxLayout;
 	volumePlanesLayout->setContentsMargins(0, 0, 0, 0);
@@ -224,15 +225,15 @@ void ViewerMainWindow::wireConnections()
 
 	auto* volumeView = m_lightbox->getVolumeView();
 
-	connect(volumeView, &VolumeView::imageExtentsChanged, m_volumePlanes, &VolumePlanesWidget::setRangeSliders);
+	connect(volumeView, &VolumeView::imageExtentsChanged, m_volumePlanes, &CropWidget::setRangeSliders);
 
 	// Connect the widget's signal to the view's slot for setting the region
-	connect(m_volumePlanes, &VolumePlanesWidget::croppingRegionChanged,
+	connect(m_volumePlanes, &CropWidget::croppingRegionChanged,
 			volumeView, &VolumeView::setCroppingRegion);
 
-	// Connect VolumeView's state to update VolumePlanesWidget's UI
+	// Connect VolumeView's state to update CropWidget's UI
 	connect(volumeView, &VolumeView::croppingEnabledChanged,
-			m_volumePlanes, &VolumePlanesWidget::onExternalCroppingChanged);
+			m_volumePlanes, &CropWidget::onExternalCroppingChanged);
 }
 
 // ── Slots ────────────────────────────────────────────────────────────────────
