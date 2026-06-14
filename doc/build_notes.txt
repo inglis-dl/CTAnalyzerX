@@ -1,0 +1,638 @@
+﻿CTAnalyzerX Build Notes
+=======================
+
+- example here uses 'D:\' as root
+
+Build Environment
+-----------------
+- Platform: Windows x64 (win32-msvc)
+- Compiler: MSVC 14.39.33523 (Visual Studio 2022)
+- CMake: 3.31.6
+- Architecture: x86_64 (SSE2)
+- C++ Standard: C++17
+
+Build Order
+-----------
+1. Qt 5.15 (static)
+2. Eigen 3.4.90
+3. VTK 9.3+
+4. ITK 5.2.0
+5. vtk-dicom 0.8
+6. CTAnalyzerX 0.1.1
+
+===============================================================================
+
+0. Source Code Acquisition
+===============================================================================
+
+Prerequisites:
+--------------
+- Git for Windows: https://git-scm.com/download/win
+- Visual Studio 2022 Community with "Desktop development with C++" workload
+- CMake 3.20+ (included with Visual Studio or standalone)
+
+Directory Structure:
+--------------------
+Create build directories:
+
+mkdir D:\repository
+mkdir D:\build
+
+Clone Required Repositories:
+-----------------------------
+
+1. Qt 5.15.x (LTS)
+------------------
+cd D:\repository
+git clone https://code.qt.io/qt/qt5.git
+cd qt5
+git checkout 5.15
+perl init-repository --module-subset=default,-qtwebengine
+
+Note: Qt5 repository is ~2 GB, full checkout with submodules is ~10 GB
+      init-repository takes 15-30 minutes depending on connection speed
+
+2. Eigen 3.4.x
+--------------
+cd D:\repository
+git clone https://gitlab.com/libeigen/eigen.git
+cd eigen
+git checkout 3.4.0
+
+Note: Eigen is header-only, ~30 MB
+
+3. VTK 9.3.x
+------------
+cd D:\repository
+git clone https://gitlab.kitware.com/vtk/vtk.git
+cd vtk
+git checkout v9.3.0
+
+Note: VTK repository is ~500 MB
+
+4. ITK 5.2.x
+------------
+cd D:\repository
+git clone https://github.com/InsightSoftwareConsortium/ITK.git itk
+cd itk
+git checkout v5.2.0
+
+Note: ITK repository is ~300 MB
+
+Optional: Enable BoneMorphometry Remote Module
+-----------------------------------------------
+# ITK remote modules are fetched automatically during CMake configuration
+# when Module_BoneMorphometry=ON is set. No manual git clone needed.
+
+5. vtk-dicom 0.8.x
+------------------
+cd D:\repository
+git clone https://github.com/dgobbi/vtk-dicom.git
+cd vtk-dicom
+git checkout v0.8.15
+
+Note: vtk-dicom is ~5 MB
+
+6. CTAnalyzerX
+--------------
+cd D:\repository
+git clone https://github.com/Bonelab/CTAnalyzerX.git
+cd CTAnalyzerX
+
+Note: CTAnalyzerX is ~50 MB
+
+Alternative: Shallow Clones (Faster, Space-Saving)
+---------------------------------------------------
+For faster cloning with reduced disk usage, use --depth 1:
+
+# Qt5 (shallow clone, single branch)
+git clone --depth 1 --branch 5.15 https://code.qt.io/qt/qt5.git
+cd qt5
+perl init-repository --module-subset=default,-qtwebengine
+
+# Eigen (shallow clone)
+git clone --depth 1 --branch 3.4.0 https://gitlab.com/libeigen/eigen.git
+
+# VTK (shallow clone)
+git clone --depth 1 --branch v9.3.0 https://gitlab.kitware.com/vtk/vtk.git
+
+# ITK (shallow clone)
+git clone --depth 1 --branch v5.2.0 https://github.com/InsightSoftwareConsortium/ITK.git itk
+
+# vtk-dicom (shallow clone)
+git clone --depth 1 --branch v0.8.15 https://github.com/dgobbi/vtk-dicom.git
+
+# CTAnalyzerX (full clone to preserve git history)
+git clone https://github.com/Bonelab/CTAnalyzerX.git
+
+Disk Space Summary (Full Clones):
+----------------------------------
+Qt5:         ~10 GB (with submodules)
+Eigen:       ~30 MB
+VTK:         ~500 MB
+ITK:         ~300 MB
+vtk-dicom:   ~5 MB
+CTAnalyzerX: ~50 MB
+---------------------
+Total:       ~11 GB source code
+
+Shallow clones reduce this to ~3-4 GB but lose git history.
+
+Verify Clones:
+--------------
+dir D:\repository
+# Should list: qt5, eigen, vtk, itk, vtk-dicom, CTAnalyzerX
+
+Repository Versions (Git Tags):
+--------------------------------
+Qt5:         5.15.2 (LTS, last open-source version before Qt 6)
+Eigen:       3.4.0 (stable release)
+VTK:         9.3.0 (latest stable as of 2024)
+ITK:         5.2.0 (stable with BoneMorphometry support)
+vtk-dicom:   0.8.15 (latest stable)
+CTAnalyzerX: main/master branch (active development)
+
+Update Existing Repositories:
+------------------------------
+cd D:\repository\qt5
+git pull
+perl init-repository --module-subset=default,-qtwebengine
+
+cd D:\repository\eigen
+git pull
+
+cd D:\repository\vtk
+git pull
+
+cd D:\repository\itk
+git pull
+
+cd D:\repository\vtk-dicom
+git pull
+
+cd D:\repository\CTAnalyzerX
+git pull
+
+===============================================================================
+
+1. Qt 5.15 Static Build
+===============================================================================
+
+Source:    D:\repository\qt5
+Build:     D:\build\qt5
+Install:   D:\build\qt5-static
+
+Open x64 Native Tools Command Prompt for VS 2022
+-------------------------------------------------
+Start Menu -> Visual Studio 2022 -> x64 Native Tools Command Prompt for VS 2022
+
+Configure Qt:
+-------------
+cd D:\repository\qt5
+configure.bat ^
+  -v ^
+  -prefix D:\build\qt5-static ^
+  -opensource ^
+  -confirm-license ^
+  -debug ^
+  -static ^
+  -static-runtime ^
+  -no-pch ^
+  -platform win32-msvc ^
+  -no-freetype ^
+  -opengl desktop ^
+  -sql-sqlite ^
+  -no-sql-odbc ^
+  -mp ^
+  -nomake tests ^
+  -nomake examples ^
+  -skip qtdatavis3d ^
+  -skip qtgamepad ^
+  -skip qtlocation ^
+  -skip qtlottie ^
+  -skip qtmultimedia ^
+  -skip qtpurchasing ^
+  -skip qtsensors ^
+  -skip qtserialbus ^
+  -skip qtserialport ^
+  -skip qtspeech ^
+  -skip qtwayland ^
+  -skip qtwebchannel ^
+  -skip qtwebengine ^
+  -skip qtwebglplugin ^
+  -skip qtwebsockets ^
+  -skip qtwebview
+
+Build Commands:
+---------------
+nmake -j8
+nmake install
+
+Key Configuration:
+------------------
+- Mode: debug (optimized release_tools)
+- Runtime: static (/MTd debug, /MT release)
+- OpenGL: Desktop (native Windows OpenGL)
+- D-Bus: Yes (host_dbus via makeSpec)
+- Modules: Concurrent, Gui, Network, Sql, Widgets, Xml
+- Direct2D: Yes (DirectWrite 1 & 2)
+
+Critical Flags for Static Linking:
+-----------------------------------
+CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>
+
+Qt Configuration Result:
+------------------------
+[YES] Static linking enabled
+[YES] Static runtime (/MT, /MTd)
+[YES] Desktop OpenGL (required for VTK)
+[YES] C++17 support
+[YES] SSE2/AVX/AVX2/AVX512 SIMD
+[NO] C99 (not required)
+[NO] pkg-config (disabled)
+[NO] System zlib (built-in used)
+
+Build Time: ~2-4 hours (8-core, /MP flag)
+Disk Usage: ~25 GB (source + build + install)
+
+Environment Setup:
+------------------
+set Qt5_DIR=D:\build\qt5-static\lib\cmake\Qt5
+set PATH=D:\build\qt5-static\bin;%PATH%
+
+===============================================================================
+
+2. Eigen 3.4.90
+===============================================================================
+
+Source:    D:\repository\eigen
+Build:     D:\build\eigen
+Install:   D:\build\install
+
+CMake Command:
+--------------
+cmake ^
+  -S D:\repository\eigen ^
+  -B D:\build\eigen ^
+  -G "Visual Studio 17 2022" ^
+  -A x64 ^
+  -DCMAKE_INSTALL_PREFIX=D:\build\install ^
+  -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded ^
+  -DCMAKE_CXX_STANDARD=14 ^
+  -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
+  -DCMAKE_CXX_EXTENSIONS=OFF ^
+  -DBUILD_TESTING=ON ^
+  -DEIGEN_BUILD_CMAKE_PACKAGE=ON ^
+  -DEIGEN_BUILD_DOC=OFF ^
+  -DEIGEN_BUILD_TESTING=OFF
+
+cmake --build D:\build\eigen --config Release --target install
+
+Key Settings:
+-------------
+- Header-only library (no compilation needed)
+- Install to: D:\build\install\include\eigen3
+- CMake package: D:\build\install\share\eigen3\cmake
+
+===============================================================================
+
+3. VTK 9.3+
+===============================================================================
+
+Source:    D:\repository\vtk
+Build:     D:\build\vtk
+Install:   D:\build\install
+
+CMake Command:
+--------------
+cmake ^
+  -S D:\repository\vtk ^
+  -B D:\build\vtk ^
+  -G "Visual Studio 17 2022" ^
+  -A x64 ^
+  -DCMAKE_INSTALL_PREFIX=D:\build\install ^
+  -DCMAKE_BUILD_TYPE=Debug ^
+  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDebug ^
+  -DCMAKE_PREFIX_PATH=D:\build\qt5-static;D:\build\install ^
+  -DBUILD_SHARED_LIBS=OFF ^
+  -DVTK_QT_VERSION=5 ^
+  -DVTK_GROUP_ENABLE_Qt=WANT ^
+  -DVTK_GROUP_ENABLE_Rendering=WANT ^
+  -DVTK_GROUP_ENABLE_StandAlone=WANT ^
+  -DVTK_GROUP_ENABLE_Imaging=WANT ^
+  -DVTK_GROUP_ENABLE_Views=WANT ^
+  -DVTK_MODULE_ENABLE_VTK_RenderingVolume=WANT ^
+  -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2=WANT ^
+  -DVTK_MODULE_USE_EXTERNAL_VTK_eigen=ON ^
+  -DEigen3_DIR=D:\build\install\share\eigen3\cmake ^
+  -DQt5_DIR=D:\build\qt5-static\lib\cmake\Qt5
+
+cmake --build D:\build\vtk --config Debug --target install -j8
+
+Key Modules:
+------------
+[YES] GUISupportQt (QVTKOpenGLNativeWidget)
+[YES] RenderingCore, RenderingOpenGL2
+[YES] RenderingVolume, RenderingVolumeOpenGL2
+[YES] ImagingCore, ImagingGeneral
+[YES] IOImage, IOXML
+[YES] InteractionStyle, InteractionWidgets
+[YES] DICOM (vtk-dicom)
+[NO] TestingRendering (DONT_WANT)
+[NO] GUISupportQtQuick (DONT_WANT)
+[NO] IOIOSS (DONT_WANT)
+
+External Dependencies:
+----------------------
+- Eigen3: D:\build\install\include\eigen3 (system)
+- Qt5: D:\build\qt5-static\lib\cmake\Qt5 (static)
+- double-conversion: D:\build\install\lib\double-conversion.lib (built-in)
+- OpenGL: opengl32 (system)
+
+===============================================================================
+
+4. ITK 5.2.0
+===============================================================================
+
+Source:    D:\repository\itk
+Build:     D:\build\itk
+Install:   D:\build\install
+
+CMake Command:
+--------------
+cmake ^
+  -S D:\repository\itk ^
+  -B D:\build\itk ^
+  -G "Visual Studio 17 2022" ^
+  -A x64 ^
+  -DCMAKE_INSTALL_PREFIX=D:\build\install ^
+  -DCMAKE_BUILD_TYPE=Debug ^
+  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDebug ^
+  -DBUILD_SHARED_LIBS=OFF ^
+  -DBUILD_TESTING=OFF ^
+  -DBUILD_EXAMPLES=OFF ^
+  -DITK_USE_SYSTEM_EIGEN=ON ^
+  -DEigen3_DIR=D:\build\install\share\eigen3\cmake ^
+  -DModule_ITKVtkGlue=ON ^
+  -DVTK_DIR=D:\build\install\lib\cmake\vtk ^
+  -DITKGroup_Bridge=ON ^
+  -DITKGroup_Core=ON ^
+  -DITKGroup_Filtering=ON ^
+  -DITKGroup_IO=OFF ^
+  -DITKGroup_Numerics=ON ^
+  -DITKGroup_Registration=ON ^
+  -DITKGroup_Segmentation=ON ^
+  -DITK_USE_64BITS_IDS=ON
+
+cmake --build D:\build\itk --config Debug --target install -j8
+
+Key Modules (Enabled):
+----------------------
+[YES] Core: Common, Transform, Mesh
+[YES] Filtering: ImageGrid, ImageIntensity, Smoothing, MathematicalMorphology
+[YES] Numerics: Optimizers, Statistics
+[YES] Registration: Common, Metricsv4, RegistrationMethodsv4
+[YES] Segmentation: Watersheds, LevelSets, RegionGrowing, ConnectedComponents
+[YES] Bridge: VtkGlue (ITK-VTK interop)
+[YES] ThirdParty: GDCM, HDF5, JPEG, PNG, TIFF, MetaIO, NIFTI
+
+Remote Modules (Enabled):
+--------------------------
+[YES] AdaptiveDenoising
+[YES] AnalyzeObjectLabelMap
+[YES] BoneEnhancement
+[YES] BoneMorphometry (for morphometry tools)
+
+ThirdParty Settings:
+--------------------
+- GDCM: Built-in (ITK's internal GDCM 3.0+)
+- HDF5: Built-in (no batch h5detect)
+- Eigen3: External (D:\build\install)
+- ZLIB: Built-in
+- DoubleConversion: Not used
+
+===============================================================================
+
+5. vtk-dicom 0.8
+===============================================================================
+
+Source:    D:\repository\vtk-dicom
+Build:     D:\build\vtk-dicom
+Install:   D:\build\install
+
+CMake Command:
+--------------
+cmake ^
+  -S D:\repository\vtk-dicom ^
+  -B D:\build\vtk-dicom ^
+  -G "Visual Studio 17 2022" ^
+  -A x64 ^
+  -DCMAKE_INSTALL_PREFIX=D:\build\install ^
+  -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDebug ^
+  -DBUILD_SHARED_LIBS=OFF ^
+  -DBUILD_PROGRAMS=ON ^
+  -DBUILD_TESTING=OFF ^
+  -DBUILD_EXAMPLES=OFF ^
+  -DVTK_DIR=D:\build\install\lib\cmake\vtk ^
+  -DITK_DIR=D:\build\install\lib\cmake\ITK-5.2 ^
+  -DUSE_GDCM=ON ^
+  -DUSE_ITK_GDCM=ON ^
+  -DUSE_DCMTK=OFF ^
+  -DUSE_SQLITE=OFF ^
+  -DEigen3_INCLUDE_DIR=D:\build\install\include\eigen3 ^
+  -DDICOM_EXTERNAL_BUILD=ON
+
+cmake --build D:\build\vtk-dicom --config Debug --target install
+
+Key Settings:
+-------------
+- DICOM I/O: ITK's GDCM (USE_ITK_GDCM=ON)
+- Tools: dicomdump, dicomtodicom, dicomfind (BUILD_PROGRAMS=ON)
+- External build mode (DICOM_EXTERNAL_BUILD=ON)
+
+Programs Built:
+---------------
+- dicomdump.exe (DICOM metadata inspector)
+- dicomtodicom.exe (DICOM converter)
+- dicomfind.exe (DICOM query tool)
+
+===============================================================================
+
+6. CTAnalyzerX 0.1.1
+===============================================================================
+
+Source:    D:\repository\CTAnalyzerX
+Build:     D:\build\ctanalyzerx
+Install:   D:\build\install
+
+CMake Command:
+--------------
+cmake ^
+  -S D:\repository\CTAnalyzerX ^
+  -B D:\build\ctanalyzerx ^
+  -G "Visual Studio 17 2022" ^
+  -DCMAKE_INSTALL_PREFIX=D:\build\install ^
+  -DCMAKE_PREFIX_PATH="D:\build\qt5-static;D:\build\install" ^
+  -DCTAX_BUILD_TOOLS=ON ^
+  -DCTAX_BUILD_TOOL_VIEWER=ON ^
+  -DCTAX_BUILD_TOOL_PROTOTYPE=ON ^
+  -DCTAX_BUILD_TOOL_MORPHOMETRY=ON ^
+  -DCTAX_BUILD_TOOL_BATCH=ON ^
+  -DCTAX_BUILD_TESTS=OFF ^
+  -DCTAXPROTOTYPE_ENABLE_GRAPH_CUT=OFF ^
+  -DVTK_DIR=D:\build\install\lib\cmake\vtk ^
+  -DITK_DIR=D:\build\install\lib\cmake\ITK-5.2 ^
+  -DDICOM_DIR=D:\build\install\lib\cmake\dicom-0.8 ^
+  -DQt5_DIR=D:\build\qt5-static\lib\cmake\Qt5 ^
+  -DEigen3_INCLUDE_DIR=D:\build\install\include\eigen3
+
+cmake --build D:\build\ctanalyzerx --config Release
+
+Tools Built:
+------------
+[YES] CTAnalyzerX.exe (main application)
+[YES] CTAXViewer.exe (lightweight viewer)
+[YES] CTAXPrototype.exe (experimental segmentation)
+[YES] CTAXMorphometry.exe (CLI/GUI morphometry)
+[YES] CTAXBatchProcessor.exe (batch processing)
+
+Dependencies Linked:
+--------------------
+- Qt5: Widgets, OpenGL, Charts, Concurrent (static)
+- VTK: RenderingCore, RenderingOpenGL2, RenderingVolume, GUISupportQt, DICOM
+- ITK: Core, Filtering, Segmentation, BoneMorphometry
+- vtk-dicom: vtkDICOM (static)
+- Eigen3: Header-only
+
+Output Location:
+----------------
+- Debug: D:\build\ctanalyzerx\bin\Debug\*.exe
+- Release: D:\build\ctanalyzerx\bin\Release\*.exe
+
+===============================================================================
+
+Common Issues & Solutions
+===============================================================================
+
+1. LNK2038: mismatch detected for 'RuntimeLibrary'
+   -> All projects MUST use same runtime: /MTd (debug) or /MT (release)
+   -> Set CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>
+
+2. Qt static linking requires Q_IMPORT_PLUGIN macros
+   -> Qt5 static build bundles plugins into executable
+   -> Add in main.cpp:
+     #include <QtPlugin>
+     Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin)
+     Q_IMPORT_PLUGIN(QICOPlugin)
+
+3. VTK OpenGL errors on static build
+   -> Ensure VTK uses same Qt5 as application
+   -> Verify Desktop OpenGL (not ANGLE/ES)
+
+4. ITK GDCM conflicts with system GDCM
+   -> Always use ITK's internal GDCM (USE_ITK_GDCM=ON)
+   -> Do not mix external GDCM
+
+5. CMake cannot find Qt5
+   -> Set CMAKE_PREFIX_PATH=D:\build\qt5-static
+   -> Or set Qt5_DIR=D:\build\qt5-static\lib\cmake\Qt5
+
+6. Missing double-conversion.lib
+   -> VTK builds internal double-conversion
+   -> Ensure VTK_MODULE_USE_EXTERNAL_VTK_doubleconversion=OFF
+
+7. Git clone fails with SSL certificate errors
+   -> Update Git: git update-git-for-windows
+   -> Or disable SSL verification (not recommended): git config --global http.sslVerify false
+
+8. Qt init-repository fails
+   -> Ensure Perl is installed (Strawberry Perl or ActivePerl)
+   -> Add Perl to PATH: set PATH=C:\Strawberry\perl\bin;%PATH%
+
+===============================================================================
+
+Verification Commands
+===============================================================================
+
+Check Qt Configuration:
+-----------------------
+D:\build\qt5-static\bin\qmake.exe -query
+# Should show: QT_INSTALL_PREFIX:D:/build/qt5-static
+
+Check Static Dependencies:
+--------------------------
+dumpbin /dependents D:\build\ctanalyzerx\bin\Release\CTAnalyzerX.exe | findstr Qt
+# Should return NOTHING (Qt is statically linked)
+
+dumpbin /dependents D:\build\ctanalyzerx\bin\Release\CTAnalyzerX.exe
+# Should only show system DLLs: kernel32.dll, user32.dll, opengl32.dll, etc.
+
+Check VTK Version:
+------------------
+cmake --find-package -DNAME=VTK -DCOMPILER_ID=MSVC -DLANGUAGE=CXX -DMODE=EXIST ^
+  -DCMAKE_PREFIX_PATH=D:\build\install
+
+Verify ITK Modules:
+-------------------
+cmake --find-package -DNAME=ITK -DCOMPILER_ID=MSVC -DLANGUAGE=CXX -DMODE=EXIST ^
+  -DCMAKE_PREFIX_PATH=D:\build\install
+
+Check Git Versions:
+-------------------
+cd D:\repository\qt5 && git describe --tags
+cd D:\repository\eigen && git describe --tags
+cd D:\repository\vtk && git describe --tags
+cd D:\repository\itk && git describe --tags
+cd D:\repository\vtk-dicom && git describe --tags
+cd D:\repository\CTAnalyzerX && git describe --tags
+
+===============================================================================
+
+Build Summary
+===============================================================================
+
+Total Build Time: ~6-10 hours (first-time, 8-core CPU)
+Total Disk Usage: ~50-60 GB (sources + builds + installs)
+
+Install Tree Structure:
+-----------------------
+D:\build\install\
++-- bin\                          # VTK/ITK/vtk-dicom tools, CTAnalyzerX.exe
++-- include\
+|   +-- eigen3\                   # Eigen headers
+|   +-- vtk-X.Y\                  # VTK headers
+|   +-- ITK-5.2\                  # ITK headers
+|   +-- vtk-dicom-0.8\            # vtk-dicom headers
++-- lib\
+|   +-- cmake\
+|   |   +-- vtk\                  # VTKConfig.cmake
+|   |   +-- ITK-5.2\              # ITKConfig.cmake
+|   |   +-- dicom-0.8\            # DICOMConfig.cmake
+|   +-- *.lib                     # Static libraries
+|   +-- vtk-X.Y\                  # VTK module libs
++-- share\
+    +-- eigen3\cmake\             # Eigen3Config.cmake
+    +-- doc\                      # Documentation
+
+Qt5 Static Tree:
+----------------
+D:\build\qt5-static\
++-- bin\                          # qmake.exe, moc.exe, uic.exe, rcc.exe
++-- include\                      # Qt5 headers
++-- lib\
+|   +-- cmake\Qt5\                # Qt5Config.cmake
+|   +-- *.lib                     # Static Qt libraries (qtmaind.lib, Qt5Cored.lib, etc.)
+|   +-- plugins\                  # Static plugin libs
++-- mkspecs\                      # Qt build specs
+
+Deployment:
+-----------
+Release build produces single self-contained executable:
+- CTAnalyzerX.exe (~45-60 MB, includes all static libs)
+- No Qt DLLs required
+- Requires Visual C++ Redistributable 2022 (vcruntime140.dll, msvcp140.dll)
+
+===============================================================================
+End of Build Notes
+===============================================================================
